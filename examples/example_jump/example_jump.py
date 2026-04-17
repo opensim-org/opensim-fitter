@@ -129,7 +129,6 @@ TheiaFrameSource.remove_columns(orientations, columns_to_remove)
 TheiaFrameSource.update_column_labels(orientations, frame_map)
 
 solver = InverseKinematicsSolver(anthro_scaled_model, positions, orientations,
-                                 finite_differences=False,
                                  convergence_tolerance=1e-4,
                                  position_weight=2.0,
                                  orientation_weight=5.0,
