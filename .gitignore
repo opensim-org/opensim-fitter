@@ -1,1 +1,4 @@
 opensim.log
+
+# PyCache files
+__pycache__/
