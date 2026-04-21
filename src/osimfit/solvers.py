@@ -243,8 +243,7 @@ class SplineInverseKinematicsSolver(Solver):
                     frame_paths,
                     self.positions.getRowAtIndex(i),
                     self.orientations.getRowAtIndex(i),
-                    self.weights,
-                    state=osim.State(base_state)))
+                    self.weights))
             errors[i] = callbacks[i](q[i, :].T)
 
         # Define the overall cost as the sum of squared tracking errors.

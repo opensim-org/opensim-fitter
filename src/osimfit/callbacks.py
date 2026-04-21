@@ -6,10 +6,10 @@ from abc import ABC, abstractmethod
 # Base Callback Classes
 # ---------------------
 class Callback(ca.Callback, ABC):
-    def __init__(self, name, model, coordinate_indexes, state=None, opts={}):
+    def __init__(self, name, model, coordinate_indexes, opts={}):
         ca.Callback.__init__(self)
         self.model = model
-        self.state = state if state is not None else self.model.getWorkingState()
+        self.state = self.model.getWorkingState()
         self.matter = self.model.getMatterSubsystem()
         self.coordinate_indexes = coordinate_indexes
         self.construct(name, opts)
@@ -167,16 +167,15 @@ class TrackingCostMixin:
 
 class TrackingCostCallback(TrackingCostMixin, Callback):
     def __init__(self, name, model, coordinate_indexes, frame_paths, positions,
-                 orientations, weights, state=None, opts={}):
-        Callback.__init__(self, name, model, coordinate_indexes, state=state, opts=opts)
+                 orientations, weights, opts={}):
+        Callback.__init__(self, name, model, coordinate_indexes, opts=opts)
         self._init_tracking_cost(model, frame_paths, positions, orientations, weights)
 
 
 class TrackingCostJacobianCallback(TrackingCostMixin, JacobianCallback):
     def __init__(self, name, model, coordinate_indexes, frame_paths, positions,
-                 orientations, weights, state=None, opts={}):
-        JacobianCallback.__init__(self, name, model, coordinate_indexes,
-                                  state=state, opts=opts)
+                 orientations, weights, opts={}):
+        JacobianCallback.__init__(self, name, model, coordinate_indexes, opts=opts)
         self._init_tracking_cost(model, frame_paths, positions, orientations, weights)
 
     def _calc_quaternion_jacobian(self, eps):
