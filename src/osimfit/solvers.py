@@ -1,10 +1,8 @@
-from os import times
-
 import numpy as np
 import casadi as ca
 import opensim as osim
 from abc import ABC, abstractmethod
-from .utilities import get_coordinate_indexes, get_ipopt_options
+from .utilities import get_coordinate_indexes
 from .callbacks import TrackingCostCallback
 
 
@@ -44,6 +42,24 @@ class Solver(ABC):
     def solve(self, guess=None) -> osim.TimeSeriesTable:
         pass
 
+    def get_ipopt_options(self, print_level=0):
+        """
+        Get a dictionary of common IPOPT options for use with CasADi's nlpsolver.
+        """
+        ipopt_options = {}
+        ipopt_options['hessian_approximation'] = 'limited-memory'
+        ipopt_options['tol'] = self.convergence_tolerance
+        ipopt_options['dual_inf_tol'] = self.convergence_tolerance
+        ipopt_options['compl_inf_tol'] = self.convergence_tolerance
+        ipopt_options['acceptable_tol'] = self.convergence_tolerance
+        ipopt_options['acceptable_dual_inf_tol'] = self.convergence_tolerance
+        ipopt_options['acceptable_compl_inf_tol'] = self.convergence_tolerance
+        # ipopt_options['constr_viol_tol'] = self.constraint_tolerance
+        # ipopt_options['acceptable_constr_viol_tol'] = self.constraint_tolerance
+        ipopt_options['print_level'] = print_level
+
+        return ipopt_options
+
 
 class InverseKinematicsSolver(Solver):
 
@@ -62,7 +78,7 @@ class InverseKinematicsSolver(Solver):
         f = tracking_cost(x) + weights['smoothness'] * ca.sumsqr(x - p)
         nlp = {'x': x, 'p': p, 'f': f}
         opts = {}
-        opts['ipopt'] = get_ipopt_options(self.convergence_tolerance)
+        opts['ipopt'] = self.get_ipopt_options()
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
         return callback, solver
 
@@ -252,8 +268,7 @@ class SplineInverseKinematicsSolver(Solver):
         # Define the NLP and solver.
         nlp = {'x': ca.vec(x), 'f': f}
         opts = {}
-        opts['ipopt'] = get_ipopt_options(self.convergence_tolerance)
-        opts['ipopt']['print_level'] = 5
+        opts['ipopt'] = self.get_ipopt_options(print_level=5)
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
 
         # Solve!
