@@ -5,7 +5,7 @@ import casadi as ca
 import opensim as osim
 from abc import ABC, abstractmethod
 from .utilities import get_coordinate_indexes, get_ipopt_options
-from .callbacks import TrackingCostJacobianCallback
+from .callbacks import TrackingCostCallback
 
 
 class Solver(ABC):
@@ -54,10 +54,10 @@ class InverseKinematicsSolver(Solver):
     def _build_solver(self, frame_paths, positions, quaternions, weights):
         x = ca.SX.sym('x', len(self.coordinate_indexes))
         p = ca.SX.sym('p', len(self.coordinate_indexes))
-        callback = TrackingCostJacobianCallback('tracking_cost', self.model,
-                                                self.coordinate_indexes,
-                                                frame_paths, positions, quaternions,
-                                                weights)
+        callback = TrackingCostCallback('tracking_cost', self.model,
+                                        self.coordinate_indexes,
+                                        frame_paths, positions, quaternions,
+                                        weights)
         tracking_cost = ca.Function('f', [x], [callback(x)])
         f = tracking_cost(x) + weights['smoothness'] * ca.sumsqr(x - p)
         nlp = {'x': x, 'p': p, 'f': f}
@@ -236,7 +236,7 @@ class SplineInverseKinematicsSolver(Solver):
         errors = ca.MX(num_times, 1)
         callbacks = []
         for i in range(num_times):
-            callbacks.append(TrackingCostJacobianCallback(
+            callbacks.append(TrackingCostCallback(
                     f'tracking_cost_time_{i}',
                     self.model,
                     self.coordinate_indexes,
