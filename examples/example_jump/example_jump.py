@@ -139,8 +139,8 @@ sto.write(ik_solution, 'jump_1_ik_solution.sto')
 # Run the spline IK solver, initialized with the frame-by-frame solution.
 weights = {'position': 2.0, 'orientation': 5.0}
 solver = SplineInverseKinematicsSolver(anthro_scaled_model, positions, orientations,
-                                        convergence_tolerance=1e-4, weights=weights,
-                                        knot_interval=0.06)
+                                       convergence_tolerance=1e-4, weights=weights,
+                                       knot_interval=0.06)
 spline_ik_solution  = solver.solve(ik_solution)
 sto.write(spline_ik_solution, 'jump_1_spline_ik_solution.sto')
 

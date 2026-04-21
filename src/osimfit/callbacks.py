@@ -2,6 +2,7 @@ import numpy as np
 import casadi as ca
 import opensim as osim
 from abc import ABC, abstractmethod
+from .utilities import get_coordinate_indexes
 
 
 class Callback(ca.Callback, ABC):
@@ -25,23 +26,12 @@ class Callback(ca.Callback, ABC):
     opts: dict
         A dictionary of options to pass to the CasADi callback constructor.
     """
-    def __init__(self, name: str, model: osim.Model, q_indexes: list[int],
-                 opts: dict = {}):
+    def __init__(self, name: str, model: osim.Model, opts: dict = {}):
         ca.Callback.__init__(self)
         self.model = model
         self.state = self.model.getWorkingState()
-        self.q_indexes = q_indexes
-
-        if len(self.q_indexes) > self.state.getNQ() or len(self.q_indexes) < 1:
-            raise ValueError(f'Expected q_indexes to have between 1 and '
-                             f'{self.state.getNQ()} indexes, but got '
-                             f'{len(self.q_indexes)}.')
-
-        if max(self.q_indexes) >= self.state.getNQ() or min(self.q_indexes) < 0:
-            raise ValueError(f'Expected values in q_indexes to be between 0 and '
-                             f'{self.state.getNQ()-1}, but got values between '
-                             f'{min(self.q_indexes)} and {max(self.q_indexes)}.')
-
+        self.q_indexes = list(get_coordinate_indexes(
+            model, skip_dependent_coordinates=True).values())
         self.construct(name, opts)
 
     def apply_state(self, arg):
@@ -178,12 +168,8 @@ class FrameTrackingCost(TrackingCost):
         self.orientation_weight = orientation_weight
 
         # Reference data.
-        self.position = np.zeros(3)
-        self.orientation = np.zeros(4)
-        self.update_data(position, orientation)
-
-    def update_data(self, position, orientation):
         self.position = position.to_numpy()
+        self.orientation = np.zeros(4)
         self.orientation[0] = orientation.get(0)
         self.orientation[1] = orientation.get(1)
         self.orientation[2] = orientation.get(2)
@@ -293,25 +279,13 @@ class FrameTrackingCost(TrackingCost):
 class TrackingCostCallback(Callback):
     """
     A CasADi callback that evaluates the sum of tracking costs for a set of model frames.
+    
     Parameters
     ----------
     name: str
         The name of the callback function.
     model: osim.Model
         The OpenSim model to use for evaluating the function and its Jacobian.
-    coordinate_indexes: list[int]
-        A list of indexes into the SimTK::State's generalized coordinates vector (i.e.,
-        state.getQ()) that specifies which coordinates are being optimized. The callback
-        will apply the optimization variables to these coordinates before evaluating
-        the function.
-    frame_paths: list[str]
-        A list of paths to the frames in the model to track.
-    positions: list[osim.Vec3]
-        A list of position data to track, where positions[i] corresponds to
-        frame_paths[i].
-    orientations: list[osim.Quaternion]
-        A list of orientation data to track, where orientations[i] corresponds to
-        frame_paths[i].
     weights: dict
         A dictionary with keys 'position' and 'orientation' that specifies the weights
         to apply to the position and orientation errors, respectively, in the total
@@ -319,25 +293,20 @@ class TrackingCostCallback(Callback):
     opts: dict
         A dictionary of options to pass to the CasADi callback constructor.
     """
-    def __init__(self, name, model, coordinate_indexes, frame_paths, positions,
-                 orientations, weights, opts={}):
-        Callback.__init__(self, name, model, coordinate_indexes, opts=opts)
+    def __init__(self, name: str, model: osim.Model, weights: dict, opts={}):
+        Callback.__init__(self, name, model, opts=opts)
+        self.tracking_costs: list[TrackingCost] = []
+        self.weights = weights
 
-        # Frames.
-        self.frame_paths = frame_paths
-        self.frame_costs: list[FrameTrackingCost] = []
-        for iframe, frame_path in enumerate(self.frame_paths):
-            frame_cost = FrameTrackingCost(model, frame_path,
-                                           positions.getElt(0, iframe),
-                                           orientations.getElt(0, iframe),
-                                           position_weight=weights['position'],
-                                           orientation_weight=weights['orientation'])
-            self.frame_costs.append(frame_cost)
-
-    def update_data(self, positions, orientations):
-        for iframe, frame_cost in enumerate(self.frame_costs):
-            frame_cost.update_data(positions.getElt(0, iframe),
-                                   orientations.getElt(0, iframe))
+    def add_frame_tracking_cost(self, frame_path: str, position: osim.Vec3, 
+                                orientation: osim.Quaternion):
+        self.tracking_costs.append(
+                FrameTrackingCost(self.model, 
+                                  frame_path,
+                                  position,
+                                  orientation,
+                                  position_weight=self.weights['position'],
+                                  orientation_weight=self.weights['orientation']))
 
     def _get_num_inputs(self):
         return len(self.q_indexes)
@@ -351,8 +320,8 @@ class TrackingCostCallback(Callback):
 
         # Compute the sum of the frame cost errors.
         error = 0
-        for frame_cost in self.frame_costs:
-            error += frame_cost.calc_error(self.state)
+        for cost in self.tracking_costs:
+            error += cost.calc_error(self.state)
         return [error]
 
     def _jac_eval(self, arg):
@@ -363,8 +332,8 @@ class TrackingCostCallback(Callback):
         # position and orientation errors for each frame.
         # See section 6 in docs/frame_error_jacobians.pdf for details.
         J = np.zeros((self.state.getNQ()))
-        for frame_cost in self.frame_costs:
-            J += frame_cost.calc_jacobian(self.state)
+        for cost in self.tracking_costs:
+            J += cost.calc_jacobian(self.state)
 
         # Index out the dependent coordinates and return the Jacobian.
         return [np.expand_dims(J[self.q_indexes], axis=0)]

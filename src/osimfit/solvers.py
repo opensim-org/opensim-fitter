@@ -3,7 +3,7 @@ import casadi as ca
 import opensim as osim
 from abc import ABC, abstractmethod
 from .utilities import get_coordinate_indexes
-from .callbacks import TrackingCostCallback
+from .callbacks import FrameTrackingCost, TrackingCostCallback
 
 
 class Solver(ABC):
@@ -67,15 +67,17 @@ class InverseKinematicsSolver(Solver):
                  weights={}):
         super().__init__(model, positions, orientations, convergence_tolerance, weights)
 
-    def _build_solver(self, frame_paths, positions, quaternions, weights):
+    def _build_solver(self, frame_paths, positions, orientations, weights):
         x = ca.SX.sym('x', len(self.coordinate_indexes))
         p = ca.SX.sym('p', len(self.coordinate_indexes))
-        callback = TrackingCostCallback('tracking_cost', self.model,
-                                        self.coordinate_indexes,
-                                        frame_paths, positions, quaternions,
-                                        weights)
-        tracking_cost = ca.Function('f', [x], [callback(x)])
-        f = tracking_cost(x) + weights['smoothness'] * ca.sumsqr(x - p)
+
+        callback = TrackingCostCallback('tracking_cost', self.model, weights)
+        for iframe, frame_path in enumerate(frame_paths):
+            callback.add_frame_tracking_cost(frame_path, 
+                                             positions.getElt(0, iframe),
+                                             orientations.getElt(0, iframe))
+
+        f = callback(x) + weights['smoothness'] * ca.sumsqr(x - p)
         nlp = {'x': x, 'p': p, 'f': f}
         opts = {}
         opts['ipopt'] = self.get_ipopt_options()
@@ -86,7 +88,7 @@ class InverseKinematicsSolver(Solver):
 
         if guess is not None:
             raise ValueError(f'InverseKinematicsSolver does not currently support '
-                             f'using an initial guess, but got a guess with '
+                             f'using an initial guess, but received a guess with '
                              f"{guess.getNumRows()} rows.")
 
         # Load tracking data
@@ -108,7 +110,7 @@ class InverseKinematicsSolver(Solver):
 
         # Solve position-only optimization to create an inital guess for the full IK
         # problem.
-        print('Solving initial guess optimization...')
+        print('Solving initial guess optimization...'
         callback, solver = self._build_solver(
             frame_paths,
             self.positions.getRowAtIndex(0),
@@ -120,22 +122,18 @@ class InverseKinematicsSolver(Solver):
         sol = solver(x0=x0, lbx=lbx, ubx=ubx, p=x0)
         x0 = sol['x']
 
-        # Build the callback and solver once for the main time-stepping loop.
-        callback, solver = self._build_solver(
-            frame_paths,
-            self.positions.getRowAtIndex(0),
-            self.orientations.getRowAtIndex(0),
-            self.weights
-        )
-
         # Iterate over all of the time steps in the tracking data and solve the
         # optimization problem at each time step.
         statesTraj = osim.StatesTrajectory()
         for itime, time in enumerate(times):
             print(f'Solving time {itime+1} of {len(times)} (t={time:.3f} s)...')
 
-            callback.update_data(self.positions.getRowAtIndex(itime),
-                                 self.orientations.getRowAtIndex(itime))
+            callback, solver = self._build_solver(
+                frame_paths,
+                self.positions.getRowAtIndex(itime),
+                self.orientations.getRowAtIndex(itime),
+                self.weights
+            )
             sol = solver(x0=x0, lbx=lbx, ubx=ubx, p=x0)
 
             # Write solution into callback.state — avoids calling initSystem() again,
@@ -252,14 +250,14 @@ class SplineInverseKinematicsSolver(Solver):
         errors = ca.MX(num_times, 1)
         callbacks = []
         for i in range(num_times):
-            callbacks.append(TrackingCostCallback(
-                    f'tracking_cost_time_{i}',
-                    self.model,
-                    self.coordinate_indexes,
-                    frame_paths,
-                    self.positions.getRowAtIndex(i),
-                    self.orientations.getRowAtIndex(i),
-                    self.weights))
+            callbacks.append(TrackingCostCallback(f'tracking_cost_time_{i}', self.model,
+                                                  self.weights))
+            positions_i = self.positions.getRowAtIndex(i)
+            orientations_i = self.orientations.getRowAtIndex(i)
+            for iframe, frame_path in enumerate(frame_paths):
+                callbacks[i].add_frame_tracking_cost(frame_path, 
+                                                     positions_i.getElt(0, iframe),
+                                                     orientations_i.getElt(0, iframe))
             errors[i] = callbacks[i](q[i, :].T)
 
         # Define the overall cost as the sum of squared tracking errors.
