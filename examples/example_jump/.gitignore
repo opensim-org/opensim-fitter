@@ -1,5 +1,4 @@
-/Geometry
-pose_0.c3d
 *.osim
-visualize.py
 *.sto
+*.c3d
+/Geometry

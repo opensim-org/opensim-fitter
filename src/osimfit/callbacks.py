@@ -274,6 +274,82 @@ class FrameTrackingCost(TrackingCost):
         ])
         return jac_eps
 
+
+class MarkerTrackingCost(TrackingCost):
+    """
+    A tracking cost that computes the error between a model marker's position and
+    the position of an experimental marker.
+
+    Parameters
+    ----------
+    model: osim.Model
+        The OpenSim model to use for evaluating the function and its Jacobian.
+    marker_path: str
+        The path to the marker in the model to track.
+    position: osim.Vec3
+        The position data to track.
+    weight: float
+        The weight to apply to the position error in the total error.
+    """
+    def __init__(self, model: osim.Model, marker_path: str, position: osim.Vec3,
+                 weight: float = 1.0):
+
+        self.marker_path = marker_path
+        if not model.hasComponent(marker_path):
+            raise ValueError(f'Model does not have a component at path {marker_path}.')
+
+        self.marker = osim.Marker.safeDownCast(
+                model.getComponent(marker_path))
+        self.matter = model.getMatterSubsystem()
+
+        # TODO: make sure that this is the base frame
+        frame = self.marker.getParentFrame()
+        location = self.marker.get_location()
+        self.mobod_index = frame.getMobilizedBodyIndex()
+        self.station = self.marker.get_location()
+
+        # Cost weights.
+        if weight < 0:
+            raise ValueError(f'Expected weight to be non-negative, but got {weight}.')
+        self.weight = weight
+
+        # Reference data.
+        self.position = position.to_numpy()
+
+    def calc_error(self, state) -> float:
+
+        # Compute the position error as the norm of the difference between model and
+        # data positions.
+        position = self.marker.getLocationInGround(state).to_numpy()
+        position_error = np.square(np.linalg.norm(position - self.position))
+
+        return self.weight * position_error
+
+    def calc_jacobian(self, state) -> np.ndarray:
+
+        # Position error Jacobian.
+        # ------------------------
+        # Compute the position error, error = p_GF - p_DG.
+        error = self.marker.getLocationInGround(state)
+        error[0] -= self.position[0]
+        error[1] -= self.position[1]
+        error[2] -= self.position[2]
+
+        # This is size NQ and not len(coordinate_indexes) because
+        # multiplyByStationJacobianTranspose() returns the Jacobian for all coordinates,
+        # including dependent coordinates. We will index out the dependent coordinates
+        # elements of the Jacobian before returning it.
+        vec = osim.Vector(state.getNQ(), 0.0)
+
+        # Compute the Jacobian of the position error. See section 4 in
+        # docs/frame_error_jacobians.pdf for details.
+        self.matter.multiplyByStationJacobianTranspose(state, self.mobod_index,
+                                                       self.station, error, vec)
+        J = self.weight * 2.0 * vec.to_numpy()
+
+        return J
+
+
 # Tracking Cost Callbacks
 # -----------------------
 class TrackingCostCallback(Callback):
@@ -308,6 +384,13 @@ class TrackingCostCallback(Callback):
                                   orientation,
                                   position_weight=self.weights['position'],
                                   orientation_weight=self.weights['orientation']))
+
+    def add_marker_tracking_cost(self, marker_path: str, position: osim.Vec3):
+        self.tracking_costs.append(
+                MarkerTrackingCost(self.model,
+                                   marker_path,
+                                   position,
+                                   weight=self.weights['position']))
 
     def _get_num_inputs(self):
         return len(self.q_indexes)

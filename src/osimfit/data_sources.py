@@ -4,15 +4,33 @@ import opensim as osim
 from abc import ABC, abstractmethod
 
 class DataSource(ABC):
-    def __init__(self):
+    def __init__(self, labels_to_remove=None, label_map=None):
         super().__init__()
+        self.labels_to_remove = labels_to_remove
+        self.label_map = label_map
+
+    def get_positions_table(self) -> osim.TimeSeriesTableVec3:
+        table = self._create_positions_table()
+        if self.labels_to_remove:
+            self.remove_columns(table, self.labels_to_remove)
+        if self.label_map:
+            self.update_column_labels(table, self.label_map)
+        return table
+
+    def get_orientations_table(self) -> osim.TimeSeriesTableQuaternion:
+        table = self._create_orientations_table()
+        if self.labels_to_remove:
+            self.remove_columns(table, self.labels_to_remove)
+        if self.label_map:
+            self.update_column_labels(table, self.label_map)
+        return table
 
     @abstractmethod
-    def get_positions_table(self):
+    def _create_positions_table(self) -> osim.TimeSeriesTableVec3:
         pass
 
     @abstractmethod
-    def get_orientations_table(self):
+    def _create_orientations_table(self) -> osim.TimeSeriesTableQuaternion:
         pass
 
     @staticmethod
@@ -33,12 +51,39 @@ class DataSource(ABC):
         return table
 
 
-class TheiaFrameSource(DataSource):
-    def __init__(self, filepath):
-        super().__init__()
+class MarkerSource(DataSource):
+    def __init__(self, trc_filepath, labels_to_remove=None, label_map=None):
+        super().__init__(labels_to_remove=labels_to_remove, label_map=label_map)
+        self.trc_filepath = trc_filepath
 
-        self.filepath = filepath
-        self.c3d = ezc3d.c3d(filepath)
+    def _create_positions_table(self) -> osim.TimeSeriesTableVec3:
+        table = osim.TimeSeriesTableVec3(self.trc_filepath)
+        return table
+
+    def _create_orientations_table(self) -> osim.TimeSeriesTableQuaternion:
+        raise NotImplementedError("Orientation data is not available in MarkerSource.")
+
+
+class TheiaFrameSource(DataSource):
+    """
+    Data source for Theia markerless motion capture data. Theia outputs 4x4 homogeneous
+    transformation matrices for various frames from its internal representation of the
+    human skeletal model. This class extracts the position and orientation of each
+    frame in Theia's output and converts them to OpenSim's coordinate system.
+
+     Parameters
+    ----------
+    c3d_filepath : str
+        Path to the C3D file containing Theia's output. The C3D file should contain
+        4x4 homogeneous transformation matrices for each frame, stored in the
+        'rotations' field. Each frame's transformation matrix should be labeled with a
+        unique name in the C3D file.
+    """
+    def __init__(self, c3d_filepath, labels_to_remove=None, label_map=None):
+        super().__init__(labels_to_remove=labels_to_remove, label_map=label_map)
+
+        self.filepath = c3d_filepath
+        self.c3d = ezc3d.c3d(c3d_filepath)
 
         # This is a Y-Z space-fixed rotation needed to convert data collected from Theia
         # to OpenSim's ground reference frame convention (X forward, Y up, Z right).
@@ -66,7 +111,7 @@ class TheiaFrameSource(DataSource):
         self.times = np.array([i/self.rate for i in range(self.num_frames)])
 
 
-    def get_positions_table(self):
+    def _create_positions_table(self) -> osim.TimeSeriesTableVec3:
         table = osim.TimeSeriesTableVec3()
         for iframe in range(self.num_frames):
             row = osim.RowVectorVec3(len(self.labels), osim.Vec3(0))
@@ -84,7 +129,7 @@ class TheiaFrameSource(DataSource):
         return table
 
 
-    def get_orientations_table(self):
+    def _create_orientations_table(self) -> osim.TimeSeriesTableQuaternion:
         table = osim.TimeSeriesTableQuaternion()
         for iframe in range(self.num_frames):
             row = osim.RowVectorQuaternion(len(self.labels), osim.Quaternion())

@@ -120,28 +120,29 @@ anthro_scaled_model.printToXML('jump_1_anthro_scaled.osim')
 # --------------------------
 columns_to_remove = ['worldbody', 'head', 'pelvis_shifted', 'l_clavicle', 'r_clavicle']
 
-positions = c3d_source.get_positions_table()
-TheiaFrameSource.remove_columns(positions, columns_to_remove)
-TheiaFrameSource.update_column_labels(positions, frame_map)
-
-orientations = c3d_source.get_orientations_table()
-TheiaFrameSource.remove_columns(orientations, columns_to_remove)
-TheiaFrameSource.update_column_labels(orientations, frame_map)
+theia_frame_source = TheiaFrameSource('pose_0.c3d',
+                                      labels_to_remove=columns_to_remove,
+                                      label_map=frame_map)
 
 # Run the frame-by-frame IK solver.
-weights = {'position': 2.0, 'orientation': 5.0, 'smoothness': 0.5}
-solver = InverseKinematicsSolver(anthro_scaled_model, positions, orientations,
-                                 convergence_tolerance=1e-4, weights=weights)
-ik_solution = solver.solve()
-sto = osim.STOFileAdapter()
-sto.write(ik_solution, 'jump_1_ik_solution.sto')
+# weights = {'position': 2.0, 'orientation': 5.0, 'smoothness': 0.5}
+# solver = InverseKinematicsSolver(anthro_scaled_model,
+#                                  convergence_tolerance=1e-4,
+#                                  weights=weights)
+# solver.add_theia_frame_source(theia_frame_source)
+# ik_solution = solver.solve()
+# sto = osim.STOFileAdapter()
+# sto.write(ik_solution, 'jump_1_ik_solution.sto')
 
 # Run the spline IK solver, initialized with the frame-by-frame solution.
 weights = {'position': 2.0, 'orientation': 5.0}
-solver = SplineInverseKinematicsSolver(anthro_scaled_model, positions, orientations,
-                                       convergence_tolerance=1e-4, weights=weights,
+solver = SplineInverseKinematicsSolver(anthro_scaled_model,
+                                       convergence_tolerance=1e-4,
+                                       weights=weights,
                                        knot_interval=0.06)
-spline_ik_solution  = solver.solve(ik_solution)
+solver.add_theia_frame_source(theia_frame_source)
+spline_ik_solution = solver.solve(osim.TimeSeriesTable('jump_1_ik_solution.sto'))
+sto = osim.STOFileAdapter()
 sto.write(spline_ik_solution, 'jump_1_spline_ik_solution.sto')
 
 # STEP 4: VISUALIZATION

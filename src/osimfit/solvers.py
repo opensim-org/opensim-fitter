@@ -2,13 +2,27 @@ import numpy as np
 import casadi as ca
 import opensim as osim
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from .utilities import get_coordinate_indexes
+from .data_sources import DataSource, MarkerSource, TheiaFrameSource
 from .callbacks import FrameTrackingCost, TrackingCostCallback
 
 
+@dataclass
+class TheiaFrameData:
+    labels: list[str]
+    positions: osim.TimeSeriesTableVec3
+    orientations: osim.TimeSeriesTableQuaternion
+
+
+@dataclass
+class MarkerData:
+    labels: list[str]
+    positions: osim.TimeSeriesTableVec3
+
+
 class Solver(ABC):
-    def __init__(self, model, positions, orientations,
-                 convergence_tolerance=1e-4, weights={}):
+    def __init__(self, model, convergence_tolerance=1e-4, weights={}):
         super().__init__()
 
         # Load the model.
@@ -27,16 +41,30 @@ class Solver(ABC):
                                                       skip_dependent_coordinates=True)
         self.coordinate_indexes = list(self.coordinates_map.values())
 
-        # Tracking data.
-        # --------------
-        self.positions = positions
-        self.orientations = orientations
-        assert(self.positions.getNumRows() == self.orientations.getNumRows())
-
         # Optimization settings.
         # ----------------------
         self.convergence_tolerance = convergence_tolerance
         self.weights = weights
+
+        # Data sources.
+        # -------------
+        self.theia_frame_data: list[TheiaFrameData] = []
+        self.marker_data: list[MarkerData] = []
+
+    def add_theia_frame_source(self, theia_frame_source: TheiaFrameSource):
+        positions = theia_frame_source.get_positions_table()
+        orientations = theia_frame_source.get_orientations_table()
+        labels = positions.getColumnLabels()
+        assert(labels == orientations.getColumnLabels())
+        assert(positions.getNumRows() == orientations.getNumRows())
+
+        self.theia_frame_data.append(TheiaFrameData(labels, positions, orientations))
+
+    def add_marker_source(self, marker_source: MarkerSource):
+        positions = marker_source.get_positions_table()
+        labels = positions.getColumnLabels()
+
+        self.marker_data.append(MarkerData(labels, positions))
 
     @abstractmethod
     def solve(self, guess=None) -> osim.TimeSeriesTable:
@@ -63,19 +91,27 @@ class Solver(ABC):
 
 class InverseKinematicsSolver(Solver):
 
-    def __init__(self, model, positions, orientations, convergence_tolerance=1e-6,
-                 weights={}):
-        super().__init__(model, positions, orientations, convergence_tolerance, weights)
+    def __init__(self, model, convergence_tolerance=1e-4, weights={}):
+        super().__init__(model, convergence_tolerance, weights)
 
-    def _build_solver(self, frame_paths, positions, orientations, weights):
+    def _build_solver(self, weights, itime):
         x = ca.SX.sym('x', len(self.coordinate_indexes))
         p = ca.SX.sym('p', len(self.coordinate_indexes))
 
         callback = TrackingCostCallback('tracking_cost', self.model, weights)
-        for iframe, frame_path in enumerate(frame_paths):
-            callback.add_frame_tracking_cost(frame_path,
-                                             positions.getElt(0, iframe),
-                                             orientations.getElt(0, iframe))
+
+        for data in self.theia_frame_data:
+            for iframe, frame_path in enumerate(data.labels):
+                callback.add_frame_tracking_cost(
+                    frame_path,
+                    data.positions.getRowAtIndex(itime).getElt(0, iframe),
+                    data.orientations.getRowAtIndex(itime).getElt(0, iframe))
+
+        for data in self.marker_data:
+            for iframe, marker_path in enumerate(data.labels):
+                callback.add_marker_tracking_cost(
+                    marker_path,
+                    data.positions.getRowAtIndex(itime).getElt(0, iframe))
 
         f = callback(x) + weights['smoothness'] * ca.sumsqr(x - p)
         nlp = {'x': x, 'p': p, 'f': f}
@@ -91,10 +127,20 @@ class InverseKinematicsSolver(Solver):
                              f'using an initial guess, but received a guess with '
                              f"{guess.getNumRows()} rows.")
 
-        # Load tracking data
-        # ------------------
-        frame_paths = self.positions.getColumnLabels()
-        times = self.positions.getIndependentColumn()
+        # Verify tracking data
+        # ----------------------
+        times = None
+        for data in self.theia_frame_data:
+            if times is None:
+                times = data.positions.getIndependentColumn()
+            else:
+                assert(np.all(times == data.positions.getIndependentColumn()))
+
+        for data in self.marker_data:
+            if times is None:
+                times = data.positions.getIndependentColumn()
+            else:
+                assert(np.all(times == data.positions.getIndependentColumn()))
 
         # Inverse kinematics
         # ------------------
@@ -111,13 +157,12 @@ class InverseKinematicsSolver(Solver):
         # Solve position-only optimization to create an inital guess for the full IK
         # problem.
         print('Solving initial guess optimization...')
+        itime = 0
         callback, solver = self._build_solver(
-            frame_paths,
-            self.positions.getRowAtIndex(0),
-            self.orientations.getRowAtIndex(0),
             {'position': 10.0*self.weights['position'],
              'orientation': 0.1*self.weights['orientation'],
-             'smoothness': 0.01*self.weights['smoothness']}
+             'smoothness': 0.01*self.weights['smoothness']},
+            itime
         )
         sol = solver(x0=x0, lbx=lbx, ubx=ubx, p=x0)
         x0 = sol['x']
@@ -128,12 +173,7 @@ class InverseKinematicsSolver(Solver):
         for itime, time in enumerate(times):
             print(f'Solving time {itime+1} of {len(times)} (t={time:.3f} s)...')
 
-            callback, solver = self._build_solver(
-                frame_paths,
-                self.positions.getRowAtIndex(itime),
-                self.orientations.getRowAtIndex(itime),
-                self.weights
-            )
+            callback, solver = self._build_solver(self.weights, itime)
             sol = solver(x0=x0, lbx=lbx, ubx=ubx, p=x0)
 
             # Write solution into callback.state — avoids calling initSystem() again,
@@ -157,9 +197,9 @@ class InverseKinematicsSolver(Solver):
 
 class SplineInverseKinematicsSolver(Solver):
 
-    def __init__(self, model, positions, orientations, convergence_tolerance=1e-6,
-                 weights={}, degree=3, knot_interval=0.05):
-        super().__init__(model, positions, orientations, convergence_tolerance, weights)
+    def __init__(self, model, convergence_tolerance=1e-4, weights={}, degree=3,
+                 knot_interval=0.05):
+        super().__init__(model, convergence_tolerance, weights)
         self.degree = degree
         self.knot_interval = knot_interval
 
@@ -202,17 +242,29 @@ class SplineInverseKinematicsSolver(Solver):
 
     def solve(self, guess=None) -> osim.TimeSeriesTable:
 
-        # Preliminaries.
-        # --------------
-        if guess is not None and guess.getNumRows() != self.positions.getNumRows():
+        # Verify tracking data
+        # ----------------------
+        times = None
+        for data in self.theia_frame_data:
+            if times is None:
+                times = data.positions.getIndependentColumn()
+            else:
+                assert(np.all(times == data.positions.getIndependentColumn()))
+
+        for data in self.marker_data:
+            if times is None:
+                times = data.positions.getIndependentColumn()
+            else:
+                assert(np.all(times == data.positions.getIndependentColumn()))
+
+        num_times = len(times)
+
+        # Check the initial guess.
+        # ------------------------
+        if guess is not None and guess.getNumRows() != num_times:
             raise ValueError(f'Expected the initial guess to have the same number of '
                              f'rows as the tracking data, but got {guess.getNumRows()} '
                              f'and {self.positions.getNumRows()} rows, respectively.')
-
-        # Define the (normalized) time vector.
-        times = self.positions.getIndependentColumn()
-        dt = times[1] - times[0]
-        num_times = len(times)
 
         # Define the knot vector.
         num_knots = int(times[-1] / self.knot_interval)
@@ -242,22 +294,25 @@ class SplineInverseKinematicsSolver(Solver):
         q = B @ knots
 
         # Compute the tracking cost at each time step via a callback.
-        # Call initSystem() once and copy the state for each callback to avoid
-        # repeated initSystem() calls invalidating earlier states (Simbody invalidates
-        # all State objects when realizeTopology() is called again).
-        frame_paths = self.positions.getColumnLabels()
-        base_state = self.model.initSystem()
         errors = ca.MX(num_times, 1)
         callbacks = []
         for i in range(num_times):
             callbacks.append(TrackingCostCallback(f'tracking_cost_time_{i}', self.model,
                                                   self.weights))
-            positions_i = self.positions.getRowAtIndex(i)
-            orientations_i = self.orientations.getRowAtIndex(i)
-            for iframe, frame_path in enumerate(frame_paths):
-                callbacks[i].add_frame_tracking_cost(frame_path,
-                                                     positions_i.getElt(0, iframe),
-                                                     orientations_i.getElt(0, iframe))
+
+            for data in self.theia_frame_data:
+                for iframe, frame_path in enumerate(data.labels):
+                    callbacks[i].add_frame_tracking_cost(
+                        frame_path,
+                        data.positions.getRowAtIndex(i).getElt(0, iframe),
+                        data.orientations.getRowAtIndex(i).getElt(0, iframe))
+
+            for data in self.marker_data:
+                for iframe, marker_path in enumerate(data.labels):
+                    callbacks[i].add_marker_tracking_cost(
+                        marker_path,
+                        data.positions.getRowAtIndex(i).getElt(0, iframe))
+
             errors[i] = callbacks[i](q[i, :].T)
 
         # Define the overall cost as the average tracking error across all time steps.
@@ -278,9 +333,8 @@ class SplineInverseKinematicsSolver(Solver):
         x_opt = ca.reshape(sol['x'], num_knots, len(self.coordinate_indexes))
         q_opt = np.array(B @ x_opt)  # (num_times, n_coords)
 
-        actual_times = self.positions.getIndependentColumn()
         statesTraj = osim.StatesTrajectory()
-        for i, time in enumerate(actual_times):
+        for i, time in enumerate(times):
             self.state.setTime(time)
             q = np.zeros(self.state.getNQ())
             q[self.coordinate_indexes] = q_opt[i, :]

@@ -1,1 +1,7 @@
-*.zip
+*.osim
+*.sto
+*.c3d
+/Geometry
+*.yaml
+/postaug
+/preaug
