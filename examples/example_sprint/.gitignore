@@ -5,3 +5,5 @@
 *.yaml
 /postaug
 /preaug
+*.csv
+*.png

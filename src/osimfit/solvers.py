@@ -4,8 +4,8 @@ import opensim as osim
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from .utilities import get_coordinate_indexes
-from .data_sources import DataSource, MarkerSource, TheiaFrameSource
-from .callbacks import FrameTrackingCost, TrackingCostCallback
+from .data_sources import MarkerSource, TheiaFrameSource
+from .callbacks import TrackingCostCallback
 
 
 @dataclass
@@ -157,13 +157,10 @@ class InverseKinematicsSolver(Solver):
         # Solve position-only optimization to create an inital guess for the full IK
         # problem.
         print('Solving initial guess optimization...')
-        itime = 0
-        callback, solver = self._build_solver(
-            {'position': 10.0*self.weights['position'],
-             'orientation': 0.1*self.weights['orientation'],
-             'smoothness': 0.01*self.weights['smoothness']},
-            itime
-        )
+        initial_weights = {'position': 10.0*self.weights.get('position', 0.0),
+                           'orientation': 0.1*self.weights.get('orientation', 0.0),
+                           'smoothness': 0.01*self.weights.get('smoothness', 0.0)}
+        callback, solver = self._build_solver(initial_weights, 0)
         sol = solver(x0=x0, lbx=lbx, ubx=ubx, p=x0)
         x0 = sol['x']
 
@@ -195,7 +192,7 @@ class InverseKinematicsSolver(Solver):
         return statesTable
 
 
-class SplineInverseKinematicsSolver(Solver):
+class SplineBasedInverseKinematicsSolver(Solver):
 
     def __init__(self, model, convergence_tolerance=1e-4, weights={}, degree=3,
                  knot_interval=0.05):
@@ -226,14 +223,20 @@ class SplineInverseKinematicsSolver(Solver):
         spline = ca.bspline(t, c_temp, [knots], [self.degree], 1)
         spline_fn = ca.Function("spline", [t, c_temp], [spline])
 
+        dt_spline = ca.jacobian(spline, t)
+        dt_spline_fn = ca.Function("dt_spline", [t, c_temp], [dt_spline])
+
         # Build basis matrix B[i,j] = N_j(t_i) by evaluating with unit coefficient
         # vectors.
         B = np.zeros((len(times), num_knots))
+        dB = np.zeros((len(times), num_knots))
         for j in range(num_knots):
-            e_j = np.zeros(num_knots); e_j[j] = 1.0
+            e_j = np.zeros(num_knots)
+            e_j[j] = 1.0
             B[:, j] = [float(spline_fn(ti, e_j)) for ti in times]
+            dB[:, j] = [float(dt_spline_fn(ti, e_j)) for ti in times]
 
-        return ca.DM(B)
+        return ca.DM(B), ca.DM(dB)
 
     def _extract_coordinate_initial_guess(self, guess, B, coord_path):
         q_col = guess.getDependentColumn(coord_path + '/value').to_numpy()
@@ -264,7 +267,7 @@ class SplineInverseKinematicsSolver(Solver):
         if guess is not None and guess.getNumRows() != num_times:
             raise ValueError(f'Expected the initial guess to have the same number of '
                              f'rows as the tracking data, but got {guess.getNumRows()} '
-                             f'and {self.positions.getNumRows()} rows, respectively.')
+                             f'and {num_times} rows, respectively.')
 
         # Define the knot vector.
         num_knots = int(times[-1] / self.knot_interval)
@@ -272,11 +275,11 @@ class SplineInverseKinematicsSolver(Solver):
 
         # Pre-compute the spline basis matrix, which is independent of the optimization
         # variables.
-        B = self._build_spline_basis_matrix(times, knots)
+        B, dB = self._build_spline_basis_matrix(times, knots)
 
         # Define the optimization variables, which are the spline control points for
         # each coordinate.
-        knots = ca.MX.sym('x', num_knots, len(self.coordinate_indexes))
+        coeffs = ca.MX.sym('coeffs', num_knots, len(self.coordinate_indexes))
         x0 = []
         lbx = []
         ubx = []
@@ -291,7 +294,7 @@ class SplineInverseKinematicsSolver(Solver):
         # --------------------------------
         # Map the control points to the full predicted trajectory via the spline basis
         # matrix.
-        q = B @ knots
+        q = B @ coeffs
 
         # Compute the tracking cost at each time step via a callback.
         errors = ca.MX(num_times, 1)
@@ -319,7 +322,7 @@ class SplineInverseKinematicsSolver(Solver):
         f = ca.sum(errors) / num_times
 
         # Define the NLP and solver.
-        nlp = {'x': ca.vec(knots), 'f': f}
+        nlp = {'x': ca.vec(coeffs), 'f': f}
         opts = {}
         opts['ipopt'] = self.get_ipopt_options(print_level=5)
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
@@ -330,8 +333,9 @@ class SplineInverseKinematicsSolver(Solver):
 
         # Reconstruct the optimal trajectory by evaluating the spline at the
         # input data time points.
-        x_opt = ca.reshape(sol['x'], num_knots, len(self.coordinate_indexes))
-        q_opt = np.array(B @ x_opt)  # (num_times, n_coords)
+        coeffs_opt = ca.reshape(sol['x'], num_knots, len(self.coordinate_indexes))
+        q_opt = np.array(B @ coeffs_opt)  # (num_times, n_coords)
+        qdot_opt = np.array(dB @ coeffs_opt)
 
         statesTraj = osim.StatesTrajectory()
         for i, time in enumerate(times):
@@ -339,6 +343,9 @@ class SplineInverseKinematicsSolver(Solver):
             q = np.zeros(self.state.getNQ())
             q[self.coordinate_indexes] = q_opt[i, :]
             self.state.setQ(osim.Vector.createFromMat(q))
+            qdot = np.zeros(self.state.getNQ())
+            qdot[self.coordinate_indexes] = qdot_opt[i, :]
+            self.state.setU(osim.Vector.createFromMat(qdot))
             statesTraj.append(self.state)
 
         return statesTraj.exportToTable(self.model)

@@ -4,10 +4,15 @@ import opensim as osim
 from abc import ABC, abstractmethod
 
 class DataSource(ABC):
-    def __init__(self, labels_to_remove=None, label_map=None):
+    def __init__(self, labels_to_remove=None, label_map=None, trim_to_range=None):
         super().__init__()
         self.labels_to_remove = labels_to_remove
         self.label_map = label_map
+
+        if trim_to_range is not None:
+            assert(isinstance(trim_to_range, tuple) and len(trim_to_range) == 2,
+                   "trim_to_range should be a tuple of (start_time, end_time)")
+        self.trim_to_range = trim_to_range
 
     def get_positions_table(self) -> osim.TimeSeriesTableVec3:
         table = self._create_positions_table()
@@ -15,6 +20,8 @@ class DataSource(ABC):
             self.remove_columns(table, self.labels_to_remove)
         if self.label_map:
             self.update_column_labels(table, self.label_map)
+        if self.trim_to_range:
+            self.trim_table_to_range(table, self.trim_to_range)
         return table
 
     def get_orientations_table(self) -> osim.TimeSeriesTableQuaternion:
@@ -23,6 +30,8 @@ class DataSource(ABC):
             self.remove_columns(table, self.labels_to_remove)
         if self.label_map:
             self.update_column_labels(table, self.label_map)
+        if self.trim_to_range:
+            self.trim_table_to_range(table, self.trim_to_range)
         return table
 
     @abstractmethod
@@ -50,10 +59,17 @@ class DataSource(ABC):
         table.setColumnLabels(labels)
         return table
 
+    @staticmethod
+    def trim_table_to_range(table, time_range):
+        table.trim(time_range[0], time_range[1])
+        return table
+
 
 class MarkerSource(DataSource):
-    def __init__(self, trc_filepath, labels_to_remove=None, label_map=None):
-        super().__init__(labels_to_remove=labels_to_remove, label_map=label_map)
+    def __init__(self, trc_filepath, labels_to_remove=None, label_map=None,
+                 trim_to_range=None):
+        super().__init__(labels_to_remove=labels_to_remove, label_map=label_map,
+                         trim_to_range=trim_to_range)
         self.trc_filepath = trc_filepath
 
     def _create_positions_table(self) -> osim.TimeSeriesTableVec3:
@@ -79,8 +95,10 @@ class TheiaFrameSource(DataSource):
         'rotations' field. Each frame's transformation matrix should be labeled with a
         unique name in the C3D file.
     """
-    def __init__(self, c3d_filepath, labels_to_remove=None, label_map=None):
-        super().__init__(labels_to_remove=labels_to_remove, label_map=label_map)
+    def __init__(self, c3d_filepath, labels_to_remove=None, label_map=None,
+                 trim_to_range=None):
+        super().__init__(labels_to_remove=labels_to_remove, label_map=label_map,
+                         trim_to_range=trim_to_range)
 
         self.filepath = c3d_filepath
         self.c3d = ezc3d.c3d(c3d_filepath)

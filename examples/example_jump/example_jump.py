@@ -4,7 +4,7 @@ import opensim as osim
 from osimfit.data_sources import TheiaFrameSource
 from osimfit.scaling import PositionDataScaler, FrameMeasurement, Axis, ScaleFactor, \
                             AnthropometricScaler, AnthropometricMeasurement
-from osimfit.solvers import InverseKinematicsSolver, SplineInverseKinematicsSolver
+from osimfit.solvers import InverseKinematicsSolver, SplineBasedInverseKinematicsSolver
 
 # STEP 1: POSITION-BASED SCALING
 # ------------------------------
@@ -125,21 +125,21 @@ theia_frame_source = TheiaFrameSource('pose_0.c3d',
                                       label_map=frame_map)
 
 # Run the frame-by-frame IK solver.
-# weights = {'position': 2.0, 'orientation': 5.0, 'smoothness': 0.5}
-# solver = InverseKinematicsSolver(anthro_scaled_model,
-#                                  convergence_tolerance=1e-4,
-#                                  weights=weights)
-# solver.add_theia_frame_source(theia_frame_source)
-# ik_solution = solver.solve()
-# sto = osim.STOFileAdapter()
-# sto.write(ik_solution, 'jump_1_ik_solution.sto')
+weights = {'position': 2.0, 'orientation': 5.0, 'smoothness': 0.5}
+solver = InverseKinematicsSolver(anthro_scaled_model,
+                                 convergence_tolerance=1e-4,
+                                 weights=weights)
+solver.add_theia_frame_source(theia_frame_source)
+ik_solution = solver.solve()
+sto = osim.STOFileAdapter()
+sto.write(ik_solution, 'jump_1_ik_solution.sto')
 
 # Run the spline IK solver, initialized with the frame-by-frame solution.
 weights = {'position': 2.0, 'orientation': 5.0}
-solver = SplineInverseKinematicsSolver(anthro_scaled_model,
-                                       convergence_tolerance=1e-4,
-                                       weights=weights,
-                                       knot_interval=0.06)
+solver = SplineBasedInverseKinematicsSolver(anthro_scaled_model,
+                                            convergence_tolerance=1e-4,
+                                            weights=weights,
+                                            knot_interval=0.06)
 solver.add_theia_frame_source(theia_frame_source)
 spline_ik_solution = solver.solve(osim.TimeSeriesTable('jump_1_ik_solution.sto'))
 sto = osim.STOFileAdapter()
