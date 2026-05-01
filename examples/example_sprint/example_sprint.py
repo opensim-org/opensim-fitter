@@ -54,9 +54,9 @@ solver = InverseKinematicsSolver(model,
                                  convergence_tolerance=1e-2,
                                  weights=weights)
 solver.add_marker_source(marker_source)
-# ik_solution = solver.solve()
-# sto = osim.STOFileAdapter()
-# sto.write(ik_solution, 'sprint_ik_solution.sto')
+ik_solution = solver.solve()
+sto = osim.STOFileAdapter()
+sto.write(ik_solution, 'sprint_ik_solution.sto')
 
 # Spline-based inverse kinematics
 # -------------------------------
@@ -71,10 +71,10 @@ for knot_interval in knot_intervals:
                                                 weights=weights,
                                                 knot_interval=knot_interval)
     solver.add_marker_source(marker_source)
-    # spline_ik_solution = solver.solve(osim.TimeSeriesTable('sprint_ik_solution.sto'))
-    # sto = osim.STOFileAdapter()
-    # sto.write(spline_ik_solution,
-    #           f'sprint_spline_based_ik_solution_knot{int(knot_interval*1000)}.sto')
+    spline_ik_solution = solver.solve(osim.TimeSeriesTable('sprint_ik_solution.sto'))
+    sto = osim.STOFileAdapter()
+    sto.write(spline_ik_solution,
+              f'sprint_spline_based_ik_solution_knot{int(knot_interval*1000)}.sto')
 
 # Plot joint kinematics
 # ---------------------
@@ -116,6 +116,9 @@ plt.savefig('compare_joint_kinematics.png', dpi=150, bbox_inches='tight')
 # -------------------------
 time_range = [1.575, 2.075]
 
+# Load the frame-by-frame IK solution and apply a low-pass filter to smooth the 
+# kinematics. Then, use a spline fit to compute the derivatives of the coordinate 
+# values.
 tableProcessor = osim.TableProcessor('sprint_ik_solution.sto')
 tableProcessor.append(osim.TabOpLowPassFilter(10))
 tableProcessor.append(osim.TabOpAppendCoordinateValueDerivativesAsSpeeds())
@@ -125,6 +128,7 @@ ik_solution.trim(time_range[0], time_range[1])
 ik_states = osim.StatesTrajectory.createFromStatesTable(
     model, ik_solution, True, False, False)
 
+# Load the spline-based IK solution.
 spline_based_ik_solution = osim.TimeSeriesTable(
     'sprint_spline_based_ik_solution_knot80.sto')
 spline_based_ik_solution.addTableMetaDataString('inDegrees', 'no')
@@ -132,7 +136,7 @@ spline_based_ik_solution.trim(time_range[0], time_range[1])
 spline_based_ik_states = osim.StatesTrajectory.createFromStatesTable(
     model, spline_based_ik_solution, True, False, False)
 
-
+# Compute biceps femoris long head (bflh) lengths and lengthening speeds.
 bflh_lengths = {'ik': np.ndarray(ik_states.getSize()),
                 'spline_ik': np.ndarray(spline_based_ik_states.getSize())}
 bflh_speeds = {'ik': np.ndarray(ik_states.getSize()),
@@ -152,8 +156,7 @@ for istate in range(spline_based_ik_states.getSize()):
     bflh_lengths['spline_ik'][istate] = bflh_r.getLength(state)
     bflh_speeds['spline_ik'][istate] = bflh_r.getLengtheningSpeed(state)
 
-
-# Load experimental data digitized from Yu et al. 2008 (H).
+# Load experimental data from Yu et al. 2008.
 lit_lengths_raw = np.loadtxt('BingYuBFLHLengths.csv', delimiter=',')
 lit_velocities_raw = np.loadtxt('BingYuBFLHVelocities.csv', delimiter=',')
 def prepare_literature_curve(raw):
@@ -165,11 +168,11 @@ def prepare_literature_curve(raw):
 lit_len_x, lit_len_y = prepare_literature_curve(lit_lengths_raw)
 lit_vel_x, lit_vel_y = prepare_literature_curve(lit_velocities_raw)
 
-
+# Plot bflh lengths and lengthening speeds for the frame-by-frame and spline-based IK
+# solutions, along with the experimental data from Yu et al. 2008.
 ik_times = np.linspace(0, 100, len(ik_solution.getIndependentColumn()))
 spline_ik_times = np.linspace(0, 100,
                               len(spline_based_ik_solution.getIndependentColumn()))
-
 fig, axes = plt.subplots(2, 1, figsize=(6, 7), sharex=True)
 axes[0].plot(lit_len_x, lit_len_y, color='black', lw=3, ls='--',
              label='Literature (Yu et al. 2008)')
@@ -194,4 +197,4 @@ axes[1].grid(True, which='both', ls='--', lw=0.5, alpha=0.75)
 
 plt.tight_layout()
 plt.savefig('compare_bflh_kinematics.png', dpi=150, bbox_inches='tight')
-plt.show()
+# plt.show()
