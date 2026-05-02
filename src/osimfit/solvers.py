@@ -223,8 +223,9 @@ class SplineBasedInverseKinematicsSolver(Solver):
         spline = ca.bspline(t, c_temp, [knots], [self.degree], 1)
         spline_fn = ca.Function("spline", [t, c_temp], [spline])
 
-        dt_spline = ca.jacobian(spline, t)
-        dt_spline_fn = ca.Function("dt_spline", [t, c_temp], [dt_spline])
+        # Derivative of the spline w.r.t. time.
+        spline_dt = ca.jacobian(spline, t)
+        spline_fn_dt = ca.Function("spline_dt", [t, c_temp], [spline_dt])
 
         # Build basis matrix B[i,j] = N_j(t_i) by evaluating with unit coefficient
         # vectors.
@@ -234,7 +235,7 @@ class SplineBasedInverseKinematicsSolver(Solver):
             e_j = np.zeros(num_knots)
             e_j[j] = 1.0
             B[:, j] = [float(spline_fn(ti, e_j)) for ti in times]
-            dB[:, j] = [float(dt_spline_fn(ti, e_j)) for ti in times]
+            dB[:, j] = [float(spline_fn_dt(ti, e_j)) for ti in times]
 
         return ca.DM(B), ca.DM(dB)
 

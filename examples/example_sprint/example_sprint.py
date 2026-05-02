@@ -116,8 +116,8 @@ plt.savefig('compare_joint_kinematics.png', dpi=150, bbox_inches='tight')
 # -------------------------
 time_range = [1.575, 2.075]
 
-# Load the frame-by-frame IK solution and apply a low-pass filter to smooth the 
-# kinematics. Then, use a spline fit to compute the derivatives of the coordinate 
+# Load the frame-by-frame IK solution and apply a low-pass filter to smooth the
+# kinematics. Then, use a spline fit to compute the derivatives of the coordinate
 # values.
 tableProcessor = osim.TableProcessor('sprint_ik_solution.sto')
 tableProcessor.append(osim.TabOpLowPassFilter(10))
