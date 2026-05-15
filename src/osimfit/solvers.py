@@ -5,8 +5,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from .utilities import get_coordinate_indexes
 from .data_sources import MarkerSource, TheiaFrameSource
-from .callbacks import TrackingCostCallback
+from .callbacks import TrackingCostFunction, BilevelCostFunction
 
+
+################
+# DATA STRUCTS #
+################
 
 @dataclass
 class TheiaFrameData:
@@ -21,17 +25,151 @@ class MarkerData:
     positions: osim.TimeSeriesTableVec3
 
 
+@dataclass
+class Bounds:
+    lower_bound: float
+    upper_bound: float
+
+
+@dataclass
+class ScaleFactor:
+    body_path: str
+    mobod_index: int
+    bounds: Bounds
+
+
+############
+# SOLUTION #
+############
+
+@dataclass
+class Solution:
+    """
+    Base class for solver solutions. Contains the optimized model states as an OpenSim
+    TimeSeriesTable and a static helper for constructing it from raw trajectory arrays.
+    """
+    states_table: osim.TimeSeriesTable
+
+    @staticmethod
+    def create_states_table(model, state, coordinate_indexes, times,
+                            q_opt, qdot_opt=None) -> osim.TimeSeriesTable:
+        """
+        Build an OpenSim StatesTrajectory and export it to a TimeSeriesTable.
+
+        Parameters
+        ----------
+        model: osim.Model
+        state: osim.State
+            An initialized state that will be mutated in place during construction.
+        coordinate_indexes: list[int]
+            Indexes of the independent coordinates in the full state vector.
+        times: sequence of float
+        q_opt: np.ndarray, shape (num_times, num_coords)
+        qdot_opt: np.ndarray, shape (num_times, num_coords), optional
+        """
+        statesTraj = osim.StatesTrajectory()
+        for i, time in enumerate(times):
+            state.setTime(time)
+            q = np.zeros(state.getNQ())
+            q[coordinate_indexes] = q_opt[i, :]
+            state.setQ(osim.Vector.createFromMat(q))
+            if qdot_opt is not None:
+                qdot = np.zeros(state.getNQ())
+                qdot[coordinate_indexes] = qdot_opt[i, :]
+                state.setU(osim.Vector.createFromMat(qdot))
+            statesTraj.append(state)
+        return statesTraj.exportToTable(model)
+
+
+@dataclass
+class TrackingSolution(Solution):
+    """
+    Solution for tracking solvers. Includes the optimized coordinate trajectories
+    and, when available, generalized velocities.
+
+    Attributes
+    ----------
+    coordinates: np.ndarray, shape (num_times, num_coords)
+    coordinate_names: list[str]
+        Absolute coordinate paths, matching columns of coordinates/velocities.
+    velocities: np.ndarray, shape (num_times, num_coords), optional
+    """
+    coordinates: np.ndarray = None
+    coordinate_names: list[str] = None
+    velocities: np.ndarray = None
+
+
+@dataclass
+class SplineTrackingSolution(TrackingSolution):
+    """
+    TrackingSolution for spline-based solvers. Adds the optimal B-spline control
+    points (nodes) for each coordinate.
+
+    Attributes
+    ----------
+    spline_nodes: np.ndarray, shape (num_knots, num_coords)
+    """
+    spline_nodes: np.ndarray = None
+
+
+@dataclass
+class BilevelSolution(TrackingSolution):
+    """
+    Solution for bilevel solvers. Separates the optimized coordinate trajectories
+    from the optimized body scale factors.
+
+    Attributes
+    ----------
+    scale_factors: np.ndarray, shape (num_scaled_bodies, 3)
+        Optimal [sx, sy, sz] scale factors for each scaled body.
+    body_paths: list[str]
+        Absolute body paths, matching rows of scale_factors.
+    """
+    scale_factors: np.ndarray = None
+    body_paths: list[str] = None
+
+
+@dataclass
+class SplineBilevelSolution(BilevelSolution):
+    """
+    BilevelSolution for spline-based bilevel solvers. Adds the optimal B-spline
+    control points (nodes) for each coordinate.
+
+    Attributes
+    ----------
+    spline_nodes: np.ndarray, shape (num_knots, num_coords)
+    """
+    spline_nodes: np.ndarray = None
+
+
+###########
+# SOLVERS #
+###########
+
 class Solver(ABC):
-    def __init__(self, model, convergence_tolerance=1e-4, weights={}):
+    """
+    An abstract base class for CasADi-based solvers that leverage computations from
+    OpenSim models. Subclasses must implement the solve() method, which should return
+    a Solution object containing the solution trajectory. This base class also
+    provides common functionality for building IPOPT options and managing the OpenSim
+    model and state.
+
+    Parameters
+    ----------
+    model: str or osim.Model
+        The OpenSim model to use for the optimization problem. Can be provided as a file
+        path or as an already-loaded osim.Model object.
+    convergence_tolerance: float, optional
+        The convergence tolerance to use for the IPOPT solver. Default is 1e-4.
+    """
+    def __init__(self, model, convergence_tolerance=1e-4):
         super().__init__()
 
         # Load the model.
-        # ---------------
         modelProcessor = osim.ModelProcessor(model)
         modelProcessor.append(osim.ModOpRemoveMuscles())
         self.model =  modelProcessor.process()
         self.state = self.model.initSystem()
-
         # For now, disallow models with joints where qdot != u.
         assert(self.state.getNQ() == self.state.getNU())
 
@@ -42,33 +180,7 @@ class Solver(ABC):
         self.coordinate_indexes = list(self.coordinates_map.values())
 
         # Optimization settings.
-        # ----------------------
         self.convergence_tolerance = convergence_tolerance
-        self.weights = weights
-
-        # Data sources.
-        # -------------
-        self.theia_frame_data: list[TheiaFrameData] = []
-        self.marker_data: list[MarkerData] = []
-
-    def add_theia_frame_source(self, theia_frame_source: TheiaFrameSource):
-        positions = theia_frame_source.get_positions_table()
-        orientations = theia_frame_source.get_orientations_table()
-        labels = positions.getColumnLabels()
-        assert(labels == orientations.getColumnLabels())
-        assert(positions.getNumRows() == orientations.getNumRows())
-
-        self.theia_frame_data.append(TheiaFrameData(labels, positions, orientations))
-
-    def add_marker_source(self, marker_source: MarkerSource):
-        positions = marker_source.get_positions_table()
-        labels = positions.getColumnLabels()
-
-        self.marker_data.append(MarkerData(labels, positions))
-
-    @abstractmethod
-    def solve(self, guess=None) -> osim.TimeSeriesTable:
-        pass
 
     def get_ipopt_options(self, print_level=0):
         """
@@ -82,132 +194,296 @@ class Solver(ABC):
         ipopt_options['acceptable_tol'] = self.convergence_tolerance
         ipopt_options['acceptable_dual_inf_tol'] = self.convergence_tolerance
         ipopt_options['acceptable_compl_inf_tol'] = self.convergence_tolerance
-        # ipopt_options['constr_viol_tol'] = self.constraint_tolerance
-        # ipopt_options['acceptable_constr_viol_tol'] = self.constraint_tolerance
         ipopt_options['print_level'] = print_level
 
         return ipopt_options
 
+    @abstractmethod
+    def solve(self, guess=None) -> Solution:
+        pass
 
-class InverseKinematicsSolver(Solver):
 
-    def __init__(self, model, convergence_tolerance=1e-4, weights={}):
-        super().__init__(model, convergence_tolerance, weights)
+class TrackingSolver(Solver):
+    """
+    An abstract base class for solvers that track reference data. Reference data can be
+    position-based (e.g., marker trajectories) or orientation-based (e.g., Theia frames)
+    and should be provided as DataSource objects via the helper methods. Concrete
+    subclasses must implement the solve() method, which should return a Solution object.
 
-    def _build_solver(self, weights, itime):
-        x = ca.SX.sym('x', len(self.coordinate_indexes))
-        p = ca.SX.sym('p', len(self.coordinate_indexes))
+    Parameters
+    ----------
+    model: str or osim.Model
+        The OpenSim model to use for the optimization problem. Can be provided as a file
+        path or as an already-loaded osim.Model object.
+    convergence_tolerance: float, optional
+        The convergence tolerance to use for the IPOPT solver. Default is 1e-4.
+    position_weight: float, optional
+        The weight to use for position-based tracking costs. Default is 1.0.
+    orientation_weight: float, optional
+        The weight to use for orientation-based tracking costs. Default is 1.0.
+    """
+    def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
+                 orientation_weight=1.0):
+        super().__init__(model, convergence_tolerance)
 
-        callback = TrackingCostCallback('tracking_cost', self.model, weights)
+        # Cost function weights.
+        self.position_weight = position_weight
+        self.orientation_weight = orientation_weight
 
-        for data in self.theia_frame_data:
-            for iframe, frame_path in enumerate(data.labels):
-                callback.add_frame_tracking_cost(
-                    frame_path,
-                    data.positions.getRowAtIndex(itime).getElt(0, iframe),
-                    data.orientations.getRowAtIndex(itime).getElt(0, iframe))
+        # Data sources.
+        self.theia_frame_data: list[TheiaFrameData] = []
+        self.marker_data: list[MarkerData] = []
 
-        for data in self.marker_data:
-            for iframe, marker_path in enumerate(data.labels):
-                callback.add_marker_tracking_cost(
-                    marker_path,
-                    data.positions.getRowAtIndex(itime).getElt(0, iframe))
+    def add_theia_frame_source(self, theia_frame_source: TheiaFrameSource):
+        """
+        Add a TheiaFrameSource as a data source for this solver.
+        """
+        positions = theia_frame_source.get_positions_table()
+        orientations = theia_frame_source.get_orientations_table()
+        labels = positions.getColumnLabels()
+        assert(labels == orientations.getColumnLabels())
+        assert(positions.getNumRows() == orientations.getNumRows())
 
-        f = callback(x) + weights['smoothness'] * ca.sumsqr(x - p)
-        nlp = {'x': x, 'p': p, 'f': f}
-        opts = {}
-        opts['ipopt'] = self.get_ipopt_options()
-        solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
-        return callback, solver
+        self.theia_frame_data.append(TheiaFrameData(labels, positions, orientations))
 
-    def solve(self, guess=None) -> osim.TimeSeriesTable:
+    def add_marker_source(self, marker_source: MarkerSource):
+        """
+        Add a MarkerSource as a data source for this solver.
+        """
+        positions = marker_source.get_positions_table()
+        labels = positions.getColumnLabels()
 
-        if guess is not None:
-            raise ValueError(f'InverseKinematicsSolver does not currently support '
-                             f'using an initial guess, but received a guess with '
-                             f"{guess.getNumRows()} rows.")
+        self.marker_data.append(MarkerData(labels, positions))
 
-        # Verify tracking data
-        # ----------------------
+    def get_times_from_reference_data(self):
+        """
+        Extract the time vector from the reference data, asserting that all data
+        sources share the same time vector.
+        """
         times = None
         for data in self.theia_frame_data:
             if times is None:
                 times = data.positions.getIndependentColumn()
             else:
                 assert(np.all(times == data.positions.getIndependentColumn()))
-
         for data in self.marker_data:
             if times is None:
                 times = data.positions.getIndependentColumn()
             else:
                 assert(np.all(times == data.positions.getIndependentColumn()))
+        return times
 
-        # Inverse kinematics
-        # ------------------
+    def create_tracking_callback(self, name: str, itime: int,
+                                 position_weight: float,
+                                 orientation_weight: float) -> TrackingCostFunction:
+        """
+        Create a CasADi callback function for computing the tracking cost at a given
+        time step, which can be used in the formulation of an optimization problem.
+        """
+        callback = TrackingCostFunction(name, self.model)
+
+        for data in self.theia_frame_data:
+            for iframe, frame_path in enumerate(data.labels):
+                callback.add_frame_tracking_cost(
+                    frame_path,
+                    data.positions.getRowAtIndex(itime).getElt(0, iframe),
+                    data.orientations.getRowAtIndex(itime).getElt(0, iframe),
+                    position_weight=position_weight,
+                    orientation_weight=orientation_weight)
+
+        for data in self.marker_data:
+            for iframe, marker_path in enumerate(data.labels):
+                callback.add_marker_tracking_cost(
+                    marker_path,
+                    data.positions.getRowAtIndex(itime).getElt(0, iframe),
+                    weight=position_weight)
+
+        return callback
+
+
+class BilevelSolver(TrackingSolver):
+    """
+    An abstract base class for solvers that solve bilevel optimization problems,
+    i.e., problems that optimize over both the kinematics and body scale factors to
+    minimize tracking error. Concrete subclasses must implement the solve() method,
+    which should return a Solution object.
+
+    Parameters
+    ----------
+    model: str or osim.Model
+        The OpenSim model to use for the optimization problem. Can be provided as a file
+        path or as an already-loaded osim.Model object.
+    convergence_tolerance: float, optional
+        The convergence tolerance to use for the IPOPT solver. Default is 1e-4.
+    position_weight: float, optional
+        The weight to use for position-based tracking costs. Default is 1.0.
+    orientation_weight: float, optional
+        The weight to use for orientation-based tracking costs. Default is 1.0.
+    scale_regularization_weight: float, optional
+        The weight to apply to the regularization term on the scale factors in the
+        bilevel optimization problem to encourage them to stay close to 1.0 if changes
+        in the scale factor don't substantially improve the tracking cost. Default is
+        0.0 (i.e., no regularization).
+    """
+    def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
+                 orientation_weight=1.0, scale_regularization_weight=0.0):
+        super().__init__(model, convergence_tolerance, position_weight,
+                         orientation_weight)
+        self.scale_regularization_weight = scale_regularization_weight
+        self.scale_factors: list[ScaleFactor] = []
+
+    def add_scale_factor(self, body: osim.Body, lower_bound, upper_bound):
+        """
+        Add a scale factor for a given body to be optimized over in the bilevel
+        optimization problem.
+        """
+        path = body.getAbsolutePathString()
+        mobod_index = body.getMobilizedBodyIndex()
+        self.scale_factors.append(ScaleFactor(path, mobod_index,
+                                              Bounds(lower_bound, upper_bound)))
+
+    def create_bilevel_callback(self, name: str, itime: int,
+                                position_weight: float,
+                                orientation_weight: float) -> BilevelCostFunction:
+        scale_indexes = [sf.mobod_index for sf in self.scale_factors]
+        callback = BilevelCostFunction(name, self.model, scale_indexes)
+
+        for data in self.theia_frame_data:
+            raise NotImplementedError('TheiaFrameSource is not currently supported '
+                                      'with scale factor optimization.')
+
+        for data in self.marker_data:
+            for iframe, marker_path in enumerate(data.labels):
+                callback.add_marker_bilevel_cost(marker_path,
+                    data.positions.getRowAtIndex(itime).getElt(0, iframe),
+                    weight=position_weight)
+
+        return callback
+
+
+class InverseKinematicsSolver(TrackingSolver):
+    """
+    A solver for inverse kinematics problems that track position and/or orientation
+    reference data. This solver performs "traditional" inverse kinematics, where we solve
+    for the model pose that best matches the reference data at each time step in
+    sequence, without enforcing any temporal smoothness.
+
+    Parameters
+    ----------
+    model: str or osim.Model
+        The OpenSim model to use for the optimization problem. Can be provided as a file
+        path or as an already-loaded osim.Model object.
+    convergence_tolerance: float, optional
+        The convergence tolerance to use for the IPOPT solver. Default is 1e-4.
+    """
+
+    def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
+                 orientation_weight=1.0):
+        super().__init__(model, convergence_tolerance, position_weight,
+                         orientation_weight)
+
+    def create_tracking_solver(self, itime, position_weight, orientation_weight):
+        """
+        A helper function to create a CasADi solver for the tracking problem at a
+        given time step.
+        """
+        x = ca.SX.sym('x', len(self.coordinate_indexes))
+        callback = self.create_tracking_callback('tracking_cost', itime,
+                                                 position_weight=position_weight,
+                                                 orientation_weight=orientation_weight)
+        f = callback(x)
+        nlp = {'x': x, 'f': f}
+        opts = {}
+        opts['ipopt'] = self.get_ipopt_options()
+        solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
+        return callback, solver
+
+    def solve(self, guess=None) -> TrackingSolution:
+
+        if guess is not None:
+            raise ValueError(f'InverseKinematicsSolver does not currently support '
+                             f'using an initial guess.')
+
+        times = self.get_times_from_reference_data()
+        num_times = len(times)
+
         # Define initial guess and bounds.
         x0 = []
         lbx = []
         ubx = []
-        for coord_path, ix in self.coordinates_map.items():
+        for coord_path in self.coordinates_map:
             coord = osim.Coordinate.safeDownCast(self.model.getComponent(coord_path))
             x0.append(coord.getDefaultValue())
             lbx.append(coord.getRangeMin())
             ubx.append(coord.getRangeMax())
 
-        # Solve position-only optimization to create an inital guess for the full IK
-        # problem.
+        # Solve an optimization problem at the first time step to initial guess, where
+        # we heavily prioritize tracking the position reference data over the
+        # orientation data.
         print('Solving initial guess optimization...')
-        initial_weights = {'position': 10.0*self.weights.get('position', 0.0),
-                           'orientation': 0.1*self.weights.get('orientation', 0.0),
-                           'smoothness': 0.01*self.weights.get('smoothness', 0.0)}
-        callback, solver = self._build_solver(initial_weights, 0)
-        sol = solver(x0=x0, lbx=lbx, ubx=ubx, p=x0)
+        callback, solver = self.create_tracking_solver(0,
+                position_weight=10.0*self.position_weight,
+                orientation_weight=0.1*self.orientation_weight)
+        sol = solver(x0=x0, lbx=lbx, ubx=ubx)
         x0 = sol['x']
 
         # Iterate over all of the time steps in the tracking data and solve the
         # optimization problem at each time step.
         statesTraj = osim.StatesTrajectory()
+        q_traj = np.zeros((num_times, len(self.coordinate_indexes)))
         for itime, time in enumerate(times):
-            print(f'Solving time {itime+1} of {len(times)} (t={time:.3f} s)...')
+            print(f'Solving time {itime+1} of {num_times} (t={time:.3f} s)...')
 
-            weights = {'position': self.weights.get('position', 0.0),
-                       'orientation': self.weights.get('orientation', 0.0),
-                       'smoothness': self.weights.get('smoothness', 0.0)}
-            callback, solver = self._build_solver(weights, itime)
-            sol = solver(x0=x0, lbx=lbx, ubx=ubx, p=x0)
+            callback, solver = self.create_tracking_solver(itime,
+                    position_weight=self.position_weight,
+                    orientation_weight=self.orientation_weight)
+            sol = solver(x0=x0, lbx=lbx, ubx=ubx)
+
+            q_traj[itime, :] = np.squeeze(sol['x'].full())
 
             # Write solution into callback.state — avoids calling initSystem() again,
             # which would invalidate the state handle held by the callback.
             # StatesTrajectory.append() copies the state by value, so reuse is safe.
             callback.state.setTime(time)
             q = np.zeros(callback.state.getNQ())
-            q[self.coordinate_indexes] = np.squeeze(sol['x'].full())
+            q[self.coordinate_indexes] = q_traj[itime, :]
             callback.state.setQ(osim.Vector.createFromMat(q))
             statesTraj.append(callback.state)
 
-            # Use the solution for the current time step as the initial guess for the next
-            # time step.
             x0 = sol['x']
 
-        # Export the solution to a .sto file.
-        statesTable = statesTraj.exportToTable(self.model)
+        return TrackingSolution(
+            states_table=statesTraj.exportToTable(self.model),
+            coordinates=q_traj,
+            coordinate_names=list(self.coordinates_map.keys()),
+        )
 
-        return statesTable
 
+class SplineBasedSolverMixin:
+    """
+    A mixin class that provides common functionality for spline-based solvers, which
+    represent the predicted trajectories as B-splines and optimize over the spline
+    control points.
 
-class SplineBasedInverseKinematicsSolver(Solver):
-
-    def __init__(self, model, convergence_tolerance=1e-4, weights={}, degree=3,
-                 knot_interval=0.05):
-        super().__init__(model, convergence_tolerance, weights)
+    Parameters
+    ----------
+    degree: int, optional
+        The degree of the B-spline basis functions. Default is 3 (i.e., cubic splines).
+    knot_interval: float, optional
+        The interval between knots in the B-spline basis. Default is 0.05 seconds.
+    """
+    def __init__(self, *args, degree=3, knot_interval=0.05, **kwargs):
+        super().__init__(*args, **kwargs)
         self.degree = degree
         self.knot_interval = knot_interval
 
-    def _build_knots_vector(self, times, num_knots):
-        # Clamped knot vector. For n control points and degree p, there are n+p+1 knots.
-        # The first and last p+1 knots are clamped to the first and last time,
-        # respectively, and the interior knots are uniformly spaced between the first
-        # and last time.
+    def build_knots_vector(self, times, num_knots):
+        """
+        Create a clamped knot vector. For n control points and degree p, there are
+        n+p+1 knots. The first and last p+1 knots are clamped to the first and last time,
+        respectively, and the interior knots are uniformly spaced between the first
+        and last time.
+        """
         knots = np.concatenate([
             np.repeat(times[0], self.degree),
             np.linspace(times[0], times[-1], num_knots - self.degree + 1),
@@ -215,7 +491,11 @@ class SplineBasedInverseKinematicsSolver(Solver):
         ])
         return knots
 
-    def _build_spline_basis_matrix(self, times, knots):
+    def build_spline_basis_matrix(self, times, knots):
+        """
+        Build the spline basis matrix B and its derivative dB. B[i,j] = N_j(t_i),
+        where N_j is the j-th B-spline basis function evaluated at time t_i.
+        """
 
         # Build basis matrix B[i,j] = N_j(t_i) numerically.
         t = ca.MX.sym("t")
@@ -242,32 +522,30 @@ class SplineBasedInverseKinematicsSolver(Solver):
 
         return ca.DM(B), ca.DM(dB)
 
-    def _extract_coordinate_initial_guess(self, guess, B, coord_path):
+    def extract_coordinate_initial_guess(self, guess, B, coord_path):
+        """Extract an initial guess for the spline control points for a given coordinate
+          by solving a least squares problem.
+        """
         q_col = guess.getDependentColumn(coord_path + '/value').to_numpy()
         q_guess, _, _, _ = np.linalg.lstsq(np.array(B), q_col, rcond=None)
         return q_guess.tolist()
 
-    def solve(self, guess=None) -> osim.TimeSeriesTable:
 
-        # Verify tracking data
-        # ----------------------
-        times = None
-        for data in self.theia_frame_data:
-            if times is None:
-                times = data.positions.getIndependentColumn()
-            else:
-                assert(np.all(times == data.positions.getIndependentColumn()))
+class SplineBasedInverseKinematicsSolver(SplineBasedSolverMixin, TrackingSolver):
 
-        for data in self.marker_data:
-            if times is None:
-                times = data.positions.getIndependentColumn()
-            else:
-                assert(np.all(times == data.positions.getIndependentColumn()))
+    def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
+                 orientation_weight=1.0, degree=3, knot_interval=0.05):
+        super().__init__(model, convergence_tolerance=convergence_tolerance,
+                         position_weight=position_weight,
+                         orientation_weight=orientation_weight,
+                         degree=degree, knot_interval=knot_interval)
 
+    def solve(self, guess=None) -> SplineTrackingSolution:
+
+        times = self.get_times_from_reference_data()
         num_times = len(times)
 
         # Check the initial guess.
-        # ------------------------
         if guess is not None and guess.getNumRows() != num_times:
             raise ValueError(f'Expected the initial guess to have the same number of '
                              f'rows as the tracking data, but got {guess.getNumRows()} '
@@ -275,11 +553,11 @@ class SplineBasedInverseKinematicsSolver(Solver):
 
         # Define the knot vector.
         num_knots = int(times[-1] / self.knot_interval)
-        knots = self._build_knots_vector(times, num_knots)
+        knots = self.build_knots_vector(times, num_knots)
 
         # Pre-compute the spline basis matrix, which is independent of the optimization
         # variables.
-        B, dB = self._build_spline_basis_matrix(times, knots)
+        B, dB = self.build_spline_basis_matrix(times, knots)
 
         # Define the optimization variables, which are the spline control points for
         # each coordinate.
@@ -290,12 +568,10 @@ class SplineBasedInverseKinematicsSolver(Solver):
         for coord_path in self.coordinates_map:
             coord = osim.Coordinate.safeDownCast(self.model.getComponent(coord_path))
             x0 += [coord.getDefaultValue()] * num_knots if not guess else \
-                  self._extract_coordinate_initial_guess(guess, B, coord_path)
+                  self.extract_coordinate_initial_guess(guess, B, coord_path)
             lbx += [coord.getRangeMin()] * num_knots
             ubx += [coord.getRangeMax()] * num_knots
 
-        # Define the optimization problem.
-        # --------------------------------
         # Map the control points to the full predicted trajectory via the spline basis
         # matrix.
         q = B @ coeffs
@@ -303,53 +579,158 @@ class SplineBasedInverseKinematicsSolver(Solver):
         # Compute the tracking cost at each time step via a callback.
         errors = ca.MX(num_times, 1)
         callbacks = []
-        for i in range(num_times):
-            callbacks.append(TrackingCostCallback(f'tracking_cost_time_{i}', self.model,
-                                                  self.weights))
-
-            for data in self.theia_frame_data:
-                for iframe, frame_path in enumerate(data.labels):
-                    callbacks[i].add_frame_tracking_cost(
-                        frame_path,
-                        data.positions.getRowAtIndex(i).getElt(0, iframe),
-                        data.orientations.getRowAtIndex(i).getElt(0, iframe))
-
-            for data in self.marker_data:
-                for iframe, marker_path in enumerate(data.labels):
-                    callbacks[i].add_marker_tracking_cost(
-                        marker_path,
-                        data.positions.getRowAtIndex(i).getElt(0, iframe))
-
-            errors[i] = callbacks[i](q[i, :].T)
+        for itime in range(num_times):
+            callbacks.append(self.create_tracking_callback(
+                f'tracking_cost_time_{itime}', itime,
+                position_weight=self.position_weight,
+                orientation_weight=self.orientation_weight))
+            errors[itime] = callbacks[itime](q[itime, :].T)
 
         # Define the overall cost as the average tracking error across all time steps.
         f = ca.sum(errors) / num_times
 
-        # Define the NLP and solver.
         nlp = {'x': ca.vec(coeffs), 'f': f}
         opts = {}
         opts['ipopt'] = self.get_ipopt_options(print_level=5)
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
 
-        # Solve!
-        # ------
         sol = solver(x0=x0, lbx=lbx, ubx=ubx)
 
         # Reconstruct the optimal trajectory by evaluating the spline at the
         # input data time points.
         coeffs_opt = ca.reshape(sol['x'], num_knots, len(self.coordinate_indexes))
-        q_opt = np.array(B @ coeffs_opt)  # (num_times, n_coords)
+        q_opt = np.array(B @ coeffs_opt)    # (num_times, num_coords)
         qdot_opt = np.array(dB @ coeffs_opt)
 
-        statesTraj = osim.StatesTrajectory()
-        for i, time in enumerate(times):
-            self.state.setTime(time)
-            q = np.zeros(self.state.getNQ())
-            q[self.coordinate_indexes] = q_opt[i, :]
-            self.state.setQ(osim.Vector.createFromMat(q))
-            qdot = np.zeros(self.state.getNQ())
-            qdot[self.coordinate_indexes] = qdot_opt[i, :]
-            self.state.setU(osim.Vector.createFromMat(qdot))
-            statesTraj.append(self.state)
+        return SplineTrackingSolution(
+            states_table=Solution.create_states_table(
+                self.model, self.state, self.coordinate_indexes, times, q_opt, qdot_opt),
+            coordinates=q_opt,
+            coordinate_names=list(self.coordinates_map.keys()),
+            velocities=qdot_opt,
+            spline_nodes=np.array(coeffs_opt),
+        )
 
-        return statesTraj.exportToTable(self.model)
+
+class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
+    """
+    A solver for bilevel optimization problems that optimize over both the kinematics
+    and body scale factors to minimize tracking error, where the predicted trajectories
+    are represented as B-splines and the optimization variables are the spline control
+    points and scale factors.
+
+    Parameters
+    ----------
+    model: str or osim.Model
+        The OpenSim model to use for the optimization problem. Can be provided as a file
+        path or as an already-loaded osim.Model object.
+    convergence_tolerance: float, optional
+        The convergence tolerance to use for the IPOPT solver. Default is 1e-4.
+    degree: int, optional
+        The degree of the B-spline basis functions. Default is 3 (i.e., cubic splines).
+    knot_interval: float, optional
+        The interval between knots in the B-spline basis. Default is 0.05 seconds.
+    position_weight: float, optional
+        The weight to use for position-based tracking costs. Default is 1.0.
+    orientation_weight: float, optional
+        The weight to use for orientation-based tracking costs. Default is 1.0.
+    scale_regularization_weight: float, optional
+        The weight to apply to the regularization term on the scale factors in the
+        bilevel optimization problem to encourage them to stay close to 1.0 if changes
+        in the scale factor don't substantially improve the tracking cost. Default is
+        0.0 (i.e., no regularization).
+    """
+    def __init__(self, model, convergence_tolerance=1e-4, degree=3,
+                 knot_interval=0.05, position_weight=1.0, orientation_weight=1.0,
+                 scale_regularization_weight=0.0):
+        super().__init__(model, convergence_tolerance=convergence_tolerance,
+                         degree=degree, knot_interval=knot_interval,
+                         position_weight=position_weight,
+                         orientation_weight=orientation_weight,
+                         scale_regularization_weight=scale_regularization_weight)
+
+    def solve(self, guess=None) -> SplineBilevelSolution:
+
+        times = self.get_times_from_reference_data()
+        num_times = len(times)
+
+        # Check the initial guess.
+        if guess is not None and guess.getNumRows() != num_times:
+            raise ValueError(f'Expected the initial guess to have the same number of '
+                             f'rows as the tracking data, but got {guess.getNumRows()} '
+                             f'and {num_times} rows, respectively.')
+
+        # Define the knot vector.
+        num_knots = int(times[-1] / self.knot_interval)
+        knots = self.build_knots_vector(times, num_knots)
+
+        # Pre-compute the spline basis matrix, which is independent of the optimization
+        # variables.
+        B, dB = self.build_spline_basis_matrix(times, knots)
+
+        # Define the optimization variables: spline control points and scale factors.
+        coeffs = ca.MX.sym('coeffs', num_knots, len(self.coordinate_indexes))
+        s = ca.MX.sym('scale_factors', 3*len(self.scale_factors))
+        x0 = []
+        lbx = []
+        ubx = []
+        for coord_path in self.coordinates_map:
+            coord = osim.Coordinate.safeDownCast(self.model.getComponent(coord_path))
+            x0 += [coord.getDefaultValue()] * num_knots if not guess else \
+                  self.extract_coordinate_initial_guess(guess, B, coord_path)
+            lbx += [coord.getRangeMin()] * num_knots
+            ubx += [coord.getRangeMax()] * num_knots
+        for sf in self.scale_factors:
+            x0 += [1.0, 1.0, 1.0]
+            lbx += [sf.bounds.lower_bound] * 3
+            ubx += [sf.bounds.upper_bound] * 3
+
+        # Map the control points to the full predicted trajectory via the spline basis
+        # matrix.
+        q = B @ coeffs
+
+        # Compute the tracking cost at each time step via a callback.
+        tracking_errors = ca.MX(num_times, 1)
+        callbacks = []
+        for itime in range(num_times):
+            callbacks.append(self.create_bilevel_callback(
+                f'scaled_tracking_cost_time_{itime}', itime,
+                position_weight=self.position_weight,
+                orientation_weight=self.orientation_weight))
+            tracking_errors[itime] = callbacks[itime](q[itime, :].T, s)
+
+        # Define the overall cost as the average tracking error across all time steps,
+        # plus an optional regularization term on the scale factors.
+        f_track = ca.sum(tracking_errors) / num_times
+        f_scale_reg = self.scale_regularization_weight * ca.sum((s - 1.0)**2)
+        f = f_track + f_scale_reg
+
+        nlp = {'x': ca.vertcat(ca.vec(coeffs), s), 'f': f}
+        opts = {}
+        opts['ipopt'] = self.get_ipopt_options(print_level=5)
+        solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
+
+        sol = solver(x0=x0, lbx=lbx, ubx=ubx)
+
+        # Reconstruct the optimal trajectory by evaluating the spline at the
+        # input data time points.
+        num_coeff_vars = num_knots * len(self.coordinate_indexes)
+        coeffs_opt = ca.reshape(sol['x'][:num_coeff_vars], num_knots,
+                                len(self.coordinate_indexes))
+        q_opt = np.array(B @ coeffs_opt)    # (num_times, num_coords)
+        qdot_opt = np.array(dB @ coeffs_opt)
+
+        # Reshape scale factors from flat vector to (num_scaled_bodies, 3).
+        scales_opt = np.array(sol['x'][num_coeff_vars:]).flatten()
+        scale_factors_mat = scales_opt.reshape(len(self.scale_factors), 3)
+
+        return SplineBilevelSolution(
+            states_table=Solution.create_states_table(
+                self.model, self.state, self.coordinate_indexes, times, q_opt, qdot_opt),
+            coordinates=q_opt,
+            coordinate_names=list(self.coordinates_map.keys()),
+            velocities=qdot_opt,
+            scale_factors=scale_factors_mat,
+            body_paths=[sf.body_path for sf in self.scale_factors],
+            spline_nodes=np.array(coeffs_opt),
+        )

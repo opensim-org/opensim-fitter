@@ -1,11 +1,38 @@
+from abc import ABC, abstractmethod
 
 
-class Fitter:
-    def __init__(self, model, optimizer, loss_fn):
+class Fitter(ABC):
+    def __init__(self, model):
         self.model = model
-        self.optimizer = optimizer
-        self.loss_fn = loss_fn
 
-    def fit(self, X_train, y_train, epochs=100):
-        for epoch in range(epochs):
-            pass
+    @abstractmethod
+    def solve(self):
+        pass
+
+
+class KinematicsFitter(Fitter):
+    def __init__(self, model):
+        super().__init__(model)
+
+    @abstractmethod
+    def solve(self):
+        pass
+
+
+class BilevelFitter(Fitter):
+    def __init__(self, model):
+        super().__init__(model)
+
+    @abstractmethod
+    def solve(self):
+        pass
+
+
+
+class DynamicsFitter(Fitter):
+    def __init__(self, model):
+        super().__init__(model)
+
+    @abstractmethod
+    def solve(self):
+        pass
