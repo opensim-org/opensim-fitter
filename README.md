@@ -11,6 +11,8 @@ pip install -r dependencies/requirements.txt
 
 TODO: Python wheels
 
+    python dependencies/wheels/install_wheel.py
+
 If you would like to install OpenSim manually for development purposes, see section "Manual OpenSim Installation" below.
 
 ## Install OpenSim Fitter
@@ -50,8 +52,10 @@ Create a file named `config.yaml` in the root directory of the repository with t
 
     python_root_dir: '/Users/nbianco/miniconda3/envs/opensim_dev'
 
+Note: make sure that the Python version in `python_root_dir` matches the Python version in your installation environment.
+
 ### Build OpenSim
 
 Run the following command from the root directory to build OpenSim and install it into your conda environment.
 
-    python install_opensim.py
+    python dependencies/install_opensim.py

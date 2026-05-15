@@ -9,8 +9,8 @@ WHEELS_DIR = Path(__file__).parent
 
 WHEEL_MAP = {
     ("linux",  "x86_64"): "opensim-4.6-cp313-cp313-linux_x86_64.whl",
-    ("darwin", "x86_64"): "opensim-4.6-cp313-cp313-macosx_15_0_universal2.whl",
-    ("darwin", "arm64"):  "opensim-4.6-cp313-cp313-macosx_15_0_universal2.whl",
+    ("darwin", "x86_64"): "opensim-4.6-cp313-cp313-macosx_11_0_universal2.whl",
+    ("darwin", "arm64"):  "opensim-4.6-cp313-cp313-macosx_11_0_universal2.whl",
     ("win32",  "AMD64"):  "opensim-4.6-cp313-cp313-win_amd64.whl",
 }
 

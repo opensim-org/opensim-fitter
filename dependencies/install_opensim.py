@@ -12,5 +12,5 @@ subprocess.run(['bash', 'install_opensim.sh', python_root_dir], check=True,
 
 # Install the OpenSim Python package in the current environment.
 package = os.path.join('dependencies', 'opensim', 'opensim_core_install', 'sdk',
-                       'Python','.')
+                       'Python', '.')
 subprocess.check_call([sys.executable, "-m", "pip", "install", package])

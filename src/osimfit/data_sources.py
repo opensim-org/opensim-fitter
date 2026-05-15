@@ -74,6 +74,13 @@ class MarkerSource(DataSource):
 
     def _create_positions_table(self) -> osim.TimeSeriesTableVec3:
         table = osim.TimeSeriesTableVec3(self.trc_filepath)
+        units = table.getTableMetaDataString("Units")
+        if units == "mm":
+            for icol in range(table.getNumColumns()):
+                columnData = table.updDependentColumnAtIndex(icol)
+                columnData.multiplyAssign(0.001)
+            table.addTableMetaDataString("Units", "m")
+
         return table
 
     def _create_orientations_table(self) -> osim.TimeSeriesTableQuaternion:
