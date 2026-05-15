@@ -32,6 +32,7 @@ class Callback(ca.Callback, ABC):
         self.state = self.model.getWorkingState()
         self.q_indexes = list(get_coordinate_indexes(
             model, skip_dependent_coordinates=True).values())
+        self.enable_fd = opts.get("enable_fd", False)
         self.construct(name, opts)
 
     def apply_state(self, arg):
@@ -60,7 +61,7 @@ class Callback(ca.Callback, ABC):
     def eval(self, arg):
         return self._eval(arg)
 
-    def has_jacobian(self): return True
+    def has_jacobian(self): return not self.enable_fd
 
     def get_jacobian(self, name, inames, onames, opts):
         class JacobianFunction(ca.Callback):
