@@ -117,32 +117,6 @@ class ScaleCallback(ca.Callback, ABC):
 
 
 
-# void multiplyByScaledStationJacobianTranspose(
-#     const State&         state,
-#     const Vector_<Vec3>& scales,
-#     MobilizedBodyIndex   onBodyB,
-#     const Vec3&          p_BS,
-#     const Vec3&          f_GS,
-#     Vector&              f) const
-
-
-
-
-# void multiplyByScaleStationJacobianTranspose(
-#     const State&         state,
-#     MobilizedBodyIndex   onBodyB,
-#     const Vec3&          p_BS,
-#     const Vec3&          dp_GS,
-#     Vector_<Vec3>&       ds) const
-# {
-#     ArrayViewConst_<MobilizedBodyIndex> bodies(&onBodyB, &onBodyB+1);
-#     ArrayViewConst_<Vec3>               stations(&p_BS, &p_BS+1);
-#     Vector_<Vec3>                       forces(1, dp_GS);
-#     multiplyByScaleStationJacobianTranspose(state, bodies, stations, forces,
-#         ds);
-# }
-
-
 class ScaledPositionErrorCallback(ScaleCallback):
     def __init__(self, name, model, frame_path, reference, opts={}):
         ScaleCallback.__init__(self, name, model, opts)
@@ -179,7 +153,6 @@ class ScaledPositionErrorCallback(ScaleCallback):
         scales = self.pack_scales(arg)
         error = self.matter.calcScaledStationPosition(self.state, self.mobod_index,
                                                       self.station, scales)
-        # error = self.frame.getPositionInGround(self.state)
         error[0] -= self.reference[0]
         error[1] -= self.reference[1]
         error[2] -= self.reference[2]
@@ -248,3 +221,74 @@ class TestPositionErrorJacobians(unittest.TestCase):
             # Test that the two Jacobians are equivalent.
             self.assertTrue(np.allclose(J_jac(2).full(), J_fd(2).full(), atol=1e-6))
 
+
+class TestScaledPosition(unittest.TestCase):
+    def test_scaled_position(self):
+        model = osim.Model(MODEL_FPATH)
+        state = model.initSystem()
+        matter = model.getMatterSubsystem()
+
+        # Helper function to set a non-trival set of default coordinates.
+        def set_default_positions(state):
+            nq = state.getNQ()
+            for iq in range(nq):
+                state.updQ()[iq] = 0.01*iq
+
+        # Define the scale factors for each body. The first scale is always 1.0,
+        # corresponding to the ground frame.
+        nb = model.getNumBodies()
+        scales = osim.VectorVec3(nb+1, osim.Vec3(1.0))
+        scales[0] = osim.Vec3(1.0)
+        for ib in range(nb):
+            scales[ib+1] = osim.Vec3(1.0 + 0.01*ib, 1.0 - 0.01*ib, 1.0 + 0.02*ib)
+
+        # For each frame, test that the position calculated from the unscaled system
+        # using SimbodyMatterSubsystem::calcScaledStationPosition is equivalent to the
+        # position calculated from the scaled system.
+        for frame_path in FRAME_PATHS:
+
+            # Load the model fresh to reset any scaling applied in previous iterations
+            # of the loop.
+            model = osim.Model(MODEL_FPATH)
+            state = model.initSystem()
+            matter = model.getMatterSubsystem()
+
+            # Scaled position from unscaled system using the SimbodyMatterSubsystem
+            # operator.
+            frame = osim.PhysicalOffsetFrame.safeDownCast(
+                model.getComponent(frame_path))
+            mobod_index = frame.getMobilizedBodyIndex()
+            transform = frame.findTransformInBaseFrame()
+            station = osim.Vec3(transform.p())
+            set_default_positions(state)
+            model.realizePosition(state)
+            position = matter.calcScaledStationPosition(state, mobod_index, station,
+                                                        scales)
+
+            # Scale the model. The order of the scale factors stored in the `scales`
+            # vector does not necessarily match the order of the bodies in the model, so
+            # we need to index the scales by each body's underlying MobilizedBodyIndex.
+            scaleset = osim.ScaleSet()
+            for ib in range(nb):
+                body = model.getBodySet().get(ib)
+                mobod_idx = int(body.getMobilizedBodyIndex())
+                segment = body.getName()
+                scale = osim.Scale()
+                scale.setSegmentName(segment)
+                scale.setScaleFactors(scales.get(mobod_idx))
+                scaleset.cloneAndAppend(scale)
+                scaleset.get(scaleset.getSize()-1).setName(segment)
+            model.scale(state, scaleset, True)
+
+            # Calculate the frame position from scaled system.
+            model.finalizeConnections()
+            state = model.initSystem()
+            matter = model.getMatterSubsystem()
+            set_default_positions(state)
+            model.realizePosition(state)
+            frame = osim.PhysicalOffsetFrame.safeDownCast(model.getComponent(frame_path))
+            position_scaled_model = frame.getPositionInGround(state)
+
+            # Test that the two positions are equivalent.
+            self.assertTrue(np.allclose(position.to_numpy(),
+                                        position_scaled_model.to_numpy(), atol=1e-6))

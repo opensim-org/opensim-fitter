@@ -295,3 +295,4 @@ class TestOrientationErrorJacobians(unittest.TestCase):
 
             # Test that the two Jacobians are equivalent.
             self.assertTrue(np.allclose(J_jac(2).full(), J_fd(2).full(), atol=1e-6))
+1
