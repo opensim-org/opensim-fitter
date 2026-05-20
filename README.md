@@ -3,9 +3,9 @@ A Python library for fitting OpenSim model geometry and kinematics to motion cap
 
 ## Create the Python environment
 
-conda create -n opensim_fitter python=3.13
-conda activate opensim_fitter
-pip install -r dependencies/requirements.txt
+    conda create -n opensim_fitter python=3.13
+    conda activate opensim_fitter
+    pip install -r dependencies/requirements.txt
 
 ## OpenSim installation
 
