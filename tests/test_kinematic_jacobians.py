@@ -296,32 +296,3 @@ class TestOrientationErrorJacobians(unittest.TestCase):
             # Test that the two Jacobians are equivalent.
             self.assertTrue(np.allclose(J_jac(2).full(), J_fd(2).full(), atol=1e-6))
 
-
-# class TestTrackingCostErrorJacobians(unittest.TestCase):
-#     def test_position_error_jacobians(self):
-#         model = osim.Model(MODEL_FPATH)
-#         state = model.initSystem()
-#         weights = {'position': 2.0,
-#                    'orientation': 0.3}
-#         coordinates_map = get_coordinate_indexes(model, skip_dependent_coordinates=True)
-#         coordinate_indexes = list(coordinates_map.values())
-
-#         positions = osim.RowVectorVec3(len(FRAME_PATHS), osim.Vec3(0))
-#         quaternions = osim.RowVectorQuaternion(len(FRAME_PATHS),
-#                                                osim.Quaternion(1,0,0,0))
-#         quaternions.setTo(osim.Quaternion(1,0,0,0))
-#         f_fd = TrackingCostCallback('f_fd', model, coordinate_indexes, FRAME_PATHS,
-#                                     positions, quaternions, weights,
-#                                     {"enable_fd": True})
-#         f_jac = TrackingCostJacobianCallback('f_jac', model, coordinate_indexes,
-#                                              FRAME_PATHS, positions, quaternions,
-#                                              weights)
-#         # Symbolic inputs.
-#         x = ca.SX.sym('x', len(coordinate_indexes))
-
-#         # Jacobian expression graphs.
-#         J_fd = ca.Function('J_fd',[x],[ca.jacobian(f_fd(x), x)])
-#         J_jac = ca.Function('J_jac',[x],[ca.jacobian(f_jac(x), x)])
-
-#         # Test that the two Jacobians are equivalent.
-#         self.assertTrue(np.allclose(J_jac(2).full(), J_fd(2).full(), atol=1e-6))

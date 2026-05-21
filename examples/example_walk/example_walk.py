@@ -21,35 +21,33 @@ marker_table = osim.TimeSeriesTableVec3(marker_fpath)
 model = osim.Model('subject_scale_walk.osim')
 model.initSystem()
 
-# Create a MarkerSource with the option to trim the data to a specific time range.
+# Create a MarkerSource.
 label_map = {label: f'/markerset/{label}' for label in marker_table.getColumnLabels()}
 marker_source = MarkerSource(marker_fpath, label_map=label_map)
 
 # Frame-by-frame inverse kinematics
 # ---------------------------------
-# Run the frame-by-frame IK solver with no smoothing.
-weights = {'position': 1.0, 'smoothness': 0.0}
+# Run the frame-by-frame IK solver.
 solver = InverseKinematicsSolver(model,
                                  convergence_tolerance=1e-2,
-                                 weights=weights)
+                                 position_weight=1.0)
 solver.add_marker_source(marker_source)
 ik_solution = solver.solve()
 sto = osim.STOFileAdapter()
-sto.write(ik_solution, 'walk_ik_solution.sto')
+sto.write(ik_solution.states_table, 'walk_ik_solution.sto')
 
 # Spline-based inverse kinematics
 # -------------------------------
 # Run the spline IK solver, initialized with the frame-by-frame solution, for varying
 # knot densities.
-weights = {'position': 1.0}
 solver = SplineBasedInverseKinematicsSolver(model,
                                             convergence_tolerance=1e-3,
-                                            weights=weights,
+                                            position_weight=1.0,
                                             knot_interval=0.075)
 solver.add_marker_source(marker_source)
 spline_ik_solution = solver.solve(osim.TimeSeriesTable('walk_ik_solution.sto'))
 sto = osim.STOFileAdapter()
-sto.write(spline_ik_solution, f'walk_spline_based_ik_solution.sto')
+sto.write(spline_ik_solution.states_table, 'walk_spline_based_ik_solution.sto')
 
 # Plot joint kinematics
 # ---------------------

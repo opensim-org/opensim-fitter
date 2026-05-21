@@ -1,3 +1,4 @@
-*.png
+*.osim
+*.trc
 *.sto
 /Geometry

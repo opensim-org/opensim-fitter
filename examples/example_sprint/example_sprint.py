@@ -43,15 +43,13 @@ marker_source = MarkerSource(marker_fpath,
 
 # Frame-by-frame inverse kinematics
 # ---------------------------------
-# Run the frame-by-frame IK solver with no smoothing.
-weights = {'position': 1.0, 'smoothness': 0.0}
 solver = InverseKinematicsSolver(model,
                                  convergence_tolerance=1e-2,
-                                 weights=weights)
+                                 position_weight=1.0)
 solver.add_marker_source(marker_source)
 ik_solution = solver.solve()
 sto = osim.STOFileAdapter()
-sto.write(ik_solution, 'sprint_ik_solution.sto')
+sto.write(ik_solution.states_table, 'sprint_ik_solution.sto')
 
 # Spline-based inverse kinematics
 # -------------------------------
@@ -60,15 +58,14 @@ sto.write(ik_solution, 'sprint_ik_solution.sto')
 knot_intervals = [0.04, 0.08]
 colors = ['blue', 'orange']
 for knot_interval in knot_intervals:
-    weights = {'position': 1.0}
     solver = SplineBasedInverseKinematicsSolver(model,
                                                 convergence_tolerance=1e-4,
-                                                weights=weights,
+                                                position_weight=1.0,
                                                 knot_interval=knot_interval)
     solver.add_marker_source(marker_source)
     spline_ik_solution = solver.solve(osim.TimeSeriesTable('sprint_ik_solution.sto'))
     sto = osim.STOFileAdapter()
-    sto.write(spline_ik_solution,
+    sto.write(spline_ik_solution.states_table,
               f'sprint_spline_based_ik_solution_knot{int(knot_interval*1000)}.sto')
 
 # Plot joint kinematics
