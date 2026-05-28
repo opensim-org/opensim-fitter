@@ -309,8 +309,10 @@ class MarkerBilevelCost(TrackingCost):
         # Compute the scaled position error as the norm of the difference between model
         # and data positions.
         scales = kwargs['scales']
-        position = self.matter.calcScaledStationPosition(state, self.mobod_index,
-                                                         self.station, scales)
+        position = self.matter.calcScaledStationPosition(state,
+                                                         scales,
+                                                         self.mobod_index,
+                                                         self.station)
 
         error = np.square(np.linalg.norm(position.to_numpy() - self.position))
         return self.weight * error
@@ -321,8 +323,8 @@ class MarkerBilevelCost(TrackingCost):
         # -------------------------------
         # Compute the scaled position error.
         scales = kwargs['scales']
-        error = self.matter.calcScaledStationPosition(state, self.mobod_index,
-                                                      self.station, scales)
+        error = self.matter.calcScaledStationPosition(state, scales, self.mobod_index,
+                                                      self.station)
         error[0] -= self.position[0]
         error[1] -= self.position[1]
         error[2] -= self.position[2]
@@ -343,10 +345,11 @@ class MarkerBilevelCost(TrackingCost):
         # Compute the Jacobian of the scaled position error with respect to the
         # body scale factors.
         vecVec3 = osim.VectorVec3(self.model.getNumBodies() + 1, osim.Vec3(0))
-        self.matter.multiplyByScaleStationJacobianTranspose(state,
-                                                            self.mobod_index,
-                                                            self.station, error,
-                                                            vecVec3)
+        self.matter.multiplyByStationJacobianWrtBodyScalesTranspose(state,
+                                                                    self.mobod_index,
+                                                                    self.station,
+                                                                    error,
+                                                                    vecVec3)
 
         # Flatten the VectorVec3 into a 2D array of shape (1, 3*num_scales) and apply
         # the cost weight.
