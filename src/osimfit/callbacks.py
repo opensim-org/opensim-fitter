@@ -55,6 +55,10 @@ class FrameTrackingCost(TrackingCost):
     def __init__(self, model: osim.Model, frame_path: str, position: osim.Vec3,
                  orientation: osim.Quaternion, position_weight: float = 1.0,
                  orientation_weight: float = 1.0):
+        
+        self.model = model
+        self.q_indexes = list(get_coordinate_indexes(
+            model, skip_dependent_coordinates=True).values())
 
         self.frame_path = frame_path
         if not model.hasComponent(frame_path):
@@ -155,7 +159,8 @@ class FrameTrackingCost(TrackingCost):
         J_R = self.orientation_weight * -2.0*error*vec.to_numpy()
 
         # Return the sum of the position and orientation error Jacobians for this frame.
-        return [J_p + J_R]
+        J = J_p + J_R
+        return [np.expand_dims(J[self.q_indexes], axis=0)]
 
     def _calc_quaternion(self, state):
         """
@@ -203,7 +208,11 @@ class MarkerTrackingCost(TrackingCost):
     """
     def __init__(self, model: osim.Model, marker_path: str, position: osim.Vec3,
                  weight: float = 1.0):
-
+        
+        self.model = model
+        self.q_indexes = list(get_coordinate_indexes(
+            model, skip_dependent_coordinates=True).values())
+        
         self.marker_path = marker_path
         if not model.hasComponent(marker_path):
             raise ValueError(f'Model does not have a component at path {marker_path}.')
@@ -258,7 +267,7 @@ class MarkerTrackingCost(TrackingCost):
                                                        self.station, error, vec)
         J = self.weight * 2.0 * vec.to_numpy()
 
-        return [J]
+        return [np.expand_dims(J[self.q_indexes], axis=0)]
 
 
 class MarkerBilevelCost(TrackingCost):
@@ -275,13 +284,19 @@ class MarkerBilevelCost(TrackingCost):
         The path to the marker in the model to track.
     position: osim.Vec3
         The position data to track.
+    scale_indexes: list
+        The list of MobilizedBodyIndex values representing scaled bodies.
     weight: float
         The weight to apply to the position error in the total error.
     """
     def __init__(self, model: osim.Model, marker_path: str, position: osim.Vec3,
-                 weight: float = 1.0):
+                 scale_indexes: list, weight: float = 1.0):
 
         self.model = model
+        self.q_indexes = list(get_coordinate_indexes(
+            model, skip_dependent_coordinates=True).values())
+        self.scale_indexes = scale_indexes
+        
         self.marker_path = marker_path
         if not model.hasComponent(marker_path):
             raise ValueError(f'Model does not have a component at path {marker_path}.')
@@ -350,15 +365,15 @@ class MarkerBilevelCost(TrackingCost):
                                                                     self.station,
                                                                     error,
                                                                     vecVec3)
-
+    
         # Flatten the VectorVec3 into a 2D array of shape (1, 3*num_scales) and apply
         # the cost weight.
-        Js = np.zeros((1, 3*self.model.getNumBodies()))
-        for ib in range(self.model.getNumBodies()):
-            Js[0, 3*ib:3*ib+3] = vecVec3.get(ib+1).to_numpy()
-        Js = self.weight * 2.0 * Js
+        Js = np.zeros((1, 3*len(self.scale_indexes)))
+        for i, k in enumerate(self.scale_indexes):
+            Js[0, 3*i:3*(i+1)] = vecVec3.get(k).to_numpy()
+        Js *= self.weight * 2.0
 
-        return [Jq, Js]
+        return [np.expand_dims(Jq[self.q_indexes], axis=0), Js]
 
 
 class Function(ca.Callback, ABC):
@@ -551,12 +566,11 @@ class TrackingCostFunction(Function):
         # Compute the Jacobian of the tracking cost by summing the Jacobians of the
         # position and orientation errors for each frame.
         # See section 6 in docs/frame_error_jacobians.pdf for details.
-        J = np.zeros((self.state.getNQ()))
+        J = np.zeros((1, len(self.q_indexes)))
         for cost in self.tracking_costs:
             J += cost.calc_jacobian(self.state)[0]
 
-        # Index out the dependent coordinates and return the Jacobian.
-        return [np.expand_dims(J[self.q_indexes], axis=0)]
+        return [J]
 
 
 class BilevelCostFunction(Function):
@@ -577,7 +591,7 @@ class BilevelCostFunction(Function):
     opts: dict
         A dictionary of options to pass to the CasADi callback constructor.
     """
-    def __init__(self, name: str, model: osim.Model, scale_indexes, opts={}):
+    def __init__(self, name: str, model: osim.Model, scale_indexes: list, opts={}):
         self.q_indexes = list(get_coordinate_indexes(
             model, skip_dependent_coordinates=True).values())
         self.scale_indexes = scale_indexes
@@ -609,10 +623,11 @@ class BilevelCostFunction(Function):
         return scales
 
     def add_marker_bilevel_cost(self, marker_path: str, position: osim.Vec3,
-                                 weight: float = 1.0):
+                                scale_indexes, weight: float = 1.0):
         self.tracking_costs.append(MarkerBilevelCost(self.model,
                                                      marker_path,
                                                      position,
+                                                     scale_indexes,
                                                      weight=weight))
 
     def _get_num_inputs(self):
@@ -654,15 +669,12 @@ class BilevelCostFunction(Function):
         # Compute the Jacobian of the tracking cost by summing the Jacobians of the
         # position and orientation errors for each frame.
         # See section 6 in docs/frame_error_jacobians.pdf for details.
-        Jq = np.zeros((self.state.getNQ()))
+        Jq = np.zeros((1, len(self.q_indexes)))
         Js = np.zeros((1, 3*len(self.scale_indexes)))
         for cost in self.tracking_costs:
             jac = cost.calc_jacobian(self.state, scales=scales)
             Jq += jac[0]
-            Js_full = jac[1]  # shape (1, 3*num_bodies), indexed by mobod_index-1
-            for k, mobod_index in enumerate(self.scale_indexes):
-                ib = mobod_index - 1
-                Js[0, 3*k:3*(k+1)] += Js_full[0, 3*ib:3*(ib+1)]
+            Js += jac[1]
 
         # Index out the dependent coordinates and return the Jacobians.
-        return [np.expand_dims(Jq[self.q_indexes], axis=0), Js]
+        return [Jq, Js]
