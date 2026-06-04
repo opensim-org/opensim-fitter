@@ -25,7 +25,7 @@ git checkout $BRANCH
 # Build opensim-core dependencies.
 mkdir -p "$WORKING_DIR/opensim-core/dependencies/build"
 cd "$WORKING_DIR/opensim-core/dependencies/build"
-cmake "$WORKING_DIR/opensim-core/dependencies" -DCMAKE_INSTALL_PREFIX="$WORKING_DIR/opensim_dependencies_install/" -DSUPERBUILD_ezc3d=off -DOPENSIM_WITH_CASADI=$MOCO -DOPENSIM_WITH_TROPTER=$MOCO -DBUILD_PYTHON_WRAPPING=on -DPython3_ROOT_DIR="$PYTHON_ROOT_DIR"
+cmake "$WORKING_DIR/opensim-core/dependencies" -G"$GENERATOR" -DCMAKE_INSTALL_PREFIX="$WORKING_DIR/opensim_dependencies_install/" -DSUPERBUILD_ezc3d=off -DOPENSIM_WITH_CASADI=$MOCO -DOPENSIM_WITH_TROPTER=$MOCO -DBUILD_PYTHON_WRAPPING=on -DPython3_ROOT_DIR="$PYTHON_ROOT_DIR"
 cmake . -LAH
 cmake --build . --config $DEBUG_TYPE -j$NUM_JOBS
 
