@@ -11,7 +11,7 @@ from .data_sources import MarkerSource
 
 class MultivariateNormal:
     """
-    A utility class for modeling a multivariate normal distribution. Use internally
+    A utility class for modeling a multivariate normal distribution. Uses internally
     scipy.stats.multivariate_normal to store fitted distributions.
     """
 
