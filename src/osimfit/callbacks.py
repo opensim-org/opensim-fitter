@@ -1,5 +1,3 @@
-from xml.parsers.expat import model
-
 import numpy as np
 import casadi as ca
 import opensim as osim
@@ -15,9 +13,10 @@ from .utilities import get_coordinate_indexes
 class TrackingCost(ABC):
     """
     A base class for tracking cost functions that compute a scalar error and its
-    Jacobian with respect to the model's generalized coordinates. To implement a new
-    tracking cost, extend this class and implement the abstract methods (calc_error,
-    calc_jacobian) to compute the error and its Jacobian.
+    Jacobian with respect to the model's generalized coordinates, body scale factors,
+    and other optimization variables. To implement a new tracking cost, extend this 
+    class and implement the abstract methods (calc_error, calc_jacobian) to compute the 
+    error and its Jacobian.
     """
     def __init__(self):
         super().__init__()
@@ -33,347 +32,329 @@ class TrackingCost(ABC):
 
 class FrameTrackingCost(TrackingCost):
     """
-    A tracking cost that computes the error between a model frame's position and
-    orientation and corresponding position and orientation data as a function of the
-    model's generalized coordinates.
+    A tracking cost that computes the aggregate error between model frames' positions 
+    and orientations and corresponding reference data as a function of the model's 
+    generalized coordinates. Individual frames are registered via add_frame().
 
     Parameters
     ----------
     model: osim.Model
         The OpenSim model to use for evaluating the function and its Jacobian.
-    frame_path: str
-        The path to the frame in the model to track.
-    position: osim.Vec3
-        The position data to track.
-    orientation: osim.Quaternion
-        The orientation data to track, represented as a quaternion.
-    position_weight: float
-        The weight to apply to the position error in the total error.
-    orientation_weight: float
-        The weight to apply to the orientation error in the total error.
     """
-    def __init__(self, model: osim.Model, frame_path: str, position: osim.Vec3,
-                 orientation: osim.Quaternion, position_weight: float = 1.0,
-                 orientation_weight: float = 1.0):
-        
+    def __init__(self, model: osim.Model):
         self.model = model
         self.q_indexes = list(get_coordinate_indexes(
             model, skip_dependent_coordinates=True).values())
-
-        self.frame_path = frame_path
-        if not model.hasComponent(frame_path):
-            raise ValueError(f'Model does not have a component at path {frame_path}.')
-
-        self.frame = osim.PhysicalOffsetFrame.safeDownCast(
-                model.getComponent(frame_path))
         self.matter = model.getMatterSubsystem()
-        self.mobod_index = self.frame.getMobilizedBodyIndex()
-        self.station = osim.Vec3(self.frame.findTransformInBaseFrame().p())
 
-        # Cost weights.
+        self.frames = []
+        self.mobod_indexes = osim.SimTKArrayMobilizedBodyIndex()
+        self.stations = osim.SimTKArrayVec3()
+        self.positions = []
+        self.orientations = []
+        self.position_weights = []
+        self.orientation_weights = []
+
+    def add_frame(self, frame_path: str, position: osim.Vec3, 
+                  orientation: osim.Quaternion, position_weight: float = 1.0,
+                  orientation_weight: float = 1.0):
+        """
+        Register a frame to track.
+
+        Parameters
+        ----------
+        frame_path: str
+            The OpenSim Model path to the tracking frame.
+        position: osim.Vec3
+            The reference position data tracked by the model frame.
+        orientation: osim.Quaternion
+            The reference orientation, expressed as a quaternion, tracked by the model
+            frame.
+        position_weight: float
+            (Optional) The cost weight for the position error. Default: 1.0.
+        orientation_weight: float
+            (Optional) The cost weight for the orientation error. Default: 1.0.
+        """
+        if not self.model.hasComponent(frame_path):
+            raise ValueError(f'Model does not have a component at path {frame_path}.')
         if position_weight < 0:
             raise ValueError(f'Expected position_weight to be non-negative, but got '
                              f'{position_weight}.')
         if orientation_weight < 0:
             raise ValueError(f'Expected orientation_weight to be non-negative, but got '
                              f'{orientation_weight}.')
-        self.position_weight = position_weight
-        self.orientation_weight = orientation_weight
 
-        # Reference data.
-        self.position = position.to_numpy()
-        self.orientation = np.zeros(4)
-        self.orientation[0] = orientation.get(0)
-        self.orientation[1] = orientation.get(1)
-        self.orientation[2] = orientation.get(2)
-        self.orientation[3] = orientation.get(3)
+        frame = osim.PhysicalOffsetFrame.safeDownCast(
+            self.model.getComponent(frame_path))
+        self.frames.append(frame)
+        self.mobod_indexes.push_back(frame.getMobilizedBodyIndex())
+        self.stations.push_back(osim.Vec3(frame.findTransformInBaseFrame().p()))
+        self.positions.append(position.to_numpy())
+        self.orientations.append(
+            np.array([orientation.get(i) for i in range(4)]))
+        self.position_weights.append(position_weight)
+        self.orientation_weights.append(orientation_weight)
 
     def calc_error(self, state, **kwargs) -> float:
+        error = 0.0
+        for i, frame in enumerate(self.frames):
+            p_model = frame.getPositionInGround(state).to_numpy()
+            position_error = self.position_weights[i] * np.square(
+                np.linalg.norm(p_model - self.positions[i]))
 
-        # Compute the position error as the norm of the difference between model and
-        # data positions.
-        position = self.frame.getPositionInGround(state).to_numpy()
-        position_error = np.square(np.linalg.norm(position - self.position))
+            eps = self._calc_quaternion(state, frame)
+            orientation_error = self.orientation_weights[i] * (
+                1.0 - np.square(np.dot(eps, self.orientations[i])))
 
-        # Get a quaternion representation of the current model frame's orientation
-        # with respect to ground.
-        eps = self._calc_quaternion(state)
-
-        # Compute the quaternion distance.
-        # See section 2 in docs/frame_error_jacobians.pdf for details.
-        orientation_error = 1 - np.square(np.dot(eps, self.orientation))
-
-        # Compute the weight sum of the position and orientation errors.
-        error = self.position_weight * position_error + \
-                self.orientation_weight * orientation_error
-
+            error += position_error + orientation_error
         return error
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
+        nb = self.mobod_indexes.size()
+        if nb == 0:
+            return [np.zeros((1, len(self.q_indexes)))]
 
-        # Position error Jacobian.
-        # ------------------------
-        # Compute the position error, error = p_GF - p_DG.
-        error = self.frame.getPositionInGround(state)
-        error[0] -= self.position[0]
-        error[1] -= self.position[1]
-        error[2] -= self.position[2]
+        # Inialize arrays used to calculate position and orientation error Jacobians 
+        # via the grouped Simbody operators.
+        spatialError = osim.VectorOfSpatialVec(nb, osim.SpatialVec(0))
+        for i, frame in enumerate(self.frames):
+            wp = self.position_weights[i]
+            wo = self.orientation_weights[i]
 
-        # This is size NQ and not len(coordinate_indexes) because
-        # multiplyByStationJacobianTranspose() returns the Jacobian for all coordinates,
-        # including dependent coordinates. We will index out the dependent coordinates
-        # elements of the Jacobian before returning it.
+            # Position error
+            p_model = frame.getPositionInGround(state)
+            p_error = osim.Vec3(
+                2.0 * wp * (p_model[0] - self.positions[i][0]),
+                2.0 * wp * (p_model[1] - self.positions[i][1]),
+                2.0 * wp * (p_model[2] - self.positions[i][2]))
+
+            # Orientation error
+            eps = self._calc_quaternion(state, frame)
+            jac_eps = self._calc_quaternion_jacobian(eps)
+            omega = jac_eps.T @ self.orientations[i]
+            scale = wo * -2.0 * np.dot(eps, self.orientations[i])
+            w_error = osim.Vec3(scale * omega[0], scale * omega[1], scale * omega[2])
+
+            # Combine the position and orientation into a SpatialVec to pass to the
+            # frame Jacobian operator below.
+            spatialError.set(i, osim.SpatialVec(w_error, p_error))
+
+        # Calculate the frame (position and orientation) error Jacobian.
         vec = osim.Vector(state.getNQ(), 0.0)
+        self.matter.multiplyByFrameJacobianTranspose(
+            state, self.mobod_indexes, self.stations, spatialError, vec)
+        J = vec.to_numpy()
 
-        # Compute the Jacobian of the position error. See section 4 in
-        # docs/frame_error_jacobians.pdf for details.
-        self.matter.multiplyByStationJacobianTranspose(state, self.mobod_index,
-                                                       self.station, error, vec)
-        J_p = self.position_weight * 2.0 * vec.to_numpy()
-
-        # Orientation error Jacobian.
-        # --------------------------
-        # Calculate the quaternion representation of the current model frame with
-        # respect to ground.
-        eps = self._calc_quaternion(state)
-
-        # Relate the time derivative of the quaternion to the angular velocity.
-        # See section 5 in docs/frame_error_jacobians.pdf for details.
-        jac_eps = self._calc_quaternion_jacobian(eps)
-        w = jac_eps.T.dot(self.orientation)
-
-        # Pack the angular velocity into a SpatialVec with zero linear velocity.
-        spatial_vec = osim.SpatialVec(osim.Vec3(w[0], w[1], w[2]), osim.Vec3(0))
-
-        # This is size NQ and not len(coordinate_indexes) because
-        # multiplyByStationJacobianTranspose() returns the Jacobian for all coordinates,
-        # including dependent coordinates. We will index out the dependent coordinates
-        # elements of the Jacobian before returning it.
-        vec = osim.Vector(state.getNQ(), 0.0)
-
-        # Compute the Jacobian of the orientation error. See section 5
-        # in docs/frame_error_jacobians.pdf for details.
-        self.matter.multiplyByFrameJacobianTranspose(state, self.mobod_index,
-                                                     self.station, spatial_vec, vec)
-        error = np.dot(eps, self.orientation)
-        J_R = self.orientation_weight * -2.0*error*vec.to_numpy()
-
-        # Return the sum of the position and orientation error Jacobians for this frame.
-        J = J_p + J_R
         return [np.expand_dims(J[self.q_indexes], axis=0)]
 
-    def _calc_quaternion(self, state):
-        """
-        Get the quaternion representation of the model frame's orientation with respect
-        to ground.
-        """
-        rotation = self.frame.getRotationInGround(state)
+    def _calc_quaternion(self, state, frame):
+        rotation = frame.getRotationInGround(state)
         quaternion = rotation.convertRotationToQuaternion()
-        eps = np.array([quaternion.get(0), quaternion.get(1),
-                        quaternion.get(2), quaternion.get(3)])
-        return eps
+        return np.array([quaternion.get(i) for i in range(4)])
 
     def _calc_quaternion_jacobian(self, eps):
-        """
-        Get the Jacobian that relates the time derivative of the quaternion to the
-        angular velocity.
-        """
         # Simbody -> /SimTKcommon/Mechanics/include/SimTKcommon/internal/Rotation.h#L712
         e = 0.5 * eps
-        jac_eps = np.array([
+        return np.array([
             [-e[1], -e[2], -e[3]],
             [ e[0],  e[3], -e[2]],
             [-e[3],  e[0],  e[1]],
             [ e[2], -e[1],  e[0]],
         ])
-        return jac_eps
 
 
 class MarkerTrackingCost(TrackingCost):
     """
-    A tracking cost that computes the error between a model marker's position and
-    the position of an experimental marker as a function of the model's generalized
-    coordinates.
+    A tracking cost that computes the aggregate error between model markers' positions 
+    and corresponding reference positions as a function of the model's generalized 
+    coordinates. Individual markers are registered via add_marker().
 
     Parameters
     ----------
     model: osim.Model
         The OpenSim model to use for evaluating the function and its Jacobian.
-    marker_path: str
-        The path to the marker in the model to track.
-    position: osim.Vec3
-        The position data to track.
-    weight: float
-        The weight to apply to the position error in the total error.
     """
-    def __init__(self, model: osim.Model, marker_path: str, position: osim.Vec3,
-                 weight: float = 1.0):
-        
+    def __init__(self, model: osim.Model):
         self.model = model
         self.q_indexes = list(get_coordinate_indexes(
             model, skip_dependent_coordinates=True).values())
-        
-        self.marker_path = marker_path
-        if not model.hasComponent(marker_path):
-            raise ValueError(f'Model does not have a component at path {marker_path}.')
-
-        self.marker = osim.Marker.safeDownCast(
-                model.getComponent(marker_path))
         self.matter = model.getMatterSubsystem()
 
-        frame = osim.PhysicalFrame.safeDownCast(
-            self.marker.getParentFrame().findBaseFrame())
-        state = model.getWorkingState()
-        model.realizePosition(state)
-        self.station = self.marker.findLocationInFrame(state, frame)
-        self.mobod_index = frame.getMobilizedBodyIndex()
+        self.markers = []
+        self.mobod_indexes = osim.SimTKArrayMobilizedBodyIndex()
+        self.stations = osim.SimTKArrayVec3()
+        self.positions = []
+        self.weights = []
 
-        # Cost weights.
+    def add_marker(self, marker_path: str, position: osim.Vec3, weight: float = 1.0):
+        """
+        Register a marker to track.
+
+        Parameters
+        ----------
+        marker_path: str
+            The OpenSim Model path to the tracking marker.
+        position: osim.Vec3
+            The reference position data tracked by the model marker.
+        weight: float
+            (Optional) The cost weight for the position error. Default: 1.0.
+        """
+        if not self.model.hasComponent(marker_path):
+            raise ValueError(f'Model does not have a component at path {marker_path}.')
         if weight < 0:
             raise ValueError(f'Expected weight to be non-negative, but got {weight}.')
-        self.weight = weight
 
-        # Reference data.
-        self.position = position.to_numpy()
+        marker = osim.Marker.safeDownCast(self.model.getComponent(marker_path))
+        frame = osim.PhysicalFrame.safeDownCast(
+            marker.getParentFrame().findBaseFrame())
+        state = self.model.getWorkingState()
+        self.model.realizePosition(state)
+
+        self.markers.append(marker)
+        self.mobod_indexes.push_back(frame.getMobilizedBodyIndex())
+        self.stations.push_back(marker.findLocationInFrame(state, frame))
+        self.positions.append(position.to_numpy())
+        self.weights.append(weight)
 
     def calc_error(self, state, **kwargs) -> float:
-
-        # Compute the position error as the norm of the difference between model and
-        # data positions.
-        position = self.marker.getLocationInGround(state).to_numpy()
-        position_error = np.square(np.linalg.norm(position - self.position))
-
-        return self.weight * position_error
+        error = 0.0
+        for marker, position, weight in zip(
+                self.markers, self.positions, self.weights):
+            p_model = marker.getLocationInGround(state).to_numpy()
+            error += weight * np.square(np.linalg.norm(p_model - position))
+        return error
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
+        nb = self.mobod_indexes.size()
+        if nb == 0:
+            return [np.zeros((1, len(self.q_indexes)))]
 
-        # Position error Jacobian.
-        # ------------------------
-        # Compute the position error, error = p_GF - p_DG.
-        error = self.marker.getLocationInGround(state)
-        error[0] -= self.position[0]
-        error[1] -= self.position[1]
-        error[2] -= self.position[2]
+        # Inialize the array used to calculate the position error Jacobian via the
+        # grouped Simbody operator.
+        f_GP = osim.VectorVec3(nb, osim.Vec3(0))
+        for i, (marker, position, weight) in enumerate(
+                zip(self.markers, self.positions, self.weights)):
+            p_model = marker.getLocationInGround(state)
+            f_GP.set(i, osim.Vec3(
+                2.0 * weight * (p_model[0] - position[0]),
+                2.0 * weight * (p_model[1] - position[1]),
+                2.0 * weight * (p_model[2] - position[2])))
 
-        # This is size NQ and not len(coordinate_indexes) because
-        # multiplyByStationJacobianTranspose() returns the Jacobian for all coordinates,
-        # including dependent coordinates. We will index out the dependent coordinates
-        # elements of the Jacobian before returning it.
+        # Calculate the position error Jacobian.
         vec = osim.Vector(state.getNQ(), 0.0)
+        self.matter.multiplyByStationJacobianTranspose(
+            state, self.mobod_indexes, self.stations, f_GP, vec)
 
-        # Compute the Jacobian of the position error. See section 4 in
-        # docs/frame_error_jacobians.pdf for details.
-        self.matter.multiplyByStationJacobianTranspose(state, self.mobod_index,
-                                                       self.station, error, vec)
-        J = self.weight * 2.0 * vec.to_numpy()
-
-        return [np.expand_dims(J[self.q_indexes], axis=0)]
+        return [np.expand_dims(vec.to_numpy()[self.q_indexes], axis=0)]
 
 
 class MarkerBilevelCost(TrackingCost):
     """
-    A tracking cost that computes the error between a model marker's position and
-    the position of an experimental marker as a function of the model's generalized
-    coordinates and body scale factors.
+    A tracking cost that computes the aggregate error between model markers' scaled
+    positions and corresponding reference positions as a function of the model's
+    generalized coordinates and body scale factors. Individual markers are registered
+    via add_marker().
 
     Parameters
     ----------
     model: osim.Model
         The OpenSim model to use for evaluating the function and its Jacobian.
-    marker_path: str
-        The path to the marker in the model to track.
-    position: osim.Vec3
-        The position data to track.
-    scale_indexes: list
+    scale_indexes: list[int]
         The list of MobilizedBodyIndex values representing scaled bodies.
-    weight: float
-        The weight to apply to the position error in the total error.
     """
-    def __init__(self, model: osim.Model, marker_path: str, position: osim.Vec3,
-                 scale_indexes: list, weight: float = 1.0):
-
+    def __init__(self, model: osim.Model, scale_indexes: list):
         self.model = model
         self.q_indexes = list(get_coordinate_indexes(
             model, skip_dependent_coordinates=True).values())
         self.scale_indexes = scale_indexes
-        
-        self.marker_path = marker_path
-        if not model.hasComponent(marker_path):
-            raise ValueError(f'Model does not have a component at path {marker_path}.')
-
-        self.marker = osim.Marker.safeDownCast(
-                model.getComponent(marker_path))
         self.matter = model.getMatterSubsystem()
 
-        frame = osim.PhysicalFrame.safeDownCast(
-            self.marker.getParentFrame().findBaseFrame())
-        state = model.getWorkingState()
-        self.station = self.marker.findLocationInFrame(state, frame)
-        self.mobod_index = frame.getMobilizedBodyIndex()
+        self.mobod_indexes = osim.SimTKArrayMobilizedBodyIndex()
+        self.stations = osim.SimTKArrayVec3()
+        self.positions = []
+        self.weights = []
 
-        # Cost weights.
+    def add_marker(self, marker_path: str, position: osim.Vec3, weight: float = 1.0):
+        """
+        Register a marker to track.
+
+        Parameters
+        ----------
+        marker_path: str
+            The OpenSim Model path to the tracking marker.
+        position: osim.Vec3
+            The reference position data tracked by the model marker.
+        weight: float
+            (Optional) The cost weight for the position error. Default: 1.0.
+        """
+        if not self.model.hasComponent(marker_path):
+            raise ValueError(f'Model does not have a component at path {marker_path}.')
         if weight < 0:
             raise ValueError(f'Expected weight to be non-negative, but got {weight}.')
-        self.weight = weight
 
-        # Reference data.
-        self.position = position.to_numpy()
+        marker = osim.Marker.safeDownCast(self.model.getComponent(marker_path))
+        frame = osim.PhysicalFrame.safeDownCast(
+            marker.getParentFrame().findBaseFrame())
+        state = self.model.getWorkingState()
+
+        self.mobod_indexes.push_back(frame.getMobilizedBodyIndex())
+        self.stations.push_back(marker.findLocationInFrame(state, frame))
+        self.positions.append(position.to_numpy())
+        self.weights.append(weight)
 
     def calc_error(self, state, **kwargs) -> float:
-
-        # Compute the scaled position error as the norm of the difference between model
-        # and data positions.
         scales = kwargs['scales']
-        position = self.matter.calcScaledStationPosition(state,
-                                                         scales,
-                                                         self.mobod_index,
-                                                         self.station)
+        nb = self.mobod_indexes.size() 
+        if nb == 0:
+            return 0.0
 
-        error = np.square(np.linalg.norm(position.to_numpy() - self.position))
-        return self.weight * error
+        # Calculate position errors across all markers.
+        p_GS = osim.VectorVec3(nb, osim.Vec3(0))
+        self.matter.calcScaledStationPosition(state, scales, self.mobod_indexes,
+                                              self.stations, p_GS)
+
+        error = 0.0
+        for i, (position, weight) in enumerate(zip(self.positions, self.weights)):
+            p = p_GS.get(i).to_numpy()
+            error += weight * np.square(np.linalg.norm(p - position))
+        return error
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
-
-        # Scaled position error Jacobian
-        # -------------------------------
-        # Compute the scaled position error.
         scales = kwargs['scales']
-        error = self.matter.calcScaledStationPosition(state, scales, self.mobod_index,
-                                                      self.station)
-        error[0] -= self.position[0]
-        error[1] -= self.position[1]
-        error[2] -= self.position[2]
+        nb = self.mobod_indexes.size()
+        if nb == 0:
+            return [np.zeros((1, len(self.q_indexes))),
+                    np.zeros((1, 3*len(self.scale_indexes)))]
 
-        # This is size NQ and not len(q_indexes) because
-        # multiplyByScaledStationJacobianTranspose() returns the Jacobian for all
-        # coordinates, including dependent coordinates. We will index out the dependent
-        # coordinates elements of the Jacobian before returning it.
+        # Calculate scaled station positions acrss all markers
+        p_GS = osim.VectorVec3(nb, osim.Vec3(0))
+        self.matter.calcScaledStationPosition(state, scales, self.mobod_indexes,
+                                              self.stations, p_GS)
+
+        # Position errors
+        f_GS = osim.VectorVec3(nb, osim.Vec3(0))
+        for i, (position, weight) in enumerate(zip(self.positions, self.weights)):
+            p = p_GS.get(i)
+            f_GS.set(i, osim.Vec3(
+                2.0 * weight * (p[0] - position[0]),
+                2.0 * weight * (p[1] - position[1]),
+                2.0 * weight * (p[2] - position[2])))
+
+        # Calculate the error Jacobian with respect to the model coordinates.
         vec = osim.Vector(state.getNQ(), 0.0)
+        self.matter.multiplyByScaledStationJacobianTranspose(
+            state, scales, self.mobod_indexes, self.stations, f_GS, vec)
+        Jq = np.expand_dims(vec.to_numpy()[self.q_indexes], axis=0)
 
-        # Compute the Jacobian of the scaled position error with respect to the
-        # coordinates.
-        self.matter.multiplyByScaledStationJacobianTranspose(state, scales,
-                                                             self.mobod_index,
-                                                             self.station, error, vec)
-        Jq = self.weight * 2.0 * vec.to_numpy()
-
-        # Compute the Jacobian of the scaled position error with respect to the
-        # body scale factors.
+        # Calculate the error Jacobian with respect to body scale factors.
         vecVec3 = osim.VectorVec3(self.model.getNumBodies() + 1, osim.Vec3(0))
-        self.matter.multiplyByStationJacobianWrtBodyScalesTranspose(state,
-                                                                    self.mobod_index,
-                                                                    self.station,
-                                                                    error,
-                                                                    vecVec3)
-    
-        # Flatten the VectorVec3 into a 2D array of shape (1, 3*num_scales) and apply
-        # the cost weight.
+        self.matter.multiplyByStationJacobianWrtBodyScalesTranspose(
+            state, self.mobod_indexes, self.stations, f_GS, vecVec3)
         Js = np.zeros((1, 3*len(self.scale_indexes)))
         for i, k in enumerate(self.scale_indexes):
             Js[0, 3*i:3*(i+1)] = vecVec3.get(k).to_numpy()
-        Js *= self.weight * 2.0
 
-        return [np.expand_dims(Jq[self.q_indexes], axis=0), Js]
+        return [Jq, Js]
 
 
 class Function(ca.Callback, ABC):
@@ -476,6 +457,7 @@ class Function(ca.Callback, ABC):
     def _jac_eval(self, arg):
         pass
 
+
 ##################
 # COST FUNCTIONS #
 ##################
@@ -483,7 +465,7 @@ class Function(ca.Callback, ABC):
 class TrackingCostFunction(Function):
     """
     A CasADi callback that evaluates the sum of tracking costs over a set of model
-    frames with respect to the model's generalized coordinates.
+    frames and markers with respect to the model's generalized coordinates.
 
     Parameters
     ----------
@@ -498,7 +480,8 @@ class TrackingCostFunction(Function):
         self.q_indexes = list(get_coordinate_indexes(
             model, skip_dependent_coordinates=True).values())
         Function.__init__(self, name, model, opts=opts)
-        self.tracking_costs: list[TrackingCost] = []
+        self.marker_cost = MarkerTrackingCost(model)
+        self.frame_cost = FrameTrackingCost(model)
 
     def apply_state(self, arg):
         """
@@ -515,21 +498,13 @@ class TrackingCostFunction(Function):
                                 orientation: osim.Quaternion,
                                 position_weight: float = 1.0,
                                 orientation_weight: float = 1.0):
-        self.tracking_costs.append(
-                FrameTrackingCost(self.model,
-                                  frame_path,
-                                  position,
-                                  orientation,
+        self.frame_cost.add_frame(frame_path, position, orientation,
                                   position_weight=position_weight,
-                                  orientation_weight=orientation_weight))
+                                  orientation_weight=orientation_weight)
 
     def add_marker_tracking_cost(self, marker_path: str, position: osim.Vec3,
                                  weight: float = 1.0):
-        self.tracking_costs.append(
-                MarkerTrackingCost(self.model,
-                                   marker_path,
-                                   position,
-                                   weight=weight))
+        self.marker_cost.add_marker(marker_path, position, weight=weight)
 
     def _get_num_inputs(self):
         return 1
@@ -550,33 +525,22 @@ class TrackingCostFunction(Function):
             raise IndexError(f'Invalid output index {i} for TrackingCostFunction.')
 
     def _eval(self, arg):
-        # Apply the optimization variables to the SimTK::State.
         self.apply_state(arg)
-
-        # Compute the sum of the frame cost errors.
-        error = 0
-        for cost in self.tracking_costs:
-            error += cost.calc_error(self.state)
+        error = (self.marker_cost.calc_error(self.state) +
+                 self.frame_cost.calc_error(self.state))
         return [error]
 
     def _jac_eval(self, arg):
-        # Apply the optimal coordinates to the SimTK::State.
         self.apply_state(arg)
-
-        # Compute the Jacobian of the tracking cost by summing the Jacobians of the
-        # position and orientation errors for each frame.
-        # See section 6 in docs/frame_error_jacobians.pdf for details.
-        J = np.zeros((1, len(self.q_indexes)))
-        for cost in self.tracking_costs:
-            J += cost.calc_jacobian(self.state)[0]
-
+        J = (self.marker_cost.calc_jacobian(self.state)[0] +
+             self.frame_cost.calc_jacobian(self.state)[0])
         return [J]
 
 
 class BilevelCostFunction(Function):
     """
     A CasADi callback that evaluates the sum of tracking costs over a set of model
-    frames with respect to the model's generalized coordinates and a set of body scale
+    markers with respect to the model's generalized coordinates and a set of body scale
     factors.
 
     Parameters
@@ -596,7 +560,7 @@ class BilevelCostFunction(Function):
             model, skip_dependent_coordinates=True).values())
         self.scale_indexes = scale_indexes
         Function.__init__(self, name, model, opts=opts)
-        self.tracking_costs: list[TrackingCost] = []
+        self.marker_cost = MarkerBilevelCost(model, scale_indexes)
 
     def apply_state(self, arg):
         """
@@ -623,12 +587,8 @@ class BilevelCostFunction(Function):
         return scales
 
     def add_marker_bilevel_cost(self, marker_path: str, position: osim.Vec3,
-                                scale_indexes, weight: float = 1.0):
-        self.tracking_costs.append(MarkerBilevelCost(self.model,
-                                                     marker_path,
-                                                     position,
-                                                     scale_indexes,
-                                                     weight=weight))
+                                weight: float = 1.0):
+        self.marker_cost.add_marker(marker_path, position, weight=weight)
 
     def _get_num_inputs(self):
         return 2
@@ -651,30 +611,13 @@ class BilevelCostFunction(Function):
             raise IndexError(f'Invalid output index {i} for BilevelCostFunction.')
 
     def _eval(self, arg):
-        # Apply the optimization variables to the SimTK::State.
         self.apply_state(arg)
         scales = self.pack_scales(arg)
-
-        # Compute the sum of the frame cost errors.
-        error = 0
-        for cost in self.tracking_costs:
-            error += cost.calc_error(self.state, scales=scales)
+        error = self.marker_cost.calc_error(self.state, scales=scales)
         return [error]
 
     def _jac_eval(self, arg):
-        # Apply the optimal coordinates to the SimTK::State.
         self.apply_state(arg)
         scales = self.pack_scales(arg)
-
-        # Compute the Jacobian of the tracking cost by summing the Jacobians of the
-        # position and orientation errors for each frame.
-        # See section 6 in docs/frame_error_jacobians.pdf for details.
-        Jq = np.zeros((1, len(self.q_indexes)))
-        Js = np.zeros((1, 3*len(self.scale_indexes)))
-        for cost in self.tracking_costs:
-            jac = cost.calc_jacobian(self.state, scales=scales)
-            Jq += jac[0]
-            Js += jac[1]
-
-        # Index out the dependent coordinates and return the Jacobians.
-        return [Jq, Js]
+        jac = self.marker_cost.calc_jacobian(self.state, scales=scales)
+        return [jac[0], jac[1]]

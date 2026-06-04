@@ -356,7 +356,7 @@ class BilevelSolver(TrackingSolver):
             for iframe, marker_path in enumerate(data.labels):
                 callback.add_marker_bilevel_cost(marker_path,
                     data.positions.getRowAtIndex(itime).getElt(0, iframe),
-                    scale_indexes, weight=position_weight)
+                    weight=position_weight)
 
         return callback
 
