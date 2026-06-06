@@ -262,13 +262,13 @@ def plot_variable_distribution(mvn, data_df, variable_name, bins=30):
 
     Parameters
     ----------
-    mvn : MultivariateNormal
+    mvn: MultivariateNormal
         The fitted multivariate normal distribution
-    data_df : pandas.DataFrame
+    data_df: pandas.DataFrame
         The original data
-    variable_name : str
+    variable_name: str
         Name of the variable to plot
-    bins : int, optional
+    bins: int, optional
         Number of histogram bins (default: 30)
     """
     import matplotlib.pyplot as plt

@@ -84,8 +84,7 @@ class FrameTrackingCost(TrackingCost):
             raise ValueError(f'Expected orientation_weight to be non-negative, but got '
                              f'{orientation_weight}.')
 
-        frame = osim.PhysicalOffsetFrame.safeDownCast(
-            self.model.getComponent(frame_path))
+        frame = osim.PhysicalFrame.safeDownCast(self.model.getComponent(frame_path))
         self.frames.append(frame)
         self.mobod_indexes.push_back(frame.getMobilizedBodyIndex())
         self.stations.push_back(osim.Vec3(frame.findTransformInBaseFrame().p()))

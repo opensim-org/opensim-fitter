@@ -102,7 +102,7 @@ solver = SplineBasedBilevelSolver(model,
                                   knot_interval=0.05,
                                   position_weight=5.0,
                                   scale_regularization_weight=1e-2)
-solver.add_marker_source(marker_source)
+solver.add_marker_reference_data(marker_source)
 # Add scale factors for the two bodies including lower and upper bounds for the
 # optimization variables.
 solver.add_scale_factor(model.getBodySet().get('b0'), 0.5, 2.0)
