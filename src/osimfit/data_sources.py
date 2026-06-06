@@ -3,18 +3,59 @@ import numpy as np
 import opensim as osim
 from abc import ABC, abstractmethod
 
+
 class DataSource(ABC):
+    """
+    Abstract base class for time-series data sources.
+
+    Subclasses parse a source file (e.g., an OpenSim ``.trc`` marker file)
+    and expose the data as OpenSim TimeSeriesTables of positions and,
+    optionally, orientations. The base class drives table construction
+    lazily in :py:meth:`get_positions_table` and
+    :py:meth:`get_orientations_table` via the ``_create_positions_table``
+    and ``_create_orientations_table`` hooks, and applies optional
+    post-processing (label removal, relabeling, time trimming) on return.
+
+    Subclasses that supply orientation data must set the class attribute
+    ``provides_orientations`` to ``True`` and override
+    ``_create_orientations_table``. Consistency between paired
+    position/orientation tables is not enforced here — callers that need
+    it should invoke :py:meth:`assert_position_orientation_consistent`
+    after pulling both tables.
+
+    Parameters
+    ----------
+    labels_to_remove : list of str, optional
+        Column labels to drop from each constructed table.
+    label_map : dict, optional
+        Mapping from existing column labels to new column labels. Columns
+        not listed are left unchanged.
+    trim_to_range : tuple of (float, float), optional
+        The time range, i.e., ``(start_time, end_time)``, used to trim each
+        constructed table to a sub-range of the original time vector.
+    """
+
+    provides_orientations: bool = False
+
     def __init__(self, labels_to_remove=None, label_map=None, trim_to_range=None):
         super().__init__()
         self.labels_to_remove = labels_to_remove
         self.label_map = label_map
 
         if trim_to_range is not None:
-            assert(isinstance(trim_to_range, tuple) and len(trim_to_range) == 2,
-                   "trim_to_range should be a tuple of (start_time, end_time)")
+            if not (isinstance(trim_to_range, tuple) and len(trim_to_range) == 2):
+                raise ValueError(
+                    "trim_to_range must be a tuple of (start_time, end_time).")
         self.trim_to_range = trim_to_range
 
     def get_positions_table(self) -> osim.TimeSeriesTableVec3:
+        """
+        Build and return the positions table.
+
+        The table is constructed on every call via
+        ``_create_positions_table`` and then post-processed (remove
+        columns, relabel, trim).
+        """
         table = self._create_positions_table()
         if self.labels_to_remove:
             self.remove_columns(table, self.labels_to_remove)
@@ -25,6 +66,22 @@ class DataSource(ABC):
         return table
 
     def get_orientations_table(self) -> osim.TimeSeriesTableQuaternion:
+        """
+        Build and return the orientations table.
+
+        The table is constructed on every call via
+        ``_create_orientations_table`` and then post-processed (remove
+        columns, relabel, trim).
+
+        Raises
+        ------
+        NotImplementedError
+            If the source does not provide orientation data (i.e.,
+            ``provides_orientations`` is ``False``).
+        """
+        if not self.provides_orientations:
+            raise NotImplementedError(
+                f"{self.__class__.__name__} does not provide orientation data.")
         table = self._create_orientations_table()
         if self.labels_to_remove:
             self.remove_columns(table, self.labels_to_remove)
@@ -43,13 +100,85 @@ class DataSource(ABC):
         pass
 
     @staticmethod
+    def assert_position_orientation_consistent(positions, orientations):
+        """
+        Verify that a paired positions/orientations table pair is consistent.
+
+        Checks that the two tables share the same column labels, row count,
+        and independent (time) column. Intended for callers that have
+        pulled both tables from a single :py:class:`DataSource` and need
+        to confirm they line up before consuming them together.
+
+        Parameters
+        ----------
+        positions : osim.TimeSeriesTableVec3
+        orientations : osim.TimeSeriesTableQuaternion
+
+        Raises
+        ------
+        ValueError
+            If column labels, row counts, or time columns differ.
+        """
+        pos_labels = list(positions.getColumnLabels())
+        ori_labels = list(orientations.getColumnLabels())
+        if pos_labels != ori_labels:
+            raise ValueError(
+                "Position and orientation tables have mismatched column "
+                f"labels (positions={pos_labels}, orientations={ori_labels}).")
+
+        if positions.getNumRows() != orientations.getNumRows():
+            raise ValueError(
+                "Position and orientation tables have mismatched row "
+                f"counts ({positions.getNumRows()} vs "
+                f"{orientations.getNumRows()}).")
+
+        pos_times = np.asarray(positions.getIndependentColumn())
+        ori_times = np.asarray(orientations.getIndependentColumn())
+        if not np.array_equal(pos_times, ori_times):
+            raise ValueError(
+                "Position and orientation tables have mismatched time "
+                "columns.")
+
+    @staticmethod
     def remove_columns(table, columns_to_remove):
+        """
+        Drop the given columns from ``table`` in place.
+
+        Parameters
+        ----------
+        table : osim.TimeSeriesTable
+            Table to modify; modified in place.
+        columns_to_remove : iterable of str
+            Column labels to remove.
+
+        Returns
+        -------
+        osim.TimeSeriesTable
+            The same table instance, returned for convenience.
+        """
         for col in columns_to_remove:
             table.removeColumn(col)
         return table
 
     @staticmethod
     def update_column_labels(table, label_map):
+        """
+        Rename columns of ``table`` in place using ``label_map``.
+
+        Columns not present in ``label_map`` are left unchanged.
+
+        Parameters
+        ----------
+        table : osim.TimeSeriesTable
+            Table to modify; modified in place.
+        label_map : dict
+            Mapping from existing column labels to new column labels.
+
+        Returns
+        -------
+        osim.TimeSeriesTable
+            The same table instance, returned for convenience.
+        """
         if not label_map:
             return table
 
@@ -61,11 +190,104 @@ class DataSource(ABC):
 
     @staticmethod
     def trim_table_to_range(table, time_range):
+        """
+        Trim ``table`` to the given ``(start_time, end_time)`` window in place.
+
+        Parameters
+        ----------
+        table : osim.TimeSeriesTable
+            Table to modify; modified in place.
+        time_range : tuple of (float, float)
+            Inclusive ``(start_time, end_time)`` window.
+
+        Returns
+        -------
+        osim.TimeSeriesTable
+            The same table instance, returned for convenience.
+        """
         table.trim(time_range[0], time_range[1])
         return table
 
+    @staticmethod
+    def assert_sources_share_times(sources: list["DataSource"]) -> list[float]:
+        """
+        Verify that all data sources share the same time vector.
+
+        The comparison uses each source's positions table, since every
+        :py:class:`DataSource` exposes positions.
+
+        Parameters
+        ----------
+        sources : list of DataSource
+            Data sources to compare.
+
+        Returns
+        -------
+        list of float
+            The shared time vector (taken from the first source).
+
+        Raises
+        ------
+        ValueError
+            If any source's time vector differs from the first source's.
+        """
+        return DataSource.assert_tables_share_times(
+            [source.get_positions_table() for source in sources])
+
+    @staticmethod
+    def assert_tables_share_times(tables) -> list[float]:
+        """
+        Verify that all tables share the same independent (time) column.
+
+        Parameters
+        ----------
+        tables : iterable of TimeSeriesTable
+            Tables to compare. Any OpenSim TimeSeriesTable variant is accepted.
+
+        Returns
+        -------
+        list of float
+            The shared time vector (taken from the first table).
+
+        Raises
+        ------
+        ValueError
+            If any table's time column differs from the first table's.
+        """
+        times = None
+        for itab, table in enumerate(tables):
+            col = list(table.getIndependentColumn())
+            if times is None:
+                times = col
+            elif not np.array_equal(np.asarray(times), np.asarray(col)):
+                raise ValueError(
+                    f"Table at index {itab} has a time column that differs from "
+                    f"the first table's time column.")
+        return times
+
 
 class MarkerSource(DataSource):
+    """
+    Marker position data source backed by an OpenSim ``.trc`` file.
+
+    Reads the file directly with ``opensim.TimeSeriesTableVec3`` and
+    converts the marker coordinates from millimeters to meters when the
+    file metadata reports units of ``mm``. Orientation data is not
+    available; calling :py:meth:`get_orientations_table` raises
+    ``NotImplementedError``.
+
+    Parameters
+    ----------
+    trc_filepath : str
+        Path to the ``.trc`` file.
+    labels_to_remove : list of str, optional
+        See :py:class:`DataSource`.
+    label_map : dict, optional
+        See :py:class:`DataSource`.
+    trim_to_range : tuple of (float, float), optional
+        See :py:class:`DataSource`.
+    """
+
     def __init__(self, trc_filepath, labels_to_remove=None, label_map=None,
                  trim_to_range=None):
         super().__init__(labels_to_remove=labels_to_remove, label_map=label_map,
@@ -84,24 +306,36 @@ class MarkerSource(DataSource):
         return table
 
     def _create_orientations_table(self) -> osim.TimeSeriesTableQuaternion:
-        raise NotImplementedError("Orientation data is not available in MarkerSource.")
+        raise NotImplementedError("MarkerSource does not provide orientation data.")
 
 
 class TheiaFrameSource(DataSource):
     """
-    Data source for Theia markerless motion capture data. Theia outputs 4x4 homogeneous
-    transformation matrices for various frames from its internal representation of the
-    human skeletal model. This class extracts the position and orientation of each
-    frame in Theia's output and converts them to OpenSim's coordinate system.
+    Data source for Theia markerless motion capture data. Theia outputs 4x4
+    homogeneous transformation matrices for various frames from its internal
+    representation of the human skeletal model. This class extracts the
+    position and orientation of each frame in Theia's output and converts
+    them to OpenSim's coordinate system. Callers can verify that the
+    positions and orientations tables line up via
+    :py:meth:`DataSource.assert_position_orientation_consistent`.
 
-     Parameters
+    Parameters
     ----------
     c3d_filepath : str
-        Path to the C3D file containing Theia's output. The C3D file should contain
-        4x4 homogeneous transformation matrices for each frame, stored in the
-        'rotations' field. Each frame's transformation matrix should be labeled with a
-        unique name in the C3D file.
+        Path to the C3D file containing Theia's output. The C3D file should
+        contain 4x4 homogeneous transformation matrices for each frame,
+        stored in the 'rotations' field. Each frame's transformation matrix
+        should be labeled with a unique name in the C3D file.
+    labels_to_remove : list of str, optional
+        See :py:class:`DataSource`.
+    label_map : dict, optional
+        See :py:class:`DataSource`.
+    trim_to_range : tuple of (float, float), optional
+        See :py:class:`DataSource`.
     """
+
+    provides_orientations: bool = True
+
     def __init__(self, c3d_filepath, labels_to_remove=None, label_map=None,
                  trim_to_range=None):
         super().__init__(labels_to_remove=labels_to_remove, label_map=label_map,
@@ -187,4 +421,5 @@ class TheiaFrameSource(DataSource):
         table.addTableMetaDataString("DataRate", str(self.rate))
 
         return table
+
 
