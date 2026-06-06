@@ -1,41 +1,42 @@
 import ezc3d
 import numpy as np
 import opensim as osim
-from abc import ABC, abstractmethod
+from abc import ABC
 
 
 class DataSource(ABC):
     """
     Abstract base class for time-series data sources.
 
-    Subclasses parse a source file (e.g., an OpenSim ``.trc`` marker file)
-    and expose the data as OpenSim TimeSeriesTables of positions and,
-    optionally, orientations. The base class drives table construction
-    lazily in :py:meth:`get_positions_table` and
-    :py:meth:`get_orientations_table` via the ``_create_positions_table``
-    and ``_create_orientations_table`` hooks, and applies optional
-    post-processing (label removal, relabeling, time trimming) on return.
+    Subclasses parse a source file (e.g., a TRC or C3D file) and expose the data as
+    OpenSim TimeSeriesTables of positions and/or orientations. Tables can be accessed
+    via the base class methods ``get_positions_table`` and ``get_orientations_table``;
+    calling these methods triggers table construction and modifications based on the
+    (optional) input parameters ``labels_to_remove``, ``label_map``, and
+    ``trim_to_range`` are applied.
 
-    Subclasses that supply orientation data must set the class attribute
-    ``provides_orientations`` to ``True`` and override
-    ``_create_orientations_table``. Consistency between paired
-    position/orientation tables is not enforced here — callers that need
-    it should invoke :py:meth:`assert_position_orientation_consistent`
+    Subclasses signal which data they provide simply by overriding the corresponding
+    protected hook: override ``_create_positions_table`` to provide positions, and/or
+    ``_create_orientations_table`` to provide orientations. The base class detects
+    overrides via the read-only properties ``provides_positions`` and
+    ``provides_orientations``; if a hook is not overridden, calling the matching
+    ``get_*_table`` method raises ``NotImplementedError``.
+
+    Consistency between paired position/orientation tables is not enforced here —
+    callers that need it should invoke ``assert_position_orientation_consistent``
     after pulling both tables.
 
     Parameters
     ----------
-    labels_to_remove : list of str, optional
+    labels_to_remove: list[str], optional
         Column labels to drop from each constructed table.
-    label_map : dict, optional
+    label_map: dict, optional
         Mapping from existing column labels to new column labels. Columns
         not listed are left unchanged.
-    trim_to_range : tuple of (float, float), optional
-        The time range, i.e., ``(start_time, end_time)``, used to trim each
-        constructed table to a sub-range of the original time vector.
+    trim_to_range: tuple[float, float], optional
+        The time range used to trim each constructed table to a sub-range of
+        the original time vector.
     """
-
-    provides_orientations: bool = False
 
     def __init__(self, labels_to_remove=None, label_map=None, trim_to_range=None):
         super().__init__()
@@ -46,7 +47,22 @@ class DataSource(ABC):
             if not (isinstance(trim_to_range, tuple) and len(trim_to_range) == 2):
                 raise ValueError(
                     "trim_to_range must be a tuple of (start_time, end_time).")
+            if not trim_to_range[1] <= trim_to_range[0]:
+                raise ValueError(
+                    f"Expected the end time in trim_to_range to be greater than the " 
+                    f"start time, but received {trim_to_range[1]} and "
+                    f"{trim_to_range[0]}, respectively.")
         self.trim_to_range = trim_to_range
+
+    @property
+    def provides_positions(self) -> bool:
+        return (type(self)._create_positions_table
+                is not DataSource._create_positions_table)
+
+    @property
+    def provides_orientations(self) -> bool:
+        return (type(self)._create_orientations_table
+                is not DataSource._create_orientations_table)
 
     def get_positions_table(self) -> osim.TimeSeriesTableVec3:
         """
@@ -55,7 +71,16 @@ class DataSource(ABC):
         The table is constructed on every call via
         ``_create_positions_table`` and then post-processed (remove
         columns, relabel, trim).
+
+        Raises
+        ------
+        NotImplementedError
+            If the source does not provide position data (i.e.,
+            ``_create_positions_table`` is not overridden).
         """
+        if not self.provides_positions:
+            raise NotImplementedError(
+                f"{type(self).__name__} does not provide position data.")
         table = self._create_positions_table()
         if self.labels_to_remove:
             self.remove_columns(table, self.labels_to_remove)
@@ -77,11 +102,11 @@ class DataSource(ABC):
         ------
         NotImplementedError
             If the source does not provide orientation data (i.e.,
-            ``provides_orientations`` is ``False``).
+            ``_create_orientations_table`` is not overridden).
         """
         if not self.provides_orientations:
             raise NotImplementedError(
-                f"{self.__class__.__name__} does not provide orientation data.")
+                f"{type(self).__name__} does not provide orientation data.")
         table = self._create_orientations_table()
         if self.labels_to_remove:
             self.remove_columns(table, self.labels_to_remove)
@@ -91,13 +116,13 @@ class DataSource(ABC):
             self.trim_table_to_range(table, self.trim_to_range)
         return table
 
-    @abstractmethod
     def _create_positions_table(self) -> osim.TimeSeriesTableVec3:
-        pass
+        raise NotImplementedError(
+            f"{type(self).__name__} does not provide position data.")
 
-    @abstractmethod
     def _create_orientations_table(self) -> osim.TimeSeriesTableQuaternion:
-        pass
+        raise NotImplementedError(
+            f"{type(self).__name__} does not provide orientation data.")
 
     @staticmethod
     def assert_position_orientation_consistent(positions, orientations):
@@ -213,12 +238,13 @@ class DataSource(ABC):
         """
         Verify that all data sources share the same time vector.
 
-        The comparison uses each source's positions table, since every
-        :py:class:`DataSource` exposes positions.
+        For each source, the comparison uses its positions table when available;
+        otherwise it falls back to its orientations table. A source that provides
+        neither raises ``ValueError``.
 
         Parameters
         ----------
-        sources : list of DataSource
+        sources: list[DataSource]
             Data sources to compare.
 
         Returns
@@ -229,10 +255,20 @@ class DataSource(ABC):
         Raises
         ------
         ValueError
-            If any source's time vector differs from the first source's.
+            If any source's time vector differs from the first source's, or if
+            any source provides neither positions nor orientations.
         """
-        return DataSource.assert_tables_share_times(
-            [source.get_positions_table() for source in sources])
+        tables = []
+        for source in sources:
+            if source.provides_positions:
+                tables.append(source.get_positions_table())
+            elif source.provides_orientations:
+                tables.append(source.get_orientations_table())
+            else:
+                raise ValueError(
+                    f"{type(source).__name__} provides neither position nor "
+                    "orientation data.")
+        return DataSource.assert_tables_share_times(tables)
 
     @staticmethod
     def assert_tables_share_times(tables) -> list[float]:
@@ -278,13 +314,13 @@ class MarkerSource(DataSource):
 
     Parameters
     ----------
-    trc_filepath : str
+    trc_filepath: str
         Path to the ``.trc`` file.
-    labels_to_remove : list of str, optional
+    labels_to_remove: list[str], optional
         See :py:class:`DataSource`.
-    label_map : dict, optional
+    label_map: dict, optional
         See :py:class:`DataSource`.
-    trim_to_range : tuple of (float, float), optional
+    trim_to_range: tuple[float, float], optional
         See :py:class:`DataSource`.
     """
 
@@ -305,9 +341,6 @@ class MarkerSource(DataSource):
 
         return table
 
-    def _create_orientations_table(self) -> osim.TimeSeriesTableQuaternion:
-        raise NotImplementedError("MarkerSource does not provide orientation data.")
-
 
 class TheiaFrameSource(DataSource):
     """
@@ -321,20 +354,18 @@ class TheiaFrameSource(DataSource):
 
     Parameters
     ----------
-    c3d_filepath : str
+    c3d_filepath: str
         Path to the C3D file containing Theia's output. The C3D file should
         contain 4x4 homogeneous transformation matrices for each frame,
         stored in the 'rotations' field. Each frame's transformation matrix
         should be labeled with a unique name in the C3D file.
-    labels_to_remove : list of str, optional
+    labels_to_remove: list[str], optional
         See :py:class:`DataSource`.
-    label_map : dict, optional
+    label_map: dict, optional
         See :py:class:`DataSource`.
-    trim_to_range : tuple of (float, float), optional
+    trim_to_range: tuple[float, float], optional
         See :py:class:`DataSource`.
     """
-
-    provides_orientations: bool = True
 
     def __init__(self, c3d_filepath, labels_to_remove=None, label_map=None,
                  trim_to_range=None):
@@ -421,5 +452,3 @@ class TheiaFrameSource(DataSource):
         table.addTableMetaDataString("DataRate", str(self.rate))
 
         return table
-
-

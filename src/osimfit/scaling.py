@@ -244,11 +244,11 @@ class AnthropometricMeasurement(ABC):
 
     Parameters
     ----------
-    station1_path : str
+    station1_path: str
         Component path to the first station in the model.
-    station2_path : str
+    station2_path: str
         Component path to the second station in the model.
-    axis : Axis, optional
+    axis: Axis, optional
         If provided, returns the signed distance along the specified axis rather than
         the Euclidean magnitude.
     """
@@ -286,9 +286,9 @@ class AnthropometricScaler(Scaler):
 
     Parameters
     ----------
-    model : osim.Model
+    model: osim.Model
         OpenSim model to be scaled.
-    sex : str, optional
+    sex: str, optional
         Sex of the subject ('male' or 'female'). If not provided, the combined
         male-and-female dataset is used.
     """

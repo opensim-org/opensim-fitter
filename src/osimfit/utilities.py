@@ -282,11 +282,11 @@ class MultivariateNormal:
 
         Parameters
         ----------
-        data_df : pandas.DataFrame
+        data_df: pandas.DataFrame
             The original data
-        variable_name : str
+        variable_name: str
             Name of the variable to plot
-        bins : int, optional
+        bins: int, optional
             Number of histogram bins (default: 30)
         """
         import matplotlib.pyplot as plt
@@ -511,14 +511,14 @@ def plot_marker_errors(errors: osim.TimeSeriesTableVec3, pdf_fpath: str,
 
     Parameters
     ----------
-    errors : osim.TimeSeriesTableVec3
+    errors: osim.TimeSeriesTableVec3
         A table containing the marker errors for each marker at each time step. Each
         column corresponds to a marker, and each row corresponds to a time step. The
         entries are Vec3 objects representing the error in the X, Y, and Z directions
         in ground for each marker. Marker errors are expected to be in meters.
-    pdf_fpath : str
+    pdf_fpath: str
         The file path where the PDF of marker error plots should be saved.
-    max_error : float, optional
+    max_error: float, optional
         The maximum error (in cm) to show on the y-axis of the plots. Errors above this
         threshold will be shaded in red to highlight them. Default is 10.0 cm.
     """
