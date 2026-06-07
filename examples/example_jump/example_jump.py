@@ -171,7 +171,7 @@ solver = InverseKinematicsSolver(anthro_scaled_model,
                                  convergence_tolerance=1e-4,
                                  position_weight=2.0,
                                  orientation_weight=5.0)
-solver.add_theia_frame_source(theia_frame_source)
+solver.add_theia_frame_reference_data(theia_frame_source)
 ik_solution = solver.solve()
 sto = osim.STOFileAdapter()
 sto.write(ik_solution.states_table, 'jump_1_ik_solution.sto')
@@ -184,7 +184,7 @@ solver = SplineBasedInverseKinematicsSolver(anthro_scaled_model,
                                             position_weight=2.0,
                                             orientation_weight=5.0,
                                             knot_interval=0.10)
-solver.add_theia_frame_source(theia_frame_source)
+solver.add_theia_frame_reference_data(theia_frame_source)
 spline_ik_solution = solver.solve(osim.TimeSeriesTable('jump_1_ik_solution.sto'))
 sto = osim.STOFileAdapter()
 sto.write(spline_ik_solution.states_table, 'jump_1_spline_ik_solution.sto')

@@ -213,10 +213,9 @@ class TrackingSolver(Solver):
     Parameters
     ----------
     model: str or osim.Model
-        The OpenSim model to use for the optimization problem. Can be provided as a file
-        path or as an already-loaded osim.Model object.
+        See :py:class:`Solver`.
     convergence_tolerance: float, optional
-        The convergence tolerance to use for the IPOPT solver. Default is 1e-4.
+        See :py:class:`Solver`.
     position_weight: float, optional
         The weight to use for position-based tracking costs. Default is 1.0.
     orientation_weight: float, optional
@@ -234,9 +233,9 @@ class TrackingSolver(Solver):
         self.theia_frame_data: list[TheiaFrameData] = []
         self.marker_data: list[MarkerData] = []
 
-    def add_theia_frame_source(self, theia_frame_source: TheiaFrameSource):
+    def add_theia_frame_reference_data(self, theia_frame_source: TheiaFrameSource):
         """
-        Add a TheiaFrameSource as a data source for this solver.
+        Add a TheiaFrameSource as reference data for this solver.
         """
         positions = theia_frame_source.get_positions_table()
         orientations = theia_frame_source.get_orientations_table()
@@ -245,9 +244,9 @@ class TrackingSolver(Solver):
 
         self.theia_frame_data.append(TheiaFrameData(labels, positions, orientations))
 
-    def add_marker_source(self, marker_source: MarkerSource):
+    def add_marker_reference_data(self, marker_source: MarkerSource):
         """
-        Add a MarkerSource as a data source for this solver.
+        Add a MarkerSource as reference data for this solver.
         """
         positions = marker_source.get_positions_table()
         labels = positions.getColumnLabels()
@@ -298,18 +297,20 @@ class TrackingSolver(Solver):
 
 class InverseKinematicsSolver(TrackingSolver):
     """
-    A solver for inverse kinematics problems that track position and/or orientation
-    reference data. This solver performs "traditional" inverse kinematics, where we solve
-    for the model pose that best matches the reference data at each time step in
-    sequence, without enforcing any temporal smoothness.
+    Solve the inverse kinematics problem to find the set of model coordinate values that
+    best track provided position (e.g., marker trajectories) and/or orientation (e.g.,
+    frame orientations) data.
 
     Parameters
     ----------
     model: str or osim.Model
-        The OpenSim model to use for the optimization problem. Can be provided as a file
-        path or as an already-loaded osim.Model object.
+        See :py:class:`Solver`.
     convergence_tolerance: float, optional
-        The convergence tolerance to use for the IPOPT solver. Default is 1e-4.
+        See :py:class:`Solver`.
+    position_weight: float, optional
+        See :py:class:`TrackingSolver`.
+    orientation_weight: float, optional
+        See :py:class:`TrackingSolver`.
     """
 
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
@@ -351,16 +352,6 @@ class InverseKinematicsSolver(TrackingSolver):
             x0.append(coord.getDefaultValue())
             lbx.append(coord.getRangeMin())
             ubx.append(coord.getRangeMax())
-
-        # Solve an optimization problem at the first time step to initial guess, where
-        # we heavily prioritize tracking the position reference data over the
-        # orientation data.
-        print('Solving initial guess optimization...')
-        callback, solver = self.create_tracking_solver(0,
-                position_weight=10.0*self.position_weight,
-                orientation_weight=0.1*self.orientation_weight)
-        sol = solver(x0=x0, lbx=lbx, ubx=ubx)
-        x0 = sol['x']
 
         # Iterate over all of the time steps in the tracking data and solve the
         # optimization problem at each time step.
@@ -467,6 +458,26 @@ class SplineBasedSolverMixin:
 
 
 class SplineBasedInverseKinematicsSolver(SplineBasedSolverMixin, TrackingSolver):
+    """
+    An inverse kinematics solver that optimizes model coordinate values to minimize 
+    tracking error, where the predicted trajectories are represented as B-splines and 
+    the optimization variables are the spline control points.
+
+    Parameters
+    ----------
+    model: str or osim.Model
+        See :py:class:`Solver`.
+    convergence_tolerance: float, optional
+        See :py:class:`Solver`.
+    position_weight: float, optional
+        See :py:class:`TrackingSolver`.
+    orientation_weight: float, optional
+        See :py:class:`TrackingSolver`.
+    degree: int, optional
+        See :py:class:`SplineBasedSolverMixin`.
+    knot_interval: float, optional
+        See :py:class:`SplineBasedSolverMixin`.
+    """
 
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
                  orientation_weight=1.0, degree=3, knot_interval=0.05):
@@ -560,14 +571,13 @@ class BilevelSolver(TrackingSolver):
     Parameters
     ----------
     model: str or osim.Model
-        The OpenSim model to use for the optimization problem. Can be provided as a file
-        path or as an already-loaded osim.Model object.
+        See :py:class:`Solver`.
     convergence_tolerance: float, optional
-        The convergence tolerance to use for the IPOPT solver. Default is 1e-4.
+        See :py:class:`Solver`.
     position_weight: float, optional
-        The weight to use for position-based tracking costs. Default is 1.0.
+        See :py:class:`TrackingSolver`.
     orientation_weight: float, optional
-        The weight to use for orientation-based tracking costs. Default is 1.0.
+        See :py:class:`TrackingSolver`.
     scale_regularization_weight: float, optional
         The weight to apply to the regularization term on the scale factors in the
         bilevel optimization problem to encourage them to stay close to 1.0 if changes
@@ -620,32 +630,28 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
     Parameters
     ----------
     model: str or osim.Model
-        The OpenSim model to use for the optimization problem. Can be provided as a file
-        path or as an already-loaded osim.Model object.
+        See :py:class:`Solver`.
     convergence_tolerance: float, optional
-        The convergence tolerance to use for the IPOPT solver. Default is 1e-4.
-    degree: int, optional
-        The degree of the B-spline basis functions. Default is 3 (i.e., cubic splines).
-    knot_interval: float, optional
-        The interval between knots in the B-spline basis. Default is 0.05 seconds.
+        See :py:class:`Solver`.
     position_weight: float, optional
-        The weight to use for position-based tracking costs. Default is 1.0.
+        See :py:class:`TrackingSolver`.
     orientation_weight: float, optional
-        The weight to use for orientation-based tracking costs. Default is 1.0.
+        See :py:class:`TrackingSolver`.
     scale_regularization_weight: float, optional
-        The weight to apply to the regularization term on the scale factors in the
-        bilevel optimization problem to encourage them to stay close to 1.0 if changes
-        in the scale factor don't substantially improve the tracking cost. Default is
-        0.0 (i.e., no regularization).
+        See :py:class:`BilevelSolver`.
+    degree: int, optional
+        See :py:class:`SplineBasedSolverMixin`.
+    knot_interval: float, optional
+        See :py:class:`SplineBasedSolverMixin`.   
     """
-    def __init__(self, model, convergence_tolerance=1e-4, degree=3,
-                 knot_interval=0.05, position_weight=1.0, orientation_weight=1.0,
-                 scale_regularization_weight=0.0):
+    def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
+                 orientation_weight=1.0, scale_regularization_weight=0.0,
+                 degree=3, knot_interval=0.05):
         super().__init__(model, convergence_tolerance=convergence_tolerance,
-                         degree=degree, knot_interval=knot_interval,
                          position_weight=position_weight,
                          orientation_weight=orientation_weight,
-                         scale_regularization_weight=scale_regularization_weight)
+                         scale_regularization_weight=scale_regularization_weight,
+                         degree=degree, knot_interval=knot_interval)
 
     def solve(self, guess=None) -> SplineBilevelSolution:
 

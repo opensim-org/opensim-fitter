@@ -46,7 +46,7 @@ marker_source = MarkerSource(marker_fpath,
 solver = InverseKinematicsSolver(model,
                                  convergence_tolerance=1e-2,
                                  position_weight=1.0)
-solver.add_marker_source(marker_source)
+solver.add_marker_reference_data(marker_source)
 ik_solution = solver.solve()
 sto = osim.STOFileAdapter()
 sto.write(ik_solution.states_table, 'sprint_ik_solution.sto')
@@ -62,7 +62,7 @@ for knot_interval in knot_intervals:
                                                 convergence_tolerance=1e-4,
                                                 position_weight=1.0,
                                                 knot_interval=knot_interval)
-    solver.add_marker_source(marker_source)
+    solver.add_marker_reference_data(marker_source)
     spline_ik_solution = solver.solve(osim.TimeSeriesTable('sprint_ik_solution.sto'))
     sto = osim.STOFileAdapter()
     sto.write(spline_ik_solution.states_table,

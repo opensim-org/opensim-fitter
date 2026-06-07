@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build git \
+            libblas-dev liblapack-dev pkg-config
+
+      - name: Install Python runtime dependencies
+        run: pip install -r dependencies/requirements.txt
+
+      - name: Build and install OpenSim from source
+        working-directory: dependencies
+        run: |
+          python -c "import sys, yaml; yaml.safe_dump({'python_root_dir': sys.prefix}, open('config.yaml','w'))"
+          python install_opensim.py
+
+      - name: Install osimfit with test extras
+        run: pip install -e ".[test]"
+
+      - name: Run tests
+        run: pytest tests/ -v
