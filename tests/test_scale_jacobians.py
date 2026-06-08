@@ -95,7 +95,7 @@ class ScaledPositionErrorCallback(ScaleCallback):
         self.apply_state(arg)
         scales = self.pack_scales(arg)
         position = self.matter.calcScaledStationPosition(
-            self.state, self.mobod_index, self.station, scales)
+            self.state, scales, self.mobod_index, self.station)
         return [np.square(
             np.linalg.norm(position.to_numpy() - self.reference))]
 
@@ -103,7 +103,7 @@ class ScaledPositionErrorCallback(ScaleCallback):
         self.apply_state(arg)
         scales = self.pack_scales(arg)
         p = self.matter.calcScaledStationPosition(
-            self.state, self.mobod_index, self.station, scales)
+            self.state, scales, self.mobod_index, self.station)
 
         # Pre-double the error so subsequent Simbody calls return the
         # Jacobian of ``||p - p_ref||^2`` directly.
@@ -204,7 +204,7 @@ class TestScaledPosition(unittest.TestCase):
             set_default_positions(state)
             model.realizePosition(state)
             position = matter.calcScaledStationPosition(
-                state, mobod_index, station, scales)
+                state, scales, mobod_index, station)
 
             # Scale the model. The order of the scale factors in `scales` does
             # not necessarily match body-set order, so index by each body's

@@ -31,6 +31,8 @@ jobs:
 
       - name: Build and install OpenSim from source
         working-directory: dependencies
+        env:
+          OPENSIM_BUILD_JOBS: 2
         run: |
           python -c "import sys, yaml; yaml.safe_dump({'python_root_dir': sys.prefix}, open('config.yaml','w'))"
           python install_opensim.py

@@ -8,9 +8,8 @@ validation of `trim_to_range`. No real model file is needed — tests use
 hand-built TimeSeriesTables and throwaway DataSource subclasses.
 """
 
-import opensim as osim
 import pytest
-
+import opensim as osim
 from osimfit.data_sources import DataSource, MarkerSource
 
 
