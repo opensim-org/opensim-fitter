@@ -212,7 +212,7 @@ def test_bilevel_cost_function_scaling_changes_marker_world_position():
 
 # Test BilevelCostFunction error Jacobian calcluations.
 
-def test_bilevel_cost_function_jacobians_match_finite_difference():
+def test_bilevel_cost_function_jacobians_sliding_mass():
     model = create_sliding_mass_model()
     model.initSystem()
     cost_jac = BilevelCostFunction('cost_jac', model, scale_indexes=[1])
@@ -235,5 +235,37 @@ def test_bilevel_cost_function_jacobians_match_finite_difference():
     val = np.concatenate([
         np.full(len(cost_jac.q_indexes), 0.1),
         np.array([1.1, 1.0, 1.0]),
+    ])
+    assert np.allclose(J_jac(val).full(), J_fd(val).full(), atol=1e-6)
+
+
+def test_bilevel_cost_function_jacobians_full_body():
+    model = osim.Model(MODEL_FPATH)
+    model.initSystem()
+    bodyset = model.getBodySet()
+    scale_indexes = []
+    for i in range(bodyset.getSize()):
+        scale_indexes.append(bodyset.get(i).getMobilizedBodyIndex())
+
+    cost_jac = BilevelCostFunction('cost_jac', model, scale_indexes=scale_indexes)
+    cost_fd = BilevelCostFunction(
+        'cost_fd', model, scale_indexes=scale_indexes, opts={'enable_fd': True})
+
+    for cost in (cost_jac, cost_fd):
+        cost.add_marker_bilevel_cost(
+            '/markerset/R.Shoulder', osim.Vec3(0.3, 0, 0), weight=2.0)
+        cost.add_marker_bilevel_cost(
+            '/markerset/L.ASIS', osim.Vec3(0.7, 0, 0), weight=1.5)
+
+    q = ca.SX.sym('q', len(cost_jac.q_indexes))
+    s = ca.SX.sym('s', 3*bodyset.getSize())
+    x = ca.vertcat(q, s)
+
+    J_jac = ca.Function('J_jac', [x], [ca.jacobian(cost_jac(q, s), x)])
+    J_fd = ca.Function('J_fd', [x], [ca.jacobian(cost_fd(q, s), x)])
+
+    val = np.concatenate([
+        np.full(len(cost_jac.q_indexes), 0.1),
+        np.tile([1.1, 1.0, 1.0], bodyset.getSize()),
     ])
     assert np.allclose(J_jac(val).full(), J_fd(val).full(), atol=1e-6)
