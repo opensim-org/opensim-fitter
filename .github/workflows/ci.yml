@@ -1,13 +1,31 @@
-name: CI
+name: continuous-integration
 
 on:
   push:
     branches: [main]
   pull_request:
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Ubuntu
+            build_jobs: 4
+          - os: macos-latest
+            name: macOS
+            build_jobs: 2
+          - os: windows-latest
+            name: Windows
+            build_jobs: 4
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -19,12 +37,17 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Install system build dependencies
+      - name: Install system build dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build git \
             libblas-dev liblapack-dev pkg-config
+
+      - name: Set up MSVC environment (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install Python runtime dependencies
         run: pip install -r dependencies/requirements.txt
@@ -32,7 +55,7 @@ jobs:
       - name: Build and install OpenSim from source
         working-directory: dependencies
         env:
-          OPENSIM_BUILD_JOBS: 4
+          OPENSIM_BUILD_JOBS: ${{ matrix.build_jobs }}
         run: |
           python -c "import sys, yaml; yaml.safe_dump({'python_root_dir': sys.prefix}, open('config.yaml','w'))"
           python install_opensim.py

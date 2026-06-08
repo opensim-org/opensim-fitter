@@ -13,7 +13,7 @@ GENERATOR="Ninja"
 PYTHON_ROOT_DIR=$1
 WORKING_DIR="$(pwd)/opensim"
 if [ -d "$WORKING_DIR" ]; then
-    sudo rm -r "$WORKING_DIR"
+    rm -rf "$WORKING_DIR"
 fi
 mkdir -p "$WORKING_DIR"
 
