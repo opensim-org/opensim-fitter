@@ -9,23 +9,7 @@ A Python library for fitting OpenSim model geometry and kinematics to motion cap
 
 ## OpenSim installation
 
-TODO: Python wheels
-
-    python dependencies/wheels/install_wheel.py
-
-If you would like to install OpenSim manually for development purposes, see section "Manual OpenSim Installation" below.
-
-## Install OpenSim Fitter
-
-To install the OpenSim Fitter Python package,
-
-    pip install .
-
-Or, if you're a developer, install in "editable" mode,
-
-    pip install -e .
-
-## Manual OpenSim Installation
+For now, OpenSim Fitter requires installing a custom branch of OpenSim that disables the installation of the CasADi dependency that would conflict with the CasADi installed in the Python package we just created. 
 
 ### Dependencies
 
@@ -59,3 +43,13 @@ Note: make sure that the Python version in `python_root_dir` matches the Python 
 Run the following command from the root directory to build OpenSim and install it into your conda environment.
 
     python dependencies/install_opensim.py
+
+## Install OpenSim Fitter
+
+To install the OpenSim Fitter Python package,
+
+    pip install .
+
+Or, if you're a developer, install in "editable" mode,
+
+    pip install -e .
