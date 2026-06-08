@@ -48,8 +48,8 @@ def create_double_pendulum(length1: float, length2: float) -> osim.Model:
     return model
 
 
-def _synthesize_markers_trc(trc_path: str, length1: float,
-                            length2: float) -> None:
+def create_synthetic_markers_file(trc_path: str, length1: float,
+                                  length2: float) -> None:
     """
     Forward-simulate the truth pendulum and write marker positions to a TRC.
     """
@@ -80,7 +80,7 @@ def test_pendulum_bilevel_recovers_ground_truth_lengths(tmp_path):
     true_b1_length = 0.75
 
     trc_path = str(tmp_path / "markers.trc")
-    _synthesize_markers_trc(trc_path, true_b0_length, true_b1_length)
+    create_synthetic_markers_file(trc_path, true_b0_length, true_b1_length)
 
     # Strip the '|location' suffix that analyzeVec3 appends to marker column
     # labels so they match the marker names ('m0', 'm1') in the unscaled model.
