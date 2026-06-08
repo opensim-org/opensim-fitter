@@ -37,6 +37,7 @@ New-Item -ItemType Directory -Path $DepsBuild -Force | Out-Null
 Set-Location $DepsBuild
 cmake $DepsSrc `
     "-G$Generator" `
+    "-DCMAKE_BUILD_TYPE=$DebugType" `
     "-DCMAKE_INSTALL_PREFIX=$DepsInstall" `
     '-DSUPERBUILD_ezc3d=off' `
     "-DOPENSIM_WITH_CASADI=$Moco" `
@@ -53,6 +54,7 @@ New-Item -ItemType Directory -Path $CoreBuild -Force | Out-Null
 Set-Location $CoreBuild
 cmake $CoreSrc `
     "-G$Generator" `
+    "-DCMAKE_BUILD_TYPE=$DebugType" `
     "-DOPENSIM_DEPENDENCIES_DIR=$DepsInstall" `
     '-DOPENSIM_C3D_PARSER=None' `
     '-DBUILD_TESTING=off' `
