@@ -10,22 +10,11 @@ defaults:
     shell: bash
 
 jobs:
-  test:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            name: Ubuntu
-            build_jobs: 4
-          - os: macos-latest
-            name: macOS
-            build_jobs: 2
-          - os: windows-latest
-            name: Windows
-            build_jobs: 4
+  ubuntu:
+    name: Ubuntu
+    runs-on: ubuntu-latest
+    env:
+      OPENSIM_BUILD_JOBS: 4
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -37,29 +26,18 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Install system build dependencies (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Install system build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build git \
             libblas-dev liblapack-dev pkg-config swig
 
-      - name: Install system build dependencies (macOS)
-        if: matrix.os == 'macos-latest'
-        run: brew install swig
-
-      - name: Set up MSVC environment (Windows)
-        if: matrix.os == 'windows-latest'
-        uses: ilammy/msvc-dev-cmd@v1
-
       - name: Install Python runtime dependencies
         run: pip install -r dependencies/requirements.txt
 
       - name: Build and install OpenSim from source
         working-directory: dependencies
-        env:
-          OPENSIM_BUILD_JOBS: ${{ matrix.build_jobs }}
         run: |
           python -c "import sys, yaml; yaml.safe_dump({'python_root_dir': sys.prefix}, open('config.yaml','w'))"
           python install_opensim.py
@@ -70,4 +48,89 @@ jobs:
       - name: Run tests
         run: |
           export LD_LIBRARY_PATH=/home/runner/work/opensim-fitter/opensim-fitter/dependencies/opensim/opensim_core_install/sdk/Simbody/lib:$LD_LIBRARY_PATH
+          pytest tests/ -v
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    env:
+      OPENSIM_BUILD_JOBS: 2
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install system build dependencies
+        run: brew install swig
+
+      - name: Install Python runtime dependencies
+        run: pip install -r dependencies/requirements.txt
+
+      - name: Build and install OpenSim from source
+        working-directory: dependencies
+        run: |
+          python -c "import sys, yaml; yaml.safe_dump({'python_root_dir': sys.prefix}, open('config.yaml','w'))"
+          python install_opensim.py
+
+      - name: Install osimfit with test extras
+        run: pip install -e ".[test]"
+
+      - name: Run tests
+        run: |
+          export LD_LIBRARY_PATH=/home/runner/work/opensim-fitter/opensim-fitter/dependencies/opensim/opensim_core_install/sdk/Simbody/lib:$LD_LIBRARY_PATH
+          pytest tests/ -v
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    env:
+      OPENSIM_BUILD_JOBS: 6
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Python runtime dependencies
+        run: pip install -r dependencies/requirements.txt
+
+      - name: Build and install OpenSim from source
+        working-directory: dependencies
+        run: |
+          python -c "import sys, yaml; yaml.safe_dump({'python_root_dir': sys.prefix}, open('config.yaml','w'))"
+          python install_opensim.py
+
+      - name: Install osimfit with test extras
+        run: pip install -e ".[test]"
+
+      - name: Locate OpenSim DLLs
+        shell: pwsh
+        run: |
+          $install = "$env:GITHUB_WORKSPACE\dependencies\opensim\opensim_core_install"
+          Write-Host "Searching for SimTK*.dll under $install"
+          Get-ChildItem -Path $install -Recurse -Filter 'SimTK*.dll' |
+            Select-Object -ExpandProperty FullName
+          Write-Host "Searching for osim*.dll under $install"
+          Get-ChildItem -Path $install -Recurse -Filter 'osim*.dll' |
+            Select-Object -ExpandProperty FullName
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          $install = "$env:GITHUB_WORKSPACE\dependencies\opensim\opensim_core_install"
+          $env:PATH = "$install\bin;$install\sdk\Simbody\bin;$env:PATH"
           pytest tests/ -v
