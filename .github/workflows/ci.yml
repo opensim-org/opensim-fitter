@@ -117,20 +117,5 @@ jobs:
       - name: Install osimfit with test extras
         run: pip install -e ".[test]"
 
-      - name: Locate OpenSim DLLs
-        shell: pwsh
-        run: |
-          $install = "$env:GITHUB_WORKSPACE\dependencies\opensim\opensim_core_install"
-          Write-Host "Searching for SimTK*.dll under $install"
-          Get-ChildItem -Path $install -Recurse -Filter 'SimTK*.dll' |
-            Select-Object -ExpandProperty FullName
-          Write-Host "Searching for osim*.dll under $install"
-          Get-ChildItem -Path $install -Recurse -Filter 'osim*.dll' |
-            Select-Object -ExpandProperty FullName
-
       - name: Run tests
-        shell: pwsh
-        run: |
-          $install = "$env:GITHUB_WORKSPACE\dependencies\opensim\opensim_core_install"
-          $env:PATH = "$install\bin;$install\sdk\Simbody\bin;$env:PATH"
-          pytest tests/ -v
+        run: pytest tests/ -v
