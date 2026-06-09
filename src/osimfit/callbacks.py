@@ -2,7 +2,32 @@ import numpy as np
 import casadi as ca
 import opensim as osim
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from .utilities import get_coordinate_indexes
+
+
+###############
+# SCALE GROUP #
+###############
+
+
+@dataclass
+class ScaleGroup:
+    """
+    A group of mobilized bodies sharing one optimized 3-vector scale factor.
+    Carries body paths (for logging) and mobilized body indexes (for state
+    and Jacobian indexing).
+
+    Attributes
+    ----------
+    body_paths: list[str]
+        Absolute model paths to the bodies in this group.
+    mobod_indexes: list[int]
+        MobilizedBodyIndex values for the bodies in this group, paired with
+        body_paths.
+    """
+    body_paths: list[str]
+    mobod_indexes: list[int]
 
 
 #########
@@ -258,11 +283,12 @@ class MarkerBilevelCost(TrackingCost):
     ----------
     model: osim.Model
         The OpenSim model to use for evaluating the function and its Jacobian.
-    scale_groups: list[list[int]]
-        A list of mobilized-body-index groups. Each inner list is a group of
-        bodies that share one optimized 3-vector scale factor.
+    scale_groups: list[ScaleGroup]
+        Groups of bodies sharing one optimized 3-vector scale factor. Each
+        entry's mobod_indexes drive which body slots are scaled in the state
+        and how the Jacobian columns are aggregated.
     """
-    def __init__(self, model: osim.Model, scale_groups: list[list[int]]):
+    def __init__(self, model: osim.Model, scale_groups: list[ScaleGroup]):
         self.model = model
         self.q_indexes = list(get_coordinate_indexes(
             model, skip_dependent_coordinates=True).values())
@@ -356,7 +382,7 @@ class MarkerBilevelCost(TrackingCost):
         Js = np.zeros((1, 3*len(self.scale_groups)))
         for i, group in enumerate(self.scale_groups):
             col = np.zeros(3)
-            for k in group:
+            for k in group.mobod_indexes:
                 col += vecVec3.get(k).to_numpy()
             Js[0, 3*i:3*(i+1)] = col
 
@@ -555,14 +581,15 @@ class BilevelCostFunction(Function):
         The name of the callback function.
     model: osim.Model
         The OpenSim model to use for evaluating the function and its Jacobian.
-    scale_groups: list[list[int]]
-        A list of mobilized-body-index groups. Each inner list is a group of
-        bodies sharing one optimized 3-vector scale factor.
+    scale_groups: list[ScaleGroup]
+        Groups of bodies sharing one optimized 3-vector scale factor. The
+        optimization input is sized 3 * len(scale_groups); the i-th 3-vector
+        is broadcast to every body in scale_groups[i].
     opts: dict
         A dictionary of options to pass to the CasADi callback constructor.
     """
     def __init__(self, name: str, model: osim.Model,
-                 scale_groups: list[list[int]], opts={}):
+                 scale_groups: list[ScaleGroup], opts={}):
         self.q_indexes = list(get_coordinate_indexes(
             model, skip_dependent_coordinates=True).values())
         self.scale_groups = scale_groups
@@ -590,7 +617,7 @@ class BilevelCostFunction(Function):
         # bodies sharing one scale factor receive identical per-body scales.
         for i, group in enumerate(self.scale_groups):
             s_vec = osim.Vec3(*arg[1][3*i:3*i+3].full().flatten())
-            for mobod_index in group:
+            for mobod_index in group.mobod_indexes:
                 scales[mobod_index] = s_vec
 
         return scales

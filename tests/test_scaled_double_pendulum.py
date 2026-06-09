@@ -116,7 +116,9 @@ def test_pendulum_bilevel_recovers_ground_truth_lengths(tmp_path):
     # Regression contract: recovered X-scale factors match the ground-truth
     # lengths. Y and Z scales should stay near 1.0 since the truth model only
     # varies length along the local X axis.
-    assert solution.body_paths == [['/bodyset/b0'], ['/bodyset/b1']]
+    assert [g.body_paths for g in solution.scale_groups] == [
+        ['/bodyset/b0'], ['/bodyset/b1']
+    ]
     assert abs(solution.scale_factors[0, 0] - true_b0_length) < 0.02
     assert abs(solution.scale_factors[1, 0] - true_b1_length) < 0.02
     for body_idx in (0, 1):
@@ -162,7 +164,9 @@ def test_pendulum_bilevel_recovers_shared_length_under_asymmetric_truth(
 
     # One scale factor group → one row of 3 components.
     assert solution.scale_factors.shape == (1, 3)
-    assert solution.body_paths == [['/bodyset/b0', '/bodyset/b1']]
+    assert len(solution.scale_groups) == 1
+    assert solution.scale_groups[0].body_paths == [
+        '/bodyset/b0', '/bodyset/b1']
 
     # The shared scale must lie strictly between the two ground-truth lengths
     # — it cannot match either body exactly. This is the load-bearing check

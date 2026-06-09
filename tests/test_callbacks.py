@@ -8,7 +8,7 @@ import numpy as np
 import casadi as ca
 import opensim as osim
 from pathlib import Path
-from osimfit.callbacks import BilevelCostFunction, TrackingCostFunction
+from osimfit.callbacks import BilevelCostFunction, ScaleGroup, TrackingCostFunction
 
 # Define the test model path.
 MODEL_FPATH = str(Path(__file__).parent / 'subject_scale_walk.osim')
@@ -172,15 +172,19 @@ def test_tracking_cost_function_jacobian_full_body():
 def test_bilevel_cost_function_constructs_marker_subcost():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = BilevelCostFunction('cost', model, scale_groups=[[1]])
+    cost = BilevelCostFunction(
+        'cost', model,
+        scale_groups=[ScaleGroup(['/bodyset/rig_body'], [1])])
     assert cost.marker_cost is not None
-    assert cost.scale_groups == [[1]]
+    assert cost.scale_groups == [ScaleGroup(['/bodyset/rig_body'], [1])]
 
 
 def test_bilevel_cost_function_add_marker_registers_in_marker_cost():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = BilevelCostFunction('cost', model, scale_groups=[[1]])
+    cost = BilevelCostFunction(
+        'cost', model,
+        scale_groups=[ScaleGroup(['/bodyset/rig_body'], [1])])
     cost.add_marker_bilevel_cost('/markerset/m0', osim.Vec3(0))
     assert cost.marker_cost.mobod_indexes.size() == 1
 
@@ -190,7 +194,9 @@ def test_bilevel_cost_function_add_marker_registers_in_marker_cost():
 def test_bilevel_pack_scales_writes_to_mobod_indexes_keeps_ground_at_one():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = BilevelCostFunction('cost', model, scale_groups=[[1]])
+    cost = BilevelCostFunction(
+        'cost', model,
+        scale_groups=[ScaleGroup(['/bodyset/rig_body'], [1])])
     arg = [ca.DM.zeros(len(cost.q_indexes)), ca.DM([2.0, 3.0, 4.0])]
     scales = cost.pack_scales(arg)
 
@@ -209,7 +215,9 @@ def test_bilevel_pack_scales_writes_to_mobod_indexes_keeps_ground_at_one():
 def test_bilevel_cost_function_empty_eval_is_zero():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = BilevelCostFunction('cost', model, scale_groups=[[1]])
+    cost = BilevelCostFunction(
+        'cost', model,
+        scale_groups=[ScaleGroup(['/bodyset/rig_body'], [1])])
     q = ca.DM.zeros(len(cost.q_indexes))
     s = ca.DM.ones(3)
     assert float(cost(q, s)) == pytest.approx(0.0, abs=1e-12)
@@ -222,7 +230,9 @@ def test_bilevel_cost_function_scaling_changes_marker_world_position():
     """
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = BilevelCostFunction('cost', model, scale_groups=[[1]])
+    cost = BilevelCostFunction(
+        'cost', model,
+        scale_groups=[ScaleGroup(['/bodyset/rig_body'], [1])])
     cost.add_marker_bilevel_cost('/markerset/m1', osim.Vec3(1.0, 0, 0))
 
     q = ca.DM.zeros(len(cost.q_indexes))
@@ -238,9 +248,13 @@ def test_bilevel_cost_function_scaling_changes_marker_world_position():
 def test_bilevel_cost_function_jacobians_sliding_mass():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost_jac = BilevelCostFunction('cost_jac', model, scale_groups=[[1]])
+    cost_jac = BilevelCostFunction(
+        'cost_jac', model,
+        scale_groups=[ScaleGroup(['/bodyset/rig_body'], [1])])
     cost_fd = BilevelCostFunction(
-        'cost_fd', model, scale_groups=[[1]], opts={'enable_fd': True})
+        'cost_fd', model,
+        scale_groups=[ScaleGroup(['/bodyset/rig_body'], [1])],
+        opts={'enable_fd': True})
 
     for cost in (cost_jac, cost_fd):
         cost.add_marker_bilevel_cost(
@@ -268,7 +282,10 @@ def test_bilevel_cost_function_jacobians_full_body():
     bodyset = model.getBodySet()
     scale_groups = []
     for i in range(bodyset.getSize()):
-        scale_groups.append([int(bodyset.get(i).getMobilizedBodyIndex())])
+        body = bodyset.get(i)
+        scale_groups.append(ScaleGroup(
+            body_paths=[body.getAbsolutePathString()],
+            mobod_indexes=[int(body.getMobilizedBodyIndex())]))
 
     cost_jac = BilevelCostFunction(
         'cost_jac', model, scale_groups=scale_groups)
@@ -305,7 +322,10 @@ def test_bilevel_pack_scales_broadcasts_across_shared_group():
     """
     model = create_n_sliding_body_model(2)
     model.initSystem()
-    cost = BilevelCostFunction('cost', model, scale_groups=[[1, 2]])
+    cost = BilevelCostFunction(
+        'cost', model,
+        scale_groups=[ScaleGroup(
+            ['/bodyset/body_0', '/bodyset/body_1'], [1, 2])])
     arg = [ca.DM.zeros(len(cost.q_indexes)), ca.DM([2.0, 3.0, 4.0])]
     scales = cost.pack_scales(arg)
 
@@ -322,7 +342,12 @@ def test_bilevel_pack_scales_mixed_groups_apply_independent_vectors():
     """
     model = create_n_sliding_body_model(3)
     model.initSystem()
-    cost = BilevelCostFunction('cost', model, scale_groups=[[1, 2], [3]])
+    cost = BilevelCostFunction(
+        'cost', model,
+        scale_groups=[
+            ScaleGroup(['/bodyset/body_0', '/bodyset/body_1'], [1, 2]),
+            ScaleGroup(['/bodyset/body_2'], [3]),
+        ])
     arg = [ca.DM.zeros(len(cost.q_indexes)),
            ca.DM([2.0, 3.0, 4.0, 5.0, 5.0, 5.0])]
     scales = cost.pack_scales(arg)
@@ -344,13 +369,20 @@ def test_bilevel_cost_function_grouped_jacobian_sums_solo_and_matches_fd():
     model = create_n_sliding_body_model(2)
     model.initSystem()
 
-    cost_solo = BilevelCostFunction('cost_solo', model,
-                                    scale_groups=[[1], [2]])
-    cost_shared = BilevelCostFunction('cost_shared', model,
-                                      scale_groups=[[1, 2]])
-    cost_fd = BilevelCostFunction('cost_fd', model,
-                                  scale_groups=[[1, 2]],
-                                  opts={'enable_fd': True})
+    solo_groups = [
+        ScaleGroup(['/bodyset/body_0'], [1]),
+        ScaleGroup(['/bodyset/body_1'], [2]),
+    ]
+    shared_groups = [
+        ScaleGroup(['/bodyset/body_0', '/bodyset/body_1'], [1, 2]),
+    ]
+    cost_solo = BilevelCostFunction(
+        'cost_solo', model, scale_groups=solo_groups)
+    cost_shared = BilevelCostFunction(
+        'cost_shared', model, scale_groups=shared_groups)
+    cost_fd = BilevelCostFunction(
+        'cost_fd', model, scale_groups=shared_groups,
+        opts={'enable_fd': True})
 
     for cost in (cost_solo, cost_shared, cost_fd):
         cost.add_marker_bilevel_cost(
