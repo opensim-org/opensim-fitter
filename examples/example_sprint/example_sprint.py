@@ -5,7 +5,9 @@ import matplotlib.pyplot as plt
 import opensim as osim
 from scipy.interpolate import BSpline
 from osimfit.data_sources import MarkerSource
-from osimfit.solvers import InverseKinematicsSolver, SplineBasedInverseKinematicsSolver
+from osimfit.solvers import (InverseKinematicsSolver,
+                             SplineBasedInverseKinematicsSolver,
+                             SplineTrackingSolution)
 
 # EXAMPLE SPRINT
 # --------------
@@ -63,7 +65,8 @@ for knot_interval in knot_intervals:
                                                 position_weight=1.0,
                                                 knot_interval=knot_interval)
     solver.add_marker_reference_data(marker_source)
-    spline_ik_solution = solver.solve(osim.TimeSeriesTable('sprint_ik_solution.sto'))
+    spline_ik_solution = solver.solve(SplineTrackingSolution(
+        states_table=osim.TimeSeriesTable('sprint_ik_solution.sto')))
     sto = osim.STOFileAdapter()
     sto.write(spline_ik_solution.states_table,
               f'sprint_spline_based_ik_solution_knot{int(knot_interval*1000)}.sto')
