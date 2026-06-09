@@ -1,6 +1,219 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <OpenSimDocument Version="40600">
-	<Model name="subject_scale_walk">
+	<Model name="unscaled_generic">
+		<!--List of components that this component owns and serializes.-->
+		<components>
+			<Station name="euryon_r">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/torso</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.0015 0.59499999999999997 0.069000000000000006</location>
+			</Station>
+			<Station name="euryon_l">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/torso</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.0015 0.59499999999999997 -0.069000000000000006</location>
+			</Station>
+			<Station name="glabella">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/torso</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0.080000000000000002 0.57999999999999996 0</location>
+			</Station>
+			<Station name="opisthocranion">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/torso</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.080000000000000002 0.56000000000000005 0</location>
+			</Station>
+			<Station name="vertex">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/torso</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0 0.65000000000000002 0</location>
+			</Station>
+			<Station name="acromion_r">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/torso</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0.0050000000000000001 0.40000000000000002 0.16500000000000001</location>
+			</Station>
+			<Station name="acromion_l">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/torso</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0.0050000000000000001 0.40000000000000002 -0.16500000000000001</location>
+			</Station>
+			<Station name="suprasternale">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/torso</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0.029999999999999999 0.36499999999999999 0</location>
+			</Station>
+			<Station name="cervicale">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/torso</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.065000000000000002 0.41499999999999998 0</location>
+			</Station>
+			<Station name="iliocrestale_r">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/pelvis</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.050000000000000003 0.082000000000000003 0.11</location>
+			</Station>
+			<Station name="iliocrestale_l">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/pelvis</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.050000000000000003 0.082000000000000003 -0.11</location>
+			</Station>
+			<Station name="posterior_omphalion">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/pelvis</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.14000000000000001 0.11 0</location>
+			</Station>
+			<Station name="anterior_omphalion">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/pelvis</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0 0.11 0</location>
+			</Station>
+			<Station name="lateral_malleolus_r">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/tibia_r</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.0050000000000000001 -0.40999999999999998 0.042000000000000003</location>
+			</Station>
+			<Station name="lateral_malleolus_l">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/tibia_l</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.0050000000000000001 -0.40999999999999998 -0.042000000000000003</location>
+			</Station>
+			<Station name="medial_malleolus_r">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/tibia_r</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0.002 -0.38 -0.027</location>
+			</Station>
+			<Station name="medial_malleolus_l">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/tibia_l</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0.002 -0.38 0.027</location>
+			</Station>
+			<Station name="tibiale_r">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/tibia_r</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.01 -0.035000000000000003 -0.025000000000000001</location>
+			</Station>
+			<Station name="tibiale_l">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/tibia_l</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.01 -0.035000000000000003 0.025000000000000001</location>
+			</Station>
+			<Station name="trochanterion_r">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/femur_r</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.016500000000000001 0 0.050000000000000003</location>
+			</Station>
+			<Station name="trochanterion_l">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/femur_l</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.016500000000000001 0 -0.050000000000000003</location>
+			</Station>
+			<Station name="pternion_r">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/calcn_r</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.0040000000000000001 0.012999999999999999 -0.0030000000000000001</location>
+			</Station>
+			<Station name="pternion_l">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/calcn_l</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.0040000000000000001 0.012999999999999999 0.0030000000000000001</location>
+			</Station>
+			<Station name="acropodion_r">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/calcn_r</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0.25 -0.0027000000000000001 -0.016</location>
+			</Station>
+			<Station name="acropodion_l">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/calcn_l</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0.25 -0.0027000000000000001 0.016</location>
+			</Station>
+			<Station name="mtp1_r">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/calcn_r</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0.14099999999999999 0 0.047</location>
+			</Station>
+			<Station name="mtp1_l">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/calcn_l</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0.14099999999999999 0 -0.047</location>
+			</Station>
+			<Station name="mtp5_r">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/calcn_r</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0.185 0.001 -0.034500000000000003</location>
+			</Station>
+			<Station name="mtp5_l">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/calcn_l</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0.185 0.001 0.034500000000000003</location>
+			</Station>
+			<Station name="radiale_r">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/radius_r</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0 -0.0040000000000000001 0.0060000000000000001</location>
+			</Station>
+			<Station name="radiale_l">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/radius_l</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0 -0.0040000000000000001 -0.0060000000000000001</location>
+			</Station>
+			<Station name="stylion_r">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/radius_r</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0 -0.23000000000000001 0.029999999999999999</location>
+			</Station>
+			<Station name="stylion_l">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/radius_l</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>0 -0.23000000000000001 -0.029999999999999999</location>
+			</Station>
+			<Station name="olecranon_r">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/ulna_r</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.029999999999999999 -0.001 0</location>
+			</Station>
+			<Station name="olecranon_l">
+				<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
+				<socket_parent_frame>/bodyset/ulna_l</socket_parent_frame>
+				<!--The fixed location of the station expressed in its parent frame.-->
+				<location>-0.029999999999999999 -0.001 0</location>
+			</Station>
+		</components>
 		<!--The model's ground reference frame.-->
 		<Ground name="ground">
 			<!--The geometry used to display the axes of this Frame.-->
@@ -21,9 +234,9 @@
 		<!--Acceleration due to gravity, expressed in ground.-->
 		<gravity>0 -9.8066499999999994 0</gravity>
 		<!--Credits (e.g., model author names) associated with the model.-->
-		<credits>Rajagopal et al. (2016), Lai et al. (2017), Uhlrich et al. (2022). Notes: P. van den Bos changed the fiber-damping from 0.01 to default of 0.1 as suggested in M. Millard (2013) "Flexing Computational Muscle: Modeling and Simulation of Musculotendon Dynamics".</credits>
+		<credits>Rajagopal et al. (2016), Lai et al. (2017), Uhlrich et al. (2022) Notes: P. van den Bos changed the fiber-damping from 0.01 to default of 0.1 as suggested in M. Millard (2013) "Flexing Computational Muscle: Modeling and Simulation of Musculotendon Dynamics".</credits>
 		<!--Publications and references associated with the model.-->
-		<publications>[1] Rajagopal, A., Dembia, C.L., DeMers, M.S., Delp, D.D., Hicks, J.L., Delp, S.L. (2016) Full-body musculoskeletal model for muscle-driven simulation of human gait. IEEE Transactions on Biomedical Engineering. [2] Lai, A.K.M., Arnold, A.S., Wakeling, J.M. (2017) Why are antagonist muscles co-activated in my simulation? A musculoskeletal model for analysing human locomotor tasks. Annals of Biomedical Engineering. [3] Uhlrich, S.D., Jackson, R.W., Seth, A., Kolesar, J.A., Delp, S.L. (2022) Muscle coordination retraining inspired by musculoskeletal simulations reduces knee contact force. Scientific Reports.</publications>
+		<publications>Rajagopal, A., Dembia, C.L., DeMers, M.S., Delp, D.D., Hicks, J.L., Delp, S.L. (2016) Full-body musculoskeletal model for muscle-driven simulation of human gait. IEEE Transactions on Biomedical Engineering.</publications>
 		<!--Units for all lengths.-->
 		<length_units>meters</length_units>
 		<!--Units for all forces.-->
@@ -32,6 +245,24 @@
 		<BodySet name="bodyset">
 			<objects>
 				<Body name="pelvis">
+					<!--List of components that this component owns and serializes.-->
+					<components>
+						<PhysicalOffsetFrame name="pelvis">
+							<!--The geometry used to display the axes of this Frame.-->
+							<FrameGeometry name="frame_geometry">
+								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+								<socket_frame>..</socket_frame>
+								<!--Scale factors in X, Y, Z directions respectively.-->
+								<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+							</FrameGeometry>
+							<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+							<socket_parent>..</socket_parent>
+							<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+							<translation>-0.056276 -0.078489999999999949 0</translation>
+							<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+							<orientation>-0 0 -0</orientation>
+						</PhysicalOffsetFrame>
+					</components>
 					<!--The geometry used to display the axes of this Frame.-->
 					<FrameGeometry name="frame_geometry">
 						<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -284,7 +515,7 @@
 								<!--The radius of the cylinder.-->
 								<radius>0.050000000000000003</radius>
 								<!--The length of the cylinder.-->
-								<length>0.099999999999999992</length>
+								<length>0.10000000000000001</length>
 							</WrapCylinder>
 							<WrapCylinder name="PS_at_brim_l">
 								<!--Whether or not the WrapObject is considered active in computing paths-->
@@ -312,7 +543,7 @@
 								<!--The radius of the cylinder.-->
 								<radius>0.050000000000000003</radius>
 								<!--The length of the cylinder.-->
-								<length>0.099999999999999992</length>
+								<length>0.10000000000000001</length>
 							</WrapCylinder>
 							<WrapCylinder name="IL_at_brim_r">
 								<!--Whether or not the WrapObject is considered active in computing paths-->
@@ -340,7 +571,7 @@
 								<!--The radius of the cylinder.-->
 								<radius>0.054899999999999997</radius>
 								<!--The length of the cylinder.-->
-								<length>0.099999999999999992</length>
+								<length>0.10000000000000001</length>
 							</WrapCylinder>
 							<WrapCylinder name="IL_at_brim_l">
 								<!--Whether or not the WrapObject is considered active in computing paths-->
@@ -368,7 +599,7 @@
 								<!--The radius of the cylinder.-->
 								<radius>0.054899999999999997</radius>
 								<!--The length of the cylinder.-->
-								<length>0.099999999999999992</length>
+								<length>0.10000000000000001</length>
 							</WrapCylinder>
 						</objects>
 						<groups />
@@ -575,9 +806,9 @@
 									</SurfaceProperties>
 								</Appearance>
 								<!--The radius of the cylinder.-->
-								<radius>0.020099999999999996</radius>
+								<radius>0.0201</radius>
 								<!--The length of the cylinder.-->
-								<length>0.099999999999999992</length>
+								<length>0.10000000000000001</length>
 							</WrapCylinder>
 							<WrapCylinder name="AMprox_at_femshaft_r">
 								<!--Whether or not the WrapObject is considered active in computing paths-->
@@ -631,9 +862,9 @@
 									</SurfaceProperties>
 								</Appearance>
 								<!--The radius of the cylinder.-->
-								<radius>0.021399999999999995</radius>
+								<radius>0.021399999999999999</radius>
 								<!--The length of the cylinder.-->
-								<length>0.11999999999999998</length>
+								<length>0.12</length>
 							</WrapCylinder>
 							<WrapCylinder name="AMdist_at_femshaft_r">
 								<!--Whether or not the WrapObject is considered active in computing paths-->
@@ -799,7 +1030,7 @@
 								<!--The radius of the cylinder.-->
 								<radius>0.055</radius>
 								<!--The length of the cylinder.-->
-								<length>0.099999999999999992</length>
+								<length>0.10000000000000001</length>
 							</WrapCylinder>
 							<WrapCylinder name="GasMed_at_shank_r">
 								<!--Whether or not the WrapObject is considered active in computing paths-->
@@ -1101,7 +1332,7 @@
 					<!--The location (Vec3) of the mass center in the body frame.-->
 					<mass_center>0.034599999999999999 0.0060000000000000001 -0.017500000000000002</mass_center>
 					<!--The elements of the inertia tensor (Vec6) as [Ixx Iyy Izz Ixy Ixz Iyz] measured about the mass_center and not the body origin.-->
-					<inertia>0.0001 0.0011000000000000001 0.001 0 0 0</inertia>
+					<inertia>0.0001 0.00020000000000000001 0.001 0 0 0</inertia>
 				</Body>
 				<Body name="femur_l">
 					<!--The geometry used to display the axes of this Frame.-->
@@ -1296,9 +1527,9 @@
 									</SurfaceProperties>
 								</Appearance>
 								<!--The radius of the cylinder.-->
-								<radius>0.020099999999999996</radius>
+								<radius>0.0201</radius>
 								<!--The length of the cylinder.-->
-								<length>0.099999999999999992</length>
+								<length>0.10000000000000001</length>
 							</WrapCylinder>
 							<WrapCylinder name="AMprox_at_femshaft_l">
 								<!--Whether or not the WrapObject is considered active in computing paths-->
@@ -1352,9 +1583,9 @@
 									</SurfaceProperties>
 								</Appearance>
 								<!--The radius of the cylinder.-->
-								<radius>0.021399999999999995</radius>
+								<radius>0.021399999999999999</radius>
 								<!--The length of the cylinder.-->
-								<length>0.11999999999999998</length>
+								<length>0.12</length>
 							</WrapCylinder>
 							<WrapCylinder name="AMdist_at_femshaft_l">
 								<!--Whether or not the WrapObject is considered active in computing paths-->
@@ -1520,7 +1751,7 @@
 								<!--The radius of the cylinder.-->
 								<radius>0.055</radius>
 								<!--The length of the cylinder.-->
-								<length>0.099999999999999992</length>
+								<length>0.10000000000000001</length>
 							</WrapCylinder>
 							<WrapCylinder name="GasMed_at_shank_l">
 								<!--Whether or not the WrapObject is considered active in computing paths-->
@@ -1827,9 +2058,27 @@
 					<!--The location (Vec3) of the mass center in the body frame.-->
 					<mass_center>0.034599999999999999 0.0060000000000000001 0.017500000000000002</mass_center>
 					<!--The elements of the inertia tensor (Vec6) as [Ixx Iyy Izz Ixy Ixz Iyz] measured about the mass_center and not the body origin.-->
-					<inertia>0.0001 0.0011000000000000001 0.001 0 0 0</inertia>
+					<inertia>0.0001 0.00020000000000000001 0.001 0 0 0</inertia>
 				</Body>
 				<Body name="torso">
+					<!--List of components that this component owns and serializes.-->
+					<components>
+						<PhysicalOffsetFrame name="torso">
+							<!--The geometry used to display the axes of this Frame.-->
+							<FrameGeometry name="frame_geometry">
+								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+								<socket_frame>..</socket_frame>
+								<!--Scale factors in X, Y, Z directions respectively.-->
+								<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+							</FrameGeometry>
+							<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+							<socket_parent>..</socket_parent>
+							<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+							<translation>0.003155000000000005 0.42149999999999993 0</translation>
+							<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+							<orientation>-0 0 -0</orientation>
+						</PhysicalOffsetFrame>
+					</components>
 					<!--The geometry used to display the axes of this Frame.-->
 					<FrameGeometry name="frame_geometry">
 						<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -3172,7 +3421,7 @@
 							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
 							<default_speed_value>0</default_speed_value>
 							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-1.5707963300000001 1.5707963300000001</range>
+							<range>-6.2831853071795862 6.2831853071795862</range>
 							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
 							<clamped>true</clamped>
 							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
@@ -3188,7 +3437,7 @@
 							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
 							<default_speed_value>0</default_speed_value>
 							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-5 5</range>
+							<range>-50 50</range>
 							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
 							<clamped>true</clamped>
 							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
@@ -3408,6 +3657,24 @@
 							<orientation>0 0 0</orientation>
 						</PhysicalOffsetFrame>
 						<PhysicalOffsetFrame name="femur_r_offset">
+							<!--List of components that this component owns and serializes.-->
+							<components>
+								<PhysicalOffsetFrame name="r_thigh">
+									<!--The geometry used to display the axes of this Frame.-->
+									<FrameGeometry name="frame_geometry">
+										<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+										<socket_frame>..</socket_frame>
+										<!--Scale factors in X, Y, Z directions respectively.-->
+										<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+									</FrameGeometry>
+									<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+									<socket_parent>..</socket_parent>
+									<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+									<translation>0 0 0</translation>
+									<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+									<orientation>-0 0 -0</orientation>
+								</PhysicalOffsetFrame>
+							</components>
 							<!--The geometry used to display the axes of this Frame.-->
 							<FrameGeometry name="frame_geometry">
 								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -3465,14 +3732,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>1 0 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0</value>
+							</Constant>
 						</TransformAxis>
 						<!--The second TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation2">
@@ -3481,14 +3743,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 1 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0</value>
+							</Constant>
 						</TransformAxis>
 						<!--The third TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation3">
@@ -3497,14 +3754,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 0 1</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0</value>
+							</Constant>
 						</TransformAxis>
 					</SpatialTransform>
 				</CustomJoint>
@@ -3550,6 +3802,24 @@
 							<orientation>-1.64157 1.44618 1.5708</orientation>
 						</PhysicalOffsetFrame>
 						<PhysicalOffsetFrame name="tibia_r_offset">
+							<!--List of components that this component owns and serializes.-->
+							<components>
+								<PhysicalOffsetFrame name="r_shank">
+									<!--The geometry used to display the axes of this Frame.-->
+									<FrameGeometry name="frame_geometry">
+										<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+										<socket_frame>..</socket_frame>
+										<!--Scale factors in X, Y, Z directions respectively.-->
+										<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+									</FrameGeometry>
+									<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+									<socket_parent>..</socket_parent>
+									<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+									<translation>0 0 0</translation>
+									<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+									<orientation>1.6954184481363541 -1.5000262891979674 1.5708021358833288</orientation>
+								</PhysicalOffsetFrame>
+							</components>
 							<!--The geometry used to display the axes of this Frame.-->
 							<FrameGeometry name="frame_geometry">
 								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -3609,15 +3879,10 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>1 0 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<PolynomialFunction name="function">
-										<!--Coefficients of a polynomial function, from highest to lowest order.Polynomial order is n-1, where n is the number of coefficients.-->
-										<coefficients>0.00015904478788503811 -0.001015149915669 0.001817510974968 2.6414266451992301e-05 -7.7465635324718924e-07</coefficients>
-									</PolynomialFunction>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<PolynomialFunction name="function">
+								<!--Coefficients of a polynomial function, from highest to lowest order.Polynomial order is n-1, where n is the number of coefficients.-->
+								<coefficients>0.00015904478788503811 -0.001015149915669 0.001817510974968 2.6414266451992301e-05 -7.7465635324718924e-07</coefficients>
+							</PolynomialFunction>
 						</TransformAxis>
 						<!--The second TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation2">
@@ -3626,15 +3891,10 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 1 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<PolynomialFunction name="function">
-										<!--Coefficients of a polynomial function, from highest to lowest order.Polynomial order is n-1, where n is the number of coefficients.-->
-										<coefficients>-0.00057968780523386836 0.0050797657456260002 -0.011442375726364 0.0039369086688440004 -2.5163503832135249e-05</coefficients>
-									</PolynomialFunction>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<PolynomialFunction name="function">
+								<!--Coefficients of a polynomial function, from highest to lowest order.Polynomial order is n-1, where n is the number of coefficients.-->
+								<coefficients>-0.00057968780523386836 0.0050797657456260002 -0.011442375726364 0.0039369086688440004 -2.5163503832135249e-05</coefficients>
+							</PolynomialFunction>
 						</TransformAxis>
 						<!--The third TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation3">
@@ -3643,15 +3903,10 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 0 1</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<PolynomialFunction name="function">
-										<!--Coefficients of a polynomial function, from highest to lowest order.Polynomial order is n-1, where n is the number of coefficients.-->
-										<coefficients>0.001208086889206 -0.004453611224706 0.00061164940729817395 0.006265429606387 -1.461912533723326e-05</coefficients>
-									</PolynomialFunction>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<PolynomialFunction name="function">
+								<!--Coefficients of a polynomial function, from highest to lowest order.Polynomial order is n-1, where n is the number of coefficients.-->
+								<coefficients>0.001208086889206 -0.004453611224706 0.00061164940729817395 0.006265429606387 -1.461912533723326e-05</coefficients>
+							</PolynomialFunction>
 						</TransformAxis>
 					</SpatialTransform>
 				</CustomJoint>
@@ -3668,7 +3923,7 @@
 							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
 							<default_speed_value>0</default_speed_value>
 							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-99999.899999999994 99999.899999999994</range>
+							<range>0 2.4434609527920599</range>
 							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
 							<clamped>false</clamped>
 							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
@@ -3755,15 +4010,10 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>1 0 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<SimmSpline name="function">
-										<x> 0 0.174533 0.349066 0.523599 0.698132 0.872665 1.0472 1.22173 1.39626 1.5708 1.74533 1.91986 2.0944</x>
-										<y> 0.0524 0.0488 0.0437 0.0371 0.0296 0.0216 0.0136 0.0057 -0.0019 -0.0088 -0.0148 -0.0196 -0.0227</y>
-									</SimmSpline>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<SimmSpline name="function">
+								<x> 0 0.174533 0.349066 0.523599 0.698132 0.872665 1.0472 1.22173 1.39626 1.5708 1.74533 1.91986 2.0944</x>
+								<y> 0.0524 0.0488 0.0437 0.0371 0.0296 0.0216 0.0136 0.0057 -0.0019 -0.0088 -0.0148 -0.0196 -0.0227</y>
+							</SimmSpline>
 						</TransformAxis>
 						<!--The second TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation2">
@@ -3772,15 +4022,10 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 1 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<SimmSpline name="function">
-										<x> 0 0.174533 0.349066 0.523599 0.698132 0.872665 1.0472 1.22173 1.39626 1.5708 1.74533 1.91986 2.0944</x>
-										<y> -0.0108 -0.019 -0.0263 -0.0322 -0.0367 -0.0395 -0.0408 -0.0404 -0.0384 -0.0349 -0.0301 -0.0245 -0.0187</y>
-									</SimmSpline>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<SimmSpline name="function">
+								<x> 0 0.174533 0.349066 0.523599 0.698132 0.872665 1.0472 1.22173 1.39626 1.5708 1.74533 1.91986 2.0944</x>
+								<y> -0.0108 -0.019 -0.0263 -0.0322 -0.0367 -0.0395 -0.0408 -0.0404 -0.0384 -0.0349 -0.0301 -0.0245 -0.0187</y>
+							</SimmSpline>
 						</TransformAxis>
 						<!--The third TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation3">
@@ -3789,14 +4034,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 0 1</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0.0027499999999999998</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0.0027499999999999998</value>
+							</Constant>
 						</TransformAxis>
 					</SpatialTransform>
 				</CustomJoint>
@@ -3842,6 +4082,24 @@
 							<orientation>0.175895 -0.105208 0.0186622</orientation>
 						</PhysicalOffsetFrame>
 						<PhysicalOffsetFrame name="talus_r_offset">
+							<!--List of components that this component owns and serializes.-->
+							<components>
+								<PhysicalOffsetFrame name="r_foot">
+									<!--The geometry used to display the axes of this Frame.-->
+									<FrameGeometry name="frame_geometry">
+										<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+										<socket_frame>..</socket_frame>
+										<!--Scale factors in X, Y, Z directions respectively.-->
+										<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+									</FrameGeometry>
+									<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+									<socket_parent>..</socket_parent>
+									<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+									<translation>0 0 0</translation>
+									<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+									<orientation>-0.17491234728434582 0.10684439507006764 -4.5721221389517204e-08</orientation>
+								</PhysicalOffsetFrame>
+							</components>
 							<!--The geometry used to display the axes of this Frame.-->
 							<FrameGeometry name="frame_geometry">
 								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -3855,64 +4113,6 @@
 							<translation>0 0 0</translation>
 							<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
 							<orientation>0.175895 -0.105208 0.0186622</orientation>
-						</PhysicalOffsetFrame>
-					</frames>
-				</PinJoint>
-				<PinJoint name="subtalar_r">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The parent frame for the joint.).-->
-					<socket_parent_frame>talus_r_offset</socket_parent_frame>
-					<!--Path to a Component that satisfies the Socket 'child_frame' of type PhysicalFrame (description: The child frame for the joint.).-->
-					<socket_child_frame>calcn_r_offset</socket_child_frame>
-					<!--List containing the generalized coordinates (q's) that parameterize this joint.-->
-					<coordinates>
-						<Coordinate name="subtalar_angle_r">
-							<!--The value of this coordinate before any value has been set. Rotational coordinate value is in radians and Translational in meters.-->
-							<default_value>0</default_value>
-							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
-							<default_speed_value>0</default_speed_value>
-							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-0.61086523819801497 0.61086523819801497</range>
-							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
-							<clamped>true</clamped>
-							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
-							<locked>true</locked>
-							<!--If specified, the coordinate can be prescribed by a function of time. It can be any OpenSim Function with valid second order derivatives.-->
-							<prescribed_function />
-							<!--Flag indicating whether or not the values of the coordinates should be prescribed according to the function above. It is ignored if the no prescribed function is specified.-->
-							<prescribed>false</prescribed>
-						</Coordinate>
-					</coordinates>
-					<!--Physical offset frames owned by the Joint that are typically used to satisfy the owning Joint's parent and child frame connections (sockets). PhysicalOffsetFrames are often used to describe the fixed transformation from a Body's origin to another location of interest on the Body (e.g., the joint center). When the joint is deleted, so are the PhysicalOffsetFrame components in this list.-->
-					<frames>
-						<PhysicalOffsetFrame name="talus_r_offset">
-							<!--The geometry used to display the axes of this Frame.-->
-							<FrameGeometry name="frame_geometry">
-								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
-								<socket_frame>..</socket_frame>
-								<!--Scale factors in X, Y, Z directions respectively.-->
-								<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
-							</FrameGeometry>
-							<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
-							<socket_parent>/bodyset/talus_r</socket_parent>
-							<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
-							<translation>-0.048770000000000001 -0.041950000000000001 0.00792</translation>
-							<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
-							<orientation>-1.7681899999999999 0.906223 1.8196000000000001</orientation>
-						</PhysicalOffsetFrame>
-						<PhysicalOffsetFrame name="calcn_r_offset">
-							<!--The geometry used to display the axes of this Frame.-->
-							<FrameGeometry name="frame_geometry">
-								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
-								<socket_frame>..</socket_frame>
-								<!--Scale factors in X, Y, Z directions respectively.-->
-								<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
-							</FrameGeometry>
-							<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
-							<socket_parent>/bodyset/calcn_r</socket_parent>
-							<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
-							<translation>0 0 0</translation>
-							<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
-							<orientation>-1.7681899999999999 0.906223 1.8196000000000001</orientation>
 						</PhysicalOffsetFrame>
 					</frames>
 				</PinJoint>
@@ -3933,7 +4133,7 @@
 							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
 							<clamped>true</clamped>
 							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
-							<locked>true</locked>
+							<locked>false</locked>
 							<!--If specified, the coordinate can be prescribed by a function of time. It can be any OpenSim Function with valid second order derivatives.-->
 							<prescribed_function />
 							<!--Flag indicating whether or not the values of the coordinates should be prescribed according to the function above. It is ignored if the no prescribed function is specified.-->
@@ -3958,6 +4158,24 @@
 							<orientation>-3.1415899999999999 0.61990100000000004 0</orientation>
 						</PhysicalOffsetFrame>
 						<PhysicalOffsetFrame name="toes_r_offset">
+							<!--List of components that this component owns and serializes.-->
+							<components>
+								<PhysicalOffsetFrame name="r_toes">
+									<!--The geometry used to display the axes of this Frame.-->
+									<FrameGeometry name="frame_geometry">
+										<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+										<socket_frame>..</socket_frame>
+										<!--Scale factors in X, Y, Z directions respectively.-->
+										<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+									</FrameGeometry>
+									<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+									<socket_parent>..</socket_parent>
+									<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+									<translation>0 0 0</translation>
+									<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+									<orientation>3.1415894045894386 0.61990104567407422 1.8842837041597096e-06</orientation>
+								</PhysicalOffsetFrame>
+							</components>
 							<!--The geometry used to display the axes of this Frame.-->
 							<FrameGeometry name="frame_geometry">
 								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -4048,6 +4266,24 @@
 							<orientation>0 0 0</orientation>
 						</PhysicalOffsetFrame>
 						<PhysicalOffsetFrame name="femur_l_offset">
+							<!--List of components that this component owns and serializes.-->
+							<components>
+								<PhysicalOffsetFrame name="l_thigh">
+									<!--The geometry used to display the axes of this Frame.-->
+									<FrameGeometry name="frame_geometry">
+										<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+										<socket_frame>..</socket_frame>
+										<!--Scale factors in X, Y, Z directions respectively.-->
+										<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+									</FrameGeometry>
+									<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+									<socket_parent>..</socket_parent>
+									<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+									<translation>0 0 0</translation>
+									<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+									<orientation>-0 0 -0</orientation>
+								</PhysicalOffsetFrame>
+							</components>
 							<!--The geometry used to display the axes of this Frame.-->
 							<FrameGeometry name="frame_geometry">
 								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -4105,14 +4341,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>1 0 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0</value>
+							</Constant>
 						</TransformAxis>
 						<!--The second TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation2">
@@ -4121,14 +4352,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 1 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0</value>
+							</Constant>
 						</TransformAxis>
 						<!--The third TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation3">
@@ -4137,14 +4363,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 0 1</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0</value>
+							</Constant>
 						</TransformAxis>
 					</SpatialTransform>
 				</CustomJoint>
@@ -4190,6 +4411,24 @@
 							<orientation>1.64157 -1.44618 1.5708</orientation>
 						</PhysicalOffsetFrame>
 						<PhysicalOffsetFrame name="tibia_l_offset">
+							<!--List of components that this component owns and serializes.-->
+							<components>
+								<PhysicalOffsetFrame name="l_shank">
+									<!--The geometry used to display the axes of this Frame.-->
+									<FrameGeometry name="frame_geometry">
+										<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+										<socket_frame>..</socket_frame>
+										<!--Scale factors in X, Y, Z directions respectively.-->
+										<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+									</FrameGeometry>
+									<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+									<socket_parent>..</socket_parent>
+									<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+									<translation>0 0 0</translation>
+									<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+									<orientation>-1.6954184481363541 1.5000262891979674 1.5708021358833288</orientation>
+								</PhysicalOffsetFrame>
+							</components>
 							<!--The geometry used to display the axes of this Frame.-->
 							<FrameGeometry name="frame_geometry">
 								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -4249,15 +4488,10 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>1 0 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<PolynomialFunction name="function">
-										<!--Coefficients of a polynomial function, from highest to lowest order.Polynomial order is n-1, where n is the number of coefficients.-->
-										<coefficients>0.00015904478788503811 -0.001015149915669 0.001817510974968 2.6414266451992301e-05 -7.7465635324718924e-07</coefficients>
-									</PolynomialFunction>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<PolynomialFunction name="function">
+								<!--Coefficients of a polynomial function, from highest to lowest order.Polynomial order is n-1, where n is the number of coefficients.-->
+								<coefficients>0.00015904478788503811 -0.001015149915669 0.001817510974968 2.6414266451992301e-05 -7.7465635324718924e-07</coefficients>
+							</PolynomialFunction>
 						</TransformAxis>
 						<!--The second TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation2">
@@ -4266,15 +4500,10 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 1 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<PolynomialFunction name="function">
-										<!--Coefficients of a polynomial function, from highest to lowest order.Polynomial order is n-1, where n is the number of coefficients.-->
-										<coefficients>-0.00057968780523386836 0.0050797657456260002 -0.011442375726364 0.0039369086688440004 -2.5163503832135249e-05</coefficients>
-									</PolynomialFunction>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<PolynomialFunction name="function">
+								<!--Coefficients of a polynomial function, from highest to lowest order.Polynomial order is n-1, where n is the number of coefficients.-->
+								<coefficients>-0.00057968780523386836 0.0050797657456260002 -0.011442375726364 0.0039369086688440004 -2.5163503832135249e-05</coefficients>
+							</PolynomialFunction>
 						</TransformAxis>
 						<!--The third TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation3">
@@ -4283,15 +4512,10 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 0 1</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<PolynomialFunction name="function">
-										<!--Coefficients of a polynomial function, from highest to lowest order.Polynomial order is n-1, where n is the number of coefficients.-->
-										<coefficients>-0.001208086889206 0.004453611224706 -0.00061164940729817395 -0.006265429606387 1.461912533723326e-05</coefficients>
-									</PolynomialFunction>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<PolynomialFunction name="function">
+								<!--Coefficients of a polynomial function, from highest to lowest order.Polynomial order is n-1, where n is the number of coefficients.-->
+								<coefficients>-0.001208086889206 0.004453611224706 -0.00061164940729817395 -0.006265429606387 1.461912533723326e-05</coefficients>
+							</PolynomialFunction>
 						</TransformAxis>
 					</SpatialTransform>
 				</CustomJoint>
@@ -4308,7 +4532,7 @@
 							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
 							<default_speed_value>0</default_speed_value>
 							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-99999.899999999994 99999.899999999994</range>
+							<range>0 2.4434609527920599</range>
 							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
 							<clamped>false</clamped>
 							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
@@ -4395,15 +4619,10 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>1 0 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<SimmSpline name="function">
-										<x> 0 0.174533 0.349066 0.523599 0.698132 0.872665 1.0472 1.22173 1.39626 1.5708 1.74533 1.91986 2.0944</x>
-										<y> 0.0524 0.0488 0.0437 0.0371 0.0296 0.0216 0.0136 0.0057 -0.0019 -0.0088 -0.0148 -0.0196 -0.0227</y>
-									</SimmSpline>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<SimmSpline name="function">
+								<x> 0 0.174533 0.349066 0.523599 0.698132 0.872665 1.0472 1.22173 1.39626 1.5708 1.74533 1.91986 2.0944</x>
+								<y> 0.0524 0.0488 0.0437 0.0371 0.0296 0.0216 0.0136 0.0057 -0.0019 -0.0088 -0.0148 -0.0196 -0.0227</y>
+							</SimmSpline>
 						</TransformAxis>
 						<!--The second TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation2">
@@ -4412,15 +4631,10 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 1 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<SimmSpline name="function">
-										<x> 0 0.174533 0.349066 0.523599 0.698132 0.872665 1.0472 1.22173 1.39626 1.5708 1.74533 1.91986 2.0944</x>
-										<y> -0.0108 -0.019 -0.0263 -0.0322 -0.0367 -0.0395 -0.0408 -0.0404 -0.0384 -0.0349 -0.0301 -0.0245 -0.0187</y>
-									</SimmSpline>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<SimmSpline name="function">
+								<x> 0 0.174533 0.349066 0.523599 0.698132 0.872665 1.0472 1.22173 1.39626 1.5708 1.74533 1.91986 2.0944</x>
+								<y> -0.0108 -0.019 -0.0263 -0.0322 -0.0367 -0.0395 -0.0408 -0.0404 -0.0384 -0.0349 -0.0301 -0.0245 -0.0187</y>
+							</SimmSpline>
 						</TransformAxis>
 						<!--The third TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation3">
@@ -4429,14 +4643,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 0 1</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>-0.0027499999999999998</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>-0.0027499999999999998</value>
+							</Constant>
 						</TransformAxis>
 					</SpatialTransform>
 				</CustomJoint>
@@ -4482,6 +4691,24 @@
 							<orientation>-0.175895 0.105208 0.0186622</orientation>
 						</PhysicalOffsetFrame>
 						<PhysicalOffsetFrame name="talus_l_offset">
+							<!--List of components that this component owns and serializes.-->
+							<components>
+								<PhysicalOffsetFrame name="l_foot">
+									<!--The geometry used to display the axes of this Frame.-->
+									<FrameGeometry name="frame_geometry">
+										<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+										<socket_frame>..</socket_frame>
+										<!--Scale factors in X, Y, Z directions respectively.-->
+										<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+									</FrameGeometry>
+									<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+									<socket_parent>..</socket_parent>
+									<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+									<translation>0 0 0</translation>
+									<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+									<orientation>0.17491234728434582 -0.10684439507006764 -4.5721221389517204e-08</orientation>
+								</PhysicalOffsetFrame>
+							</components>
 							<!--The geometry used to display the axes of this Frame.-->
 							<FrameGeometry name="frame_geometry">
 								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -4495,64 +4722,6 @@
 							<translation>0 0 0</translation>
 							<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
 							<orientation>-0.175895 0.105208 0.0186622</orientation>
-						</PhysicalOffsetFrame>
-					</frames>
-				</PinJoint>
-				<PinJoint name="subtalar_l">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The parent frame for the joint.).-->
-					<socket_parent_frame>talus_l_offset</socket_parent_frame>
-					<!--Path to a Component that satisfies the Socket 'child_frame' of type PhysicalFrame (description: The child frame for the joint.).-->
-					<socket_child_frame>calcn_l_offset</socket_child_frame>
-					<!--List containing the generalized coordinates (q's) that parameterize this joint.-->
-					<coordinates>
-						<Coordinate name="subtalar_angle_l">
-							<!--The value of this coordinate before any value has been set. Rotational coordinate value is in radians and Translational in meters.-->
-							<default_value>0</default_value>
-							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
-							<default_speed_value>0</default_speed_value>
-							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-0.61086523819801497 0.61086523819801497</range>
-							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
-							<clamped>true</clamped>
-							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
-							<locked>true</locked>
-							<!--If specified, the coordinate can be prescribed by a function of time. It can be any OpenSim Function with valid second order derivatives.-->
-							<prescribed_function />
-							<!--Flag indicating whether or not the values of the coordinates should be prescribed according to the function above. It is ignored if the no prescribed function is specified.-->
-							<prescribed>false</prescribed>
-						</Coordinate>
-					</coordinates>
-					<!--Physical offset frames owned by the Joint that are typically used to satisfy the owning Joint's parent and child frame connections (sockets). PhysicalOffsetFrames are often used to describe the fixed transformation from a Body's origin to another location of interest on the Body (e.g., the joint center). When the joint is deleted, so are the PhysicalOffsetFrame components in this list.-->
-					<frames>
-						<PhysicalOffsetFrame name="talus_l_offset">
-							<!--The geometry used to display the axes of this Frame.-->
-							<FrameGeometry name="frame_geometry">
-								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
-								<socket_frame>..</socket_frame>
-								<!--Scale factors in X, Y, Z directions respectively.-->
-								<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
-							</FrameGeometry>
-							<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
-							<socket_parent>/bodyset/talus_l</socket_parent>
-							<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
-							<translation>-0.048770000000000001 -0.041950000000000001 -0.00792</translation>
-							<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
-							<orientation>1.7681899999999999 -0.906223 1.8196000000000001</orientation>
-						</PhysicalOffsetFrame>
-						<PhysicalOffsetFrame name="calcn_l_offset">
-							<!--The geometry used to display the axes of this Frame.-->
-							<FrameGeometry name="frame_geometry">
-								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
-								<socket_frame>..</socket_frame>
-								<!--Scale factors in X, Y, Z directions respectively.-->
-								<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
-							</FrameGeometry>
-							<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
-							<socket_parent>/bodyset/calcn_l</socket_parent>
-							<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
-							<translation>0 0 0</translation>
-							<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
-							<orientation>1.7681899999999999 -0.906223 1.8196000000000001</orientation>
 						</PhysicalOffsetFrame>
 					</frames>
 				</PinJoint>
@@ -4573,7 +4742,7 @@
 							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
 							<clamped>true</clamped>
 							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
-							<locked>true</locked>
+							<locked>false</locked>
 							<!--If specified, the coordinate can be prescribed by a function of time. It can be any OpenSim Function with valid second order derivatives.-->
 							<prescribed_function />
 							<!--Flag indicating whether or not the values of the coordinates should be prescribed according to the function above. It is ignored if the no prescribed function is specified.-->
@@ -4598,6 +4767,24 @@
 							<orientation>-3.1415899999999999 -0.61990100000000004 0</orientation>
 						</PhysicalOffsetFrame>
 						<PhysicalOffsetFrame name="toes_l_offset">
+							<!--List of components that this component owns and serializes.-->
+							<components>
+								<PhysicalOffsetFrame name="l_toes">
+									<!--The geometry used to display the axes of this Frame.-->
+									<FrameGeometry name="frame_geometry">
+										<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+										<socket_frame>..</socket_frame>
+										<!--Scale factors in X, Y, Z directions respectively.-->
+										<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+									</FrameGeometry>
+									<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+									<socket_parent>..</socket_parent>
+									<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+									<translation>0 0 0</translation>
+									<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+									<orientation>3.1415893822004346 -0.61990104567403981 -1.903766587469394e-06</orientation>
+								</PhysicalOffsetFrame>
+							</components>
 							<!--The geometry used to display the axes of this Frame.-->
 							<FrameGeometry name="frame_geometry">
 								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -4745,14 +4932,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>1 0 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0</value>
+							</Constant>
 						</TransformAxis>
 						<!--The second TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation2">
@@ -4761,14 +4943,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 1 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0</value>
+							</Constant>
 						</TransformAxis>
 						<!--The third TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation3">
@@ -4777,14 +4954,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 0 1</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0</value>
+							</Constant>
 						</TransformAxis>
 					</SpatialTransform>
 				</CustomJoint>
@@ -4801,7 +4973,7 @@
 							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
 							<default_speed_value>0</default_speed_value>
 							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-1.5707963300000001 1.5707963300000001</range>
+							<range>-6.2831853071795862 6.2831853071795862</range>
 							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
 							<clamped>true</clamped>
 							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
@@ -4817,7 +4989,7 @@
 							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
 							<default_speed_value>0</default_speed_value>
 							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-2.0943950999999998 1.5707963300000001</range>
+							<range>-6.2831853071795862 6.2831853071795862</range>
 							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
 							<clamped>true</clamped>
 							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
@@ -4833,7 +5005,7 @@
 							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
 							<default_speed_value>0</default_speed_value>
 							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-1.5707963300000001 1.5707963300000001</range>
+							<range>-6.2831853071795862 6.2831853071795862</range>
 							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
 							<clamped>true</clamped>
 							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
@@ -4862,6 +5034,24 @@
 							<orientation>0 0 0</orientation>
 						</PhysicalOffsetFrame>
 						<PhysicalOffsetFrame name="humerus_r_offset">
+							<!--List of components that this component owns and serializes.-->
+							<components>
+								<PhysicalOffsetFrame name="r_uarm">
+									<!--The geometry used to display the axes of this Frame.-->
+									<FrameGeometry name="frame_geometry">
+										<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+										<socket_frame>..</socket_frame>
+										<!--Scale factors in X, Y, Z directions respectively.-->
+										<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+									</FrameGeometry>
+									<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+									<socket_parent>..</socket_parent>
+									<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+									<translation>0 0 0</translation>
+									<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+									<orientation>-0 0 -0</orientation>
+								</PhysicalOffsetFrame>
+							</components>
 							<!--The geometry used to display the axes of this Frame.-->
 							<FrameGeometry name="frame_geometry">
 								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -4919,14 +5109,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>1 0 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0</value>
+							</Constant>
 						</TransformAxis>
 						<!--The second TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation2">
@@ -4935,14 +5120,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 1 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0</value>
+							</Constant>
 						</TransformAxis>
 						<!--The third TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation3">
@@ -4951,14 +5131,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 0 1</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0</value>
+							</Constant>
 						</TransformAxis>
 					</SpatialTransform>
 				</CustomJoint>
@@ -5004,6 +5179,24 @@
 							<orientation>-0.0228627 0.228018 0.0051688999999999997</orientation>
 						</PhysicalOffsetFrame>
 						<PhysicalOffsetFrame name="ulna_r_offset">
+							<!--List of components that this component owns and serializes.-->
+							<components>
+								<PhysicalOffsetFrame name="r_larm">
+									<!--The geometry used to display the axes of this Frame.-->
+									<FrameGeometry name="frame_geometry">
+										<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+										<socket_frame>..</socket_frame>
+										<!--Scale factors in X, Y, Z directions respectively.-->
+										<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+									</FrameGeometry>
+									<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+									<socket_parent>..</socket_parent>
+									<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+									<translation>0 0 0</translation>
+									<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+									<orientation>0.022270831628886639 -0.22807556029317536 5.6767305228519301e-09</orientation>
+								</PhysicalOffsetFrame>
+							</components>
 							<!--The geometry used to display the axes of this Frame.-->
 							<FrameGeometry name="frame_geometry">
 								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -5078,46 +5271,11 @@
 						</PhysicalOffsetFrame>
 					</frames>
 				</PinJoint>
-				<UniversalJoint name="radius_hand_r">
+				<WeldJoint name="radius_hand_r">
 					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The parent frame for the joint.).-->
 					<socket_parent_frame>radius_r_offset</socket_parent_frame>
 					<!--Path to a Component that satisfies the Socket 'child_frame' of type PhysicalFrame (description: The child frame for the joint.).-->
 					<socket_child_frame>hand_r_offset</socket_child_frame>
-					<!--List containing the generalized coordinates (q's) that parameterize this joint.-->
-					<coordinates>
-						<Coordinate name="wrist_flex_r">
-							<!--The value of this coordinate before any value has been set. Rotational coordinate value is in radians and Translational in meters.-->
-							<default_value>0</default_value>
-							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
-							<default_speed_value>0</default_speed_value>
-							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-1.22173048 1.22173048</range>
-							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
-							<clamped>true</clamped>
-							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
-							<locked>true</locked>
-							<!--If specified, the coordinate can be prescribed by a function of time. It can be any OpenSim Function with valid second order derivatives.-->
-							<prescribed_function />
-							<!--Flag indicating whether or not the values of the coordinates should be prescribed according to the function above. It is ignored if the no prescribed function is specified.-->
-							<prescribed>false</prescribed>
-						</Coordinate>
-						<Coordinate name="wrist_dev_r">
-							<!--The value of this coordinate before any value has been set. Rotational coordinate value is in radians and Translational in meters.-->
-							<default_value>0</default_value>
-							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
-							<default_speed_value>0</default_speed_value>
-							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-0.43633231 0.61086523999999998</range>
-							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
-							<clamped>true</clamped>
-							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
-							<locked>true</locked>
-							<!--If specified, the coordinate can be prescribed by a function of time. It can be any OpenSim Function with valid second order derivatives.-->
-							<prescribed_function />
-							<!--Flag indicating whether or not the values of the coordinates should be prescribed according to the function above. It is ignored if the no prescribed function is specified.-->
-							<prescribed>false</prescribed>
-						</Coordinate>
-					</coordinates>
 					<!--Physical offset frames owned by the Joint that are typically used to satisfy the owning Joint's parent and child frame connections (sockets). PhysicalOffsetFrames are often used to describe the fixed transformation from a Body's origin to another location of interest on the Body (e.g., the joint center). When the joint is deleted, so are the PhysicalOffsetFrame components in this list.-->
 					<frames>
 						<PhysicalOffsetFrame name="radius_r_offset">
@@ -5136,6 +5294,24 @@
 							<orientation>-1.5708 0 -1.5708</orientation>
 						</PhysicalOffsetFrame>
 						<PhysicalOffsetFrame name="hand_r_offset">
+							<!--List of components that this component owns and serializes.-->
+							<components>
+								<PhysicalOffsetFrame name="r_hand">
+									<!--The geometry used to display the axes of this Frame.-->
+									<FrameGeometry name="frame_geometry">
+										<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+										<socket_frame>..</socket_frame>
+										<!--Scale factors in X, Y, Z directions respectively.-->
+										<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+									</FrameGeometry>
+									<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+									<socket_parent>..</socket_parent>
+									<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+									<translation>0 0 0</translation>
+									<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+									<orientation>-2.3561944901936376 1.570791132098422 -2.3561944901936376</orientation>
+								</PhysicalOffsetFrame>
+							</components>
 							<!--The geometry used to display the axes of this Frame.-->
 							<FrameGeometry name="frame_geometry">
 								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -5151,7 +5327,7 @@
 							<orientation>-1.5708 0 -1.5708</orientation>
 						</PhysicalOffsetFrame>
 					</frames>
-				</UniversalJoint>
+				</WeldJoint>
 				<CustomJoint name="acromial_l">
 					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The parent frame for the joint.).-->
 					<socket_parent_frame>torso_offset</socket_parent_frame>
@@ -5165,7 +5341,7 @@
 							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
 							<default_speed_value>0</default_speed_value>
 							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-1.5707963300000001 1.5707963300000001</range>
+							<range>-6.2831853071795862 6.2831853071795862</range>
 							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
 							<clamped>true</clamped>
 							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
@@ -5181,7 +5357,7 @@
 							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
 							<default_speed_value>0</default_speed_value>
 							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-2.0943950999999998 1.5707963300000001</range>
+							<range>-6.2831853071795862 6.2831853071795862</range>
 							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
 							<clamped>true</clamped>
 							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
@@ -5197,7 +5373,7 @@
 							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
 							<default_speed_value>0</default_speed_value>
 							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-1.5707963300000001 1.5707963300000001</range>
+							<range>-6.2831853071795862 6.2831853071795862</range>
 							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
 							<clamped>true</clamped>
 							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
@@ -5226,6 +5402,24 @@
 							<orientation>0 0 0</orientation>
 						</PhysicalOffsetFrame>
 						<PhysicalOffsetFrame name="humerus_l_offset">
+							<!--List of components that this component owns and serializes.-->
+							<components>
+								<PhysicalOffsetFrame name="l_uarm">
+									<!--The geometry used to display the axes of this Frame.-->
+									<FrameGeometry name="frame_geometry">
+										<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+										<socket_frame>..</socket_frame>
+										<!--Scale factors in X, Y, Z directions respectively.-->
+										<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+									</FrameGeometry>
+									<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+									<socket_parent>..</socket_parent>
+									<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+									<translation>0 0 0</translation>
+									<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+									<orientation>-0 0 -0</orientation>
+								</PhysicalOffsetFrame>
+							</components>
 							<!--The geometry used to display the axes of this Frame.-->
 							<FrameGeometry name="frame_geometry">
 								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -5283,14 +5477,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>1 0 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0</value>
+							</Constant>
 						</TransformAxis>
 						<!--The second TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation2">
@@ -5299,14 +5488,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 1 0</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0</value>
+							</Constant>
 						</TransformAxis>
 						<!--The third TransformAxis defining a translation along an axis with to a set of generalized coordinates.-->
 						<TransformAxis name="translation3">
@@ -5315,14 +5499,9 @@
 							<!--The rotation or translation axis for the transform. Default: (1,0,0).-->
 							<axis>0 0 1</axis>
 							<!--The transform function with respect to the generalized coordinates used to represent the amount of displacement about or along the TransformAxis. Default: Constant(0).-->
-							<MultiplierFunction name="function">
-								<function>
-									<Constant name="function">
-										<value>0</value>
-									</Constant>
-								</function>
-								<scale>1</scale>
-							</MultiplierFunction>
+							<Constant name="function">
+								<value>0</value>
+							</Constant>
 						</TransformAxis>
 					</SpatialTransform>
 				</CustomJoint>
@@ -5368,6 +5547,24 @@
 							<orientation>0.0228627 -0.228018 0.0051688999999999997</orientation>
 						</PhysicalOffsetFrame>
 						<PhysicalOffsetFrame name="ulna_l_offset">
+							<!--List of components that this component owns and serializes.-->
+							<components>
+								<PhysicalOffsetFrame name="l_larm">
+									<!--The geometry used to display the axes of this Frame.-->
+									<FrameGeometry name="frame_geometry">
+										<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+										<socket_frame>..</socket_frame>
+										<!--Scale factors in X, Y, Z directions respectively.-->
+										<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+									</FrameGeometry>
+									<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+									<socket_parent>..</socket_parent>
+									<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+									<translation>0 0 0</translation>
+									<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+									<orientation>-0.022270831628886639 0.22807556029317536 5.6767305228519301e-09</orientation>
+								</PhysicalOffsetFrame>
+							</components>
 							<!--The geometry used to display the axes of this Frame.-->
 							<FrameGeometry name="frame_geometry">
 								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -5442,46 +5639,11 @@
 						</PhysicalOffsetFrame>
 					</frames>
 				</PinJoint>
-				<UniversalJoint name="radius_hand_l">
+				<WeldJoint name="radius_hand_l">
 					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The parent frame for the joint.).-->
 					<socket_parent_frame>radius_l_offset</socket_parent_frame>
 					<!--Path to a Component that satisfies the Socket 'child_frame' of type PhysicalFrame (description: The child frame for the joint.).-->
 					<socket_child_frame>hand_l_offset</socket_child_frame>
-					<!--List containing the generalized coordinates (q's) that parameterize this joint.-->
-					<coordinates>
-						<Coordinate name="wrist_flex_l">
-							<!--The value of this coordinate before any value has been set. Rotational coordinate value is in radians and Translational in meters.-->
-							<default_value>0</default_value>
-							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
-							<default_speed_value>0</default_speed_value>
-							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-1.22173048 1.22173048</range>
-							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
-							<clamped>true</clamped>
-							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
-							<locked>true</locked>
-							<!--If specified, the coordinate can be prescribed by a function of time. It can be any OpenSim Function with valid second order derivatives.-->
-							<prescribed_function />
-							<!--Flag indicating whether or not the values of the coordinates should be prescribed according to the function above. It is ignored if the no prescribed function is specified.-->
-							<prescribed>false</prescribed>
-						</Coordinate>
-						<Coordinate name="wrist_dev_l">
-							<!--The value of this coordinate before any value has been set. Rotational coordinate value is in radians and Translational in meters.-->
-							<default_value>0</default_value>
-							<!--The speed value of this coordinate before any value has been set. Rotational coordinate value is in rad/s and Translational in m/s.-->
-							<default_speed_value>0</default_speed_value>
-							<!--The minimum and maximum values that the coordinate can range between. Rotational coordinate range in radians and Translational in meters.-->
-							<range>-0.43633231 0.61086523999999998</range>
-							<!--Flag indicating whether or not the values of the coordinates should be limited to the range, above.-->
-							<clamped>true</clamped>
-							<!--Flag indicating whether or not the values of the coordinates should be constrained to the current (e.g. default) value, above.-->
-							<locked>true</locked>
-							<!--If specified, the coordinate can be prescribed by a function of time. It can be any OpenSim Function with valid second order derivatives.-->
-							<prescribed_function />
-							<!--Flag indicating whether or not the values of the coordinates should be prescribed according to the function above. It is ignored if the no prescribed function is specified.-->
-							<prescribed>false</prescribed>
-						</Coordinate>
-					</coordinates>
 					<!--Physical offset frames owned by the Joint that are typically used to satisfy the owning Joint's parent and child frame connections (sockets). PhysicalOffsetFrames are often used to describe the fixed transformation from a Body's origin to another location of interest on the Body (e.g., the joint center). When the joint is deleted, so are the PhysicalOffsetFrame components in this list.-->
 					<frames>
 						<PhysicalOffsetFrame name="radius_l_offset">
@@ -5500,6 +5662,24 @@
 							<orientation>1.5708 0 1.5708</orientation>
 						</PhysicalOffsetFrame>
 						<PhysicalOffsetFrame name="hand_l_offset">
+							<!--List of components that this component owns and serializes.-->
+							<components>
+								<PhysicalOffsetFrame name="l_hand">
+									<!--The geometry used to display the axes of this Frame.-->
+									<FrameGeometry name="frame_geometry">
+										<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+										<socket_frame>..</socket_frame>
+										<!--Scale factors in X, Y, Z directions respectively.-->
+										<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+									</FrameGeometry>
+									<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+									<socket_parent>..</socket_parent>
+									<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+									<translation>0 0 0</translation>
+									<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+									<orientation>2.3561944901971441 1.570791132098422 2.3561944901971441</orientation>
+								</PhysicalOffsetFrame>
+							</components>
 							<!--The geometry used to display the axes of this Frame.-->
 							<FrameGeometry name="frame_geometry">
 								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
@@ -5515,7 +5695,85 @@
 							<orientation>1.5708 0 1.5708</orientation>
 						</PhysicalOffsetFrame>
 					</frames>
-				</UniversalJoint>
+				</WeldJoint>
+				<WeldJoint name="subtalar_l">
+					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The parent frame for the joint.).-->
+					<socket_parent_frame>talus_l_offset</socket_parent_frame>
+					<!--Path to a Component that satisfies the Socket 'child_frame' of type PhysicalFrame (description: The child frame for the joint.).-->
+					<socket_child_frame>calcn_l_offset</socket_child_frame>
+					<!--Physical offset frames owned by the Joint that are typically used to satisfy the owning Joint's parent and child frame connections (sockets). PhysicalOffsetFrames are often used to describe the fixed transformation from a Body's origin to another location of interest on the Body (e.g., the joint center). When the joint is deleted, so are the PhysicalOffsetFrame components in this list.-->
+					<frames>
+						<PhysicalOffsetFrame name="talus_l_offset">
+							<!--The geometry used to display the axes of this Frame.-->
+							<FrameGeometry name="frame_geometry">
+								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+								<socket_frame>..</socket_frame>
+								<!--Scale factors in X, Y, Z directions respectively.-->
+								<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+							</FrameGeometry>
+							<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+							<socket_parent>/bodyset/talus_l</socket_parent>
+							<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+							<translation>-0.048770000000000001 -0.041950000000000001 -0.00792</translation>
+							<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+							<orientation>1.7681899999999999 -0.906223 1.8196000000000001</orientation>
+						</PhysicalOffsetFrame>
+						<PhysicalOffsetFrame name="calcn_l_offset">
+							<!--The geometry used to display the axes of this Frame.-->
+							<FrameGeometry name="frame_geometry">
+								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+								<socket_frame>..</socket_frame>
+								<!--Scale factors in X, Y, Z directions respectively.-->
+								<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+							</FrameGeometry>
+							<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+							<socket_parent>/bodyset/calcn_l</socket_parent>
+							<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+							<translation>0 0 0</translation>
+							<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+							<orientation>1.7681899999999999 -0.906223 1.8196000000000001</orientation>
+						</PhysicalOffsetFrame>
+					</frames>
+				</WeldJoint>
+				<WeldJoint name="subtalar_r">
+					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The parent frame for the joint.).-->
+					<socket_parent_frame>talus_r_offset</socket_parent_frame>
+					<!--Path to a Component that satisfies the Socket 'child_frame' of type PhysicalFrame (description: The child frame for the joint.).-->
+					<socket_child_frame>calcn_r_offset</socket_child_frame>
+					<!--Physical offset frames owned by the Joint that are typically used to satisfy the owning Joint's parent and child frame connections (sockets). PhysicalOffsetFrames are often used to describe the fixed transformation from a Body's origin to another location of interest on the Body (e.g., the joint center). When the joint is deleted, so are the PhysicalOffsetFrame components in this list.-->
+					<frames>
+						<PhysicalOffsetFrame name="talus_r_offset">
+							<!--The geometry used to display the axes of this Frame.-->
+							<FrameGeometry name="frame_geometry">
+								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+								<socket_frame>..</socket_frame>
+								<!--Scale factors in X, Y, Z directions respectively.-->
+								<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+							</FrameGeometry>
+							<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+							<socket_parent>/bodyset/talus_r</socket_parent>
+							<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+							<translation>-0.048770000000000001 -0.041950000000000001 0.00792</translation>
+							<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+							<orientation>-1.7681899999999999 0.906223 1.8196000000000001</orientation>
+						</PhysicalOffsetFrame>
+						<PhysicalOffsetFrame name="calcn_r_offset">
+							<!--The geometry used to display the axes of this Frame.-->
+							<FrameGeometry name="frame_geometry">
+								<!--Path to a Component that satisfies the Socket 'frame' of type Frame.-->
+								<socket_frame>..</socket_frame>
+								<!--Scale factors in X, Y, Z directions respectively.-->
+								<scale_factors>0.20000000000000001 0.20000000000000001 0.20000000000000001</scale_factors>
+							</FrameGeometry>
+							<!--Path to a Component that satisfies the Socket 'parent' of type C (description: The parent frame to this frame.).-->
+							<socket_parent>/bodyset/calcn_r</socket_parent>
+							<!--Translational offset (in meters) of this frame's origin from the parent frame's origin, expressed in the parent frame.-->
+							<translation>0 0 0</translation>
+							<!--Orientation offset (in radians) of this frame in its parent frame, expressed as a frame-fixed x-y-z rotation sequence.-->
+							<orientation>-1.7681899999999999 0.906223 1.8196000000000001</orientation>
+						</PhysicalOffsetFrame>
+					</frames>
+				</WeldJoint>
 			</objects>
 			<groups />
 		</JointSet>
@@ -10145,9 +10403,9 @@
 					<!--Maximum isometric force that the fibers can generate-->
 					<max_isometric_force>916.79999999999995</max_isometric_force>
 					<!--Optimal length of the muscle fibers-->
-					<optimal_fiber_length>0.10820000002074845</optimal_fiber_length>
+					<optimal_fiber_length>0.10820000002074838</optimal_fiber_length>
 					<!--Resting length of the tendon-->
-					<tendon_slack_length>0.13179936336729986</tendon_slack_length>
+					<tendon_slack_length>0.13179936336729978</tendon_slack_length>
 					<!--Angle between tendon and fibers at optimal fiber length expressed in radians-->
 					<pennation_angle_at_optimal>0.13777038999999999</pennation_angle_at_optimal>
 					<!--Compute muscle dynamics ignoring tendon compliance. Tendon is assumed to be rigid.-->
@@ -10460,9 +10718,9 @@
 					<!--Maximum isometric force that the fibers can generate-->
 					<max_isometric_force>597.29508196721395</max_isometric_force>
 					<!--Optimal length of the muscle fibers-->
-					<optimal_fiber_length>0.13769999992148271</optimal_fiber_length>
+					<optimal_fiber_length>0.13769999992148274</optimal_fiber_length>
 					<!--Resting length of the tendon-->
-					<tendon_slack_length>0.046627699880459041</tendon_slack_length>
+					<tendon_slack_length>0.046627699880459048</tendon_slack_length>
 					<!--Angle between tendon and fibers at optimal fiber length expressed in radians-->
 					<pennation_angle_at_optimal>0.20730759000000001</pennation_angle_at_optimal>
 					<!--Compute muscle dynamics ignoring tendon compliance. Tendon is assumed to be rigid.-->
@@ -14503,26 +14761,6 @@
 					<!--The maximum generalized force produced by this actuator.-->
 					<optimal_force>10</optimal_force>
 				</CoordinateActuator>
-				<CoordinateActuator name="wrist_flex_r">
-					<!--Minimum allowed value for control signal. Used primarily when solving for control values.-->
-					<min_control>-Inf</min_control>
-					<!--Maximum allowed value for control signal. Used primarily when solving for control values.-->
-					<max_control>Inf</max_control>
-					<!--Name of the generalized coordinate to which the actuator applies.-->
-					<coordinate>wrist_flex_r</coordinate>
-					<!--The maximum generalized force produced by this actuator.-->
-					<optimal_force>10</optimal_force>
-				</CoordinateActuator>
-				<CoordinateActuator name="wrist_dev_r">
-					<!--Minimum allowed value for control signal. Used primarily when solving for control values.-->
-					<min_control>-Inf</min_control>
-					<!--Maximum allowed value for control signal. Used primarily when solving for control values.-->
-					<max_control>Inf</max_control>
-					<!--Name of the generalized coordinate to which the actuator applies.-->
-					<coordinate>wrist_dev_r</coordinate>
-					<!--The maximum generalized force produced by this actuator.-->
-					<optimal_force>10</optimal_force>
-				</CoordinateActuator>
 				<CoordinateActuator name="shoulder_flex_l">
 					<!--Minimum allowed value for control signal. Used primarily when solving for control values.-->
 					<min_control>-Inf</min_control>
@@ -14570,26 +14808,6 @@
 					<max_control>Inf</max_control>
 					<!--Name of the generalized coordinate to which the actuator applies.-->
 					<coordinate>pro_sup_l</coordinate>
-					<!--The maximum generalized force produced by this actuator.-->
-					<optimal_force>10</optimal_force>
-				</CoordinateActuator>
-				<CoordinateActuator name="wrist_flex_l">
-					<!--Minimum allowed value for control signal. Used primarily when solving for control values.-->
-					<min_control>-Inf</min_control>
-					<!--Maximum allowed value for control signal. Used primarily when solving for control values.-->
-					<max_control>Inf</max_control>
-					<!--Name of the generalized coordinate to which the actuator applies.-->
-					<coordinate>wrist_flex_l</coordinate>
-					<!--The maximum generalized force produced by this actuator.-->
-					<optimal_force>10</optimal_force>
-				</CoordinateActuator>
-				<CoordinateActuator name="wrist_dev_l">
-					<!--Minimum allowed value for control signal. Used primarily when solving for control values.-->
-					<min_control>-Inf</min_control>
-					<!--Maximum allowed value for control signal. Used primarily when solving for control values.-->
-					<max_control>Inf</max_control>
-					<!--Name of the generalized coordinate to which the actuator applies.-->
-					<coordinate>wrist_dev_l</coordinate>
 					<!--The maximum generalized force produced by this actuator.-->
 					<optimal_force>10</optimal_force>
 				</CoordinateActuator>
@@ -14677,336 +14895,7 @@
 		</ForceSet>
 		<!--Markers in the model.-->
 		<MarkerSet name="markerset">
-			<objects>
-				<Marker name="R.Shoulder">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/torso</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0 0.49232458000000001 0.17183845999999997</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>true</fixed>
-				</Marker>
-				<Marker name="L.Shoulder">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/torso</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0 0.49232458000000001 -0.17183845999999997</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>true</fixed>
-				</Marker>
-				<Marker name="R.Clavicle">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/torso</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.055665979999999997 0.45345685000000002 0.030253249999999999</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>true</fixed>
-				</Marker>
-				<Marker name="L.Clavicle">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/torso</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.055665979999999997 0.45345685000000002 -0.030253249999999999</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>true</fixed>
-				</Marker>
-				<Marker name="R.Biceps">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/humerus_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.045153285300215451 -0.20054392913321278 0.038178321863202358</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="R.Elbow">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/humerus_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.0109817 -0.30858577000000004 0.038435950000000003</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>true</fixed>
-				</Marker>
-				<Marker name="R.Forearm">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/ulna_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.0015095001809074526 -0.13741141660797168 0.046774141307818429</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="R.Wrist">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/radius_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>-0.030419100000000001 -0.24335280000000001 0.0060838200000000002</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>true</fixed>
-				</Marker>
-				<Marker name="L.Biceps">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/humerus_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.023727033679174503 -0.17671990921566794 -0.060948909737141177</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="L.Elbow">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/humerus_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.0109817 -0.30858577000000004 -0.038435950000000003</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>true</fixed>
-				</Marker>
-				<Marker name="L.Forearm">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/ulna_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>-0.0087404992500104139 -0.1328561233997701 -0.050508257018090363</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="L.Wrist">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/radius_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>-0.030419100000000001 -0.24335280000000001 -0.0060838200000000002</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>true</fixed>
-				</Marker>
-				<Marker name="R.ASIS">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/pelvis</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.016180215163308805 0.030050023731717976 0.15326184979784854</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>true</fixed>
-				</Marker>
-				<Marker name="L.ASIS">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/pelvis</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.016180215163308805 0.030050023731717976 -0.15326184979784854</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>true</fixed>
-				</Marker>
-				<Marker name="S2">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/pelvis</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>-0.224033748415045 0.025041686443098315 0</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>true</fixed>
-				</Marker>
-				<Marker name="R.PSIS">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/pelvis</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>-0.18853129190744489 0.026327098941309135 0.039700355089811734</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="L.PSIS">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/pelvis</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>-0.1870081693712301 0.026614182052080104 -0.052083565565732237</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="R.TH1">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/femur_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.064243276077206007 -0.13299696252681981 0.10862097107166199</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="R.TH2">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/femur_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>-0.043698547610533378 -0.13806128466016021 0.12289302910248753</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="R.TH3">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/femur_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>-0.051513825956085169 -0.26329997545794726 0.092911074988844766</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="R.Knee">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/femur_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0 -0.38703199999999999 0.045025999999999997</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>true</fixed>
-				</Marker>
-				<Marker name="R.SH1">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/tibia_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.0013318948482736737 -0.082359659927020212 0.071212165087541357</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="R.SH2">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/tibia_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.0099453163352403728 -0.19446569915380724 0.075647892706405151</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="R.SH3">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/tibia_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>-0.081860566766114806 -0.093109550268385632 0.079237742093981073</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="R.SH4">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/tibia_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>-0.072965779218555127 -0.21296109911677025 0.076542037012303582</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="R.Ankle">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/tibia_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>-0.0033919622957361839 -0.40799483825716332 0.04471599910026941</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="R.Toe">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/calcn_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.28048914909013767 0.050513522359975235 -0.033871711811403582</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="R.MT5">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/calcn_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.18868893984775992 -0.011167769911746301 0.065664989365561255</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="R.Heel">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/calcn_r</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.00030131470644712 -0.054846631289828481 -0.011102110909628871</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="L.TH1">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/femur_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.11046327356357931 -0.12746104497766575 -0.078967668930891355</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="L.TH2">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/femur_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.094173796166780413 -0.25610410408116946 -0.053701253935436788</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="L.TH3">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/femur_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.020437182550180927 -0.11660295233099205 -0.13580906798790149</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="L.TH4">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/femur_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>-0.013472920551330592 -0.24484448219025812 -0.10255714204355781</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="L.Knee">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/femur_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0 -0.38703199999999999 -0.045025999999999997</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>true</fixed>
-				</Marker>
-				<Marker name="L.SH1">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/tibia_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.0102625936293817 -0.084302958165706821 -0.046995492222095425</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="L.SH2">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/tibia_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>-0.081652096454183642 -0.08277605011307182 -0.077811719054234674</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="L.SH3">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/tibia_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>-0.078145031023823031 -0.19951237492132465 -0.07215449822277642</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="L.Ankle">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/tibia_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.0025577397883314035 -0.40247121756105175 -0.047982245297999326</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="L.Toe">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/calcn_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.27452118378053253 0.054921035122817291 0.016467608149085433</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="L.Heel">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/calcn_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>-0.00080291495009016112 -0.055123278808242401 0.010233430615375294</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-				<Marker name="L.MT5">
-					<!--Path to a Component that satisfies the Socket 'parent_frame' of type PhysicalFrame (description: The frame to which this station is fixed.).-->
-					<socket_parent_frame>/bodyset/calcn_l</socket_parent_frame>
-					<!--The fixed location of the station expressed in its parent frame.-->
-					<location>0.18241448284330011 -0.0040235631932354771 -0.075240844726282674</location>
-					<!--Flag (true or false) specifying whether the marker is fixed in its parent frame during the marker placement step of scaling.  If false, the marker is free to move within its parent Frame to match its experimental counterpart.-->
-					<fixed>false</fixed>
-				</Marker>
-			</objects>
+			<objects />
 			<groups />
 		</MarkerSet>
 		<!--Geometry to be used in contact forces.-->
