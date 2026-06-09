@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from .utilities import get_coordinate_indexes
 from .data_sources import DataSource, MarkerSource, TheiaFrameSource
-from .callbacks import TrackingCostFunction, BilevelCostFunction
+from .callbacks import TrackingCostFunction, BilevelCostFunction, ScaleGroup
 
 
 ################
@@ -33,8 +33,7 @@ class Bounds:
 
 @dataclass
 class ScaleFactor:
-    body_paths: list[str]
-    mobod_indexes: list[int]
+    group: ScaleGroup
     bounds: Bounds
 
 
@@ -122,13 +121,13 @@ class BilevelSolution(TrackingSolution):
     ----------
     scale_factors: np.ndarray, shape (num_scale_factors, 3)
         Optimal [sx, sy, sz] scale factors, one row per scale factor group.
-    body_paths: list[list[str]]
-        Body-path groups paired row-wise with scale_factors. Each inner list
-        is the set of bodies sharing that 3-vector; single-body scale factors
-        appear as a 1-element inner list.
+    scale_groups: list[ScaleGroup]
+        ScaleGroup objects paired row-wise with scale_factors. Each entry
+        names the bodies sharing that 3-vector; single-body scale factors
+        appear as a ScaleGroup with one-element body_paths/mobod_indexes.
     """
     scale_factors: np.ndarray = None
-    body_paths: list[list[str]] = None
+    scale_groups: list[ScaleGroup] = None
 
 
 @dataclass
@@ -622,12 +621,13 @@ class BilevelSolver(TrackingSolver):
             body = osim.Body.safeDownCast(self.model.getComponent(path))
             mobod_indexes.append(int(body.getMobilizedBodyIndex()))
         self.scale_factors.append(ScaleFactor(
-            list(body_paths), mobod_indexes, Bounds(lower_bound, upper_bound)))
+            group=ScaleGroup(list(body_paths), mobod_indexes),
+            bounds=Bounds(lower_bound, upper_bound)))
 
     def create_bilevel_callback(self, name: str, itime: int,
                                 position_weight: float,
                                 orientation_weight: float) -> BilevelCostFunction:
-        scale_groups = [sf.mobod_indexes for sf in self.scale_factors]
+        scale_groups = [sf.group for sf in self.scale_factors]
         callback = BilevelCostFunction(name, self.model, scale_groups)
 
         for data in self.theia_frame_data:
@@ -758,6 +758,6 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
             coordinate_names=list(self.coordinates_map.keys()),
             velocities=qdot_opt,
             scale_factors=scale_factors_mat,
-            body_paths=[sf.body_paths for sf in self.scale_factors],
+            scale_groups=[sf.group for sf in self.scale_factors],
             spline_nodes=np.array(coeffs_opt),
         )
