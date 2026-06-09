@@ -101,23 +101,77 @@ def test_pendulum_bilevel_recovers_ground_truth_lengths(tmp_path):
         scale_regularization_weight=1e-2,
     )
     solver.add_marker_reference_data(marker_source)
-    solver.add_scale_factor(unscaled_model.getBodySet().get('b0'), 0.5, 2.0)
-    solver.add_scale_factor(unscaled_model.getBodySet().get('b1'), 0.5, 2.0)
+    solver.add_scale_factor('/bodyset/b0', 0.5, 2.0)
+    solver.add_scale_factor('/bodyset/b1', 0.5, 2.0)
 
     solution = solver.solve()
 
-    # Sanity: solution table covers the simulated 2.0 s @ 100 Hz (201 samples)
-    # and exposes both joint coordinates.
+    # Solution table covers the simulated 2.0 s @ 100 Hz (201 samples) and exposes both
+    #  joint coordinates.
     assert solution.states_table.getNumRows() == 201
     state_labels = list(solution.states_table.getColumnLabels())
     assert '/jointset/j0/q0/value' in state_labels
     assert '/jointset/j1/q1/value' in state_labels
 
-    # Regression contract: recovered X-scale factors match the ground-truth
-    # lengths. Y and Z scales should stay near 1.0 since the truth model only
-    # varies length along the local X axis.
+    # The recovered X-scale factors match the ground-truth lengths. Y and Z scales 
+    # should stay near 1.0 since the truth model only varies length along the local X 
+    # axis.
+    assert [g.body_paths for g in solution.scale_groups] == [
+        ['/bodyset/b0'], ['/bodyset/b1']
+    ]
     assert abs(solution.scale_factors[0, 0] - true_b0_length) < 0.02
     assert abs(solution.scale_factors[1, 0] - true_b1_length) < 0.02
     for body_idx in (0, 1):
         for axis in (1, 2):
             assert abs(solution.scale_factors[body_idx, axis] - 1.0) < 0.05
+
+
+def test_pendulum_bilevel_recovers_shared_length_under_asymmetric_truth(
+        tmp_path):
+    """
+    A single scale factor shared across both pendulum bodies must converge to
+    a compromise value strictly between the two ground-truth lengths. This
+    proves the grouped-scale machinery wires through end-to-end: one
+    optimization variable, broadcast to two mobilized bodies, with a
+    chain-rule Jacobian column.
+    """
+    true_b0_length = 1.25
+    true_b1_length = 0.75
+
+    trc_path = str(tmp_path / "markers.trc")
+    create_synthetic_markers_file(trc_path, true_b0_length, true_b1_length)
+
+    raw_labels = osim.TimeSeriesTableVec3(trc_path).getColumnLabels()
+    label_map = {label: label.replace('|location', '') for label in raw_labels}
+
+    unscaled_model = create_double_pendulum(1.0, 1.0)
+    unscaled_model.initSystem()
+
+    marker_source = MarkerSource(trc_path, label_map=label_map)
+
+    solver = SplineBasedBilevelSolver(
+        unscaled_model,
+        convergence_tolerance=1e-5,
+        knot_interval=0.05,
+        position_weight=5.0,
+        scale_regularization_weight=1e-2,
+    )
+    solver.add_marker_reference_data(marker_source)
+    solver.add_scale_factor(
+        ['/bodyset/b0', '/bodyset/b1'], 0.5, 2.0)
+
+    solution = solver.solve()
+
+    # One scale factor group → one row of 3 components.
+    assert solution.scale_factors.shape == (1, 3)
+    assert len(solution.scale_groups) == 1
+    assert solution.scale_groups[0].body_paths == [
+        '/bodyset/b0', '/bodyset/b1']
+
+    # The shared scale must lie strictly between the two ground-truth lengths.
+    shared_sx = solution.scale_factors[0, 0]
+    assert true_b1_length < shared_sx < true_b0_length
+
+    # Y and Z scales remain near 1.0 since the truth varies length along X.
+    for axis in (1, 2):
+        assert abs(solution.scale_factors[0, axis] - 1.0) < 0.05

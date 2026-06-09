@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from .utilities import get_coordinate_indexes
 from .data_sources import DataSource, MarkerSource, TheiaFrameSource
-from .callbacks import TrackingCostFunction, BilevelCostFunction
+from .callbacks import TrackingCostFunction, BilevelCostFunction, ScaleGroup
 
 
 ################
@@ -33,8 +33,7 @@ class Bounds:
 
 @dataclass
 class ScaleFactor:
-    body_path: str
-    mobod_index: int
+    group: ScaleGroup
     bounds: Bounds
 
 
@@ -120,13 +119,15 @@ class BilevelSolution(TrackingSolution):
 
     Attributes
     ----------
-    scale_factors: np.ndarray, shape (num_scaled_bodies, 3)
-        Optimal [sx, sy, sz] scale factors for each scaled body.
-    body_paths: list[str]
-        Absolute body paths, matching rows of scale_factors.
+    scale_factors: np.ndarray, shape (num_scale_factors, 3)
+        Optimal [sx, sy, sz] scale factors, one row per scale factor group.
+    scale_groups: list[ScaleGroup]
+        ScaleGroup objects paired row-wise with scale_factors. Each entry
+        names the bodies sharing that set of XYZ body scale factors. Single-body scale 
+        factors appear as a ScaleGroup with one body path and mobilized body index.
     """
     scale_factors: np.ndarray = None
-    body_paths: list[str] = None
+    scale_groups: list[ScaleGroup] = None
 
 
 @dataclass
@@ -591,21 +592,43 @@ class BilevelSolver(TrackingSolver):
         self.scale_regularization_weight = scale_regularization_weight
         self.scale_factors: list[ScaleFactor] = []
 
-    def add_scale_factor(self, body: osim.Body, lower_bound, upper_bound):
+    def add_scale_factor(self, body_paths: str | list[str],
+                         lower_bound, upper_bound):
         """
-        Add a scale factor for a given body to be optimized over in the bilevel
-        optimization problem.
+        Add a set of XYZ body scale factors to be optimized over in the bilevel
+        optimization problem. Pass a single body path to scale one body, or a
+        list of body paths to share one set of scale factors across a group of bodies 
+        (e.g., for left-right symmetric scaling).
+
+        Parameters
+        ----------
+        body_paths: str or list[str]
+            Absolute model path(s) to the body or bodies whose scale factor will be 
+            optimized. A list shares one set of scale factors across every body in the 
+            group.
+        lower_bound: float
+            Lower bound on each component of the XYZ body scale factors.
+        upper_bound: float
+            Upper bound on each component of the XYZ body scale factors.
         """
-        path = body.getAbsolutePathString()
-        mobod_index = body.getMobilizedBodyIndex()
-        self.scale_factors.append(ScaleFactor(path, mobod_index,
-                                              Bounds(lower_bound, upper_bound)))
+        if isinstance(body_paths, str):
+            body_paths = [body_paths]
+        if not body_paths:
+            raise ValueError(
+                'body_paths must be a non-empty string or list of strings.')
+        mobod_indexes = []
+        for path in body_paths:
+            body = osim.Body.safeDownCast(self.model.getComponent(path))
+            mobod_indexes.append(int(body.getMobilizedBodyIndex()))
+        self.scale_factors.append(ScaleFactor(
+            group=ScaleGroup(list(body_paths), mobod_indexes),
+            bounds=Bounds(lower_bound, upper_bound)))
 
     def create_bilevel_callback(self, name: str, itime: int,
                                 position_weight: float,
                                 orientation_weight: float) -> BilevelCostFunction:
-        scale_indexes = [sf.mobod_index for sf in self.scale_factors]
-        callback = BilevelCostFunction(name, self.model, scale_indexes)
+        scale_groups = [sf.group for sf in self.scale_factors]
+        callback = BilevelCostFunction(name, self.model, scale_groups)
 
         for data in self.theia_frame_data:
             raise NotImplementedError('TheiaFrameSource is not currently supported '
@@ -735,6 +758,6 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
             coordinate_names=list(self.coordinates_map.keys()),
             velocities=qdot_opt,
             scale_factors=scale_factors_mat,
-            body_paths=[sf.body_path for sf in self.scale_factors],
+            scale_groups=[sf.group for sf in self.scale_factors],
             spline_nodes=np.array(coeffs_opt),
         )

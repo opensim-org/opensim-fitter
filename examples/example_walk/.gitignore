@@ -1,3 +1,6 @@
 *.png
 *.sto
 /Geometry
+
+subject_marker_scaled_walk.osim
+subject_anthro_scaled_walk.osim
