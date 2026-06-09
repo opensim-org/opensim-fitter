@@ -105,8 +105,8 @@ solver = SplineBasedBilevelSolver(model,
 solver.add_marker_reference_data(marker_source)
 # Add scale factors for the two bodies including lower and upper bounds for the
 # optimization variables.
-solver.add_scale_factor(model.getBodySet().get('b0'), 0.5, 2.0)
-solver.add_scale_factor(model.getBodySet().get('b1'), 0.5, 2.0)
+solver.add_scale_factor('/bodyset/b0', 0.5, 2.0)
+solver.add_scale_factor('/bodyset/b1', 0.5, 2.0)
 
 # Solve!
 solution = solver.solve()
