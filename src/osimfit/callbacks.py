@@ -14,9 +14,9 @@ from .utilities import get_coordinate_indexes
 @dataclass
 class ScaleGroup:
     """
-    A group of mobilized bodies sharing one optimized 3-vector scale factor.
-    Carries body paths (for logging) and mobilized body indexes (for state
-    and Jacobian indexing).
+    A group of mobilized bodies sharing one set of XYZ body scale factors. The group 
+    defines the list of OpenSim body paths and corresponding mobilized body indexes for
+    each set of scale factors.
 
     Attributes
     ----------
@@ -284,9 +284,9 @@ class MarkerBilevelCost(TrackingCost):
     model: osim.Model
         The OpenSim model to use for evaluating the function and its Jacobian.
     scale_groups: list[ScaleGroup]
-        Groups of bodies sharing one optimized 3-vector scale factor. Each
-        entry's mobod_indexes drive which body slots are scaled in the state
-        and how the Jacobian columns are aggregated.
+        Groups of bodies each sharing one set of XYZ body scale factors. Each entry 
+        contains a list of mobilized body indexes defining which bodies are scaled and 
+        how Jacobian columns are aggregated.
     """
     def __init__(self, model: osim.Model, scale_groups: list[ScaleGroup]):
         self.model = model
@@ -582,9 +582,9 @@ class BilevelCostFunction(Function):
     model: osim.Model
         The OpenSim model to use for evaluating the function and its Jacobian.
     scale_groups: list[ScaleGroup]
-        Groups of bodies sharing one optimized 3-vector scale factor. The
-        optimization input is sized 3 * len(scale_groups); the i-th 3-vector
-        is broadcast to every body in scale_groups[i].
+        Groups of bodies each sharing one set of XYZ body scale factors. The 
+        optimization input is sized 3 * len(scale_groups), and the i-th 3-vector of body
+        scales is broadcast to every body in scale_groups[i].
     opts: dict
         A dictionary of options to pass to the CasADi callback constructor.
     """
@@ -613,7 +613,7 @@ class BilevelCostFunction(Function):
         # bodies in the model, including the ground body at index 0.
         scales = osim.VectorVec3(self.model.getNumBodies()+1, osim.Vec3(1.0))
 
-        # Broadcast each optimized 3-vector to every body in its group, so that
+        # Broadcast each 3-vector of scale factors to every body in its group, so that
         # bodies sharing one scale factor receive identical per-body scales.
         for i, group in enumerate(self.scale_groups):
             s_vec = osim.Vec3(*arg[1][3*i:3*i+3].full().flatten())

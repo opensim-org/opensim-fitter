@@ -123,8 +123,8 @@ class BilevelSolution(TrackingSolution):
         Optimal [sx, sy, sz] scale factors, one row per scale factor group.
     scale_groups: list[ScaleGroup]
         ScaleGroup objects paired row-wise with scale_factors. Each entry
-        names the bodies sharing that 3-vector; single-body scale factors
-        appear as a ScaleGroup with one-element body_paths/mobod_indexes.
+        names the bodies sharing that set of XYZ body scale factors. Single-body scale 
+        factors appear as a ScaleGroup with one body path and mobilized body index.
     """
     scale_factors: np.ndarray = None
     scale_groups: list[ScaleGroup] = None
@@ -595,21 +595,21 @@ class BilevelSolver(TrackingSolver):
     def add_scale_factor(self, body_paths: str | list[str],
                          lower_bound, upper_bound):
         """
-        Add a 3-vector scale factor to be optimized over in the bilevel
+        Add a set of XYZ body scale factors to be optimized over in the bilevel
         optimization problem. Pass a single body path to scale one body, or a
-        list of body paths to share one optimized 3-vector across a group of
-        bodies (e.g., for left/right symmetric scaling).
+        list of body paths to share one set of scale factors across a group of bodies 
+        (e.g., for left-right symmetric scaling).
 
         Parameters
         ----------
         body_paths: str or list[str]
-            Absolute model path(s) to the body or bodies whose scale factor
-            will be optimized. A list shares one optimized 3-vector across
-            every body in the group.
+            Absolute model path(s) to the body or bodies whose scale factor will be 
+            optimized. A list shares one set of scale factors across every body in the 
+            group.
         lower_bound: float
-            Lower bound on each component of the optimized 3-vector.
+            Lower bound on each component of the XYZ body scale factors.
         upper_bound: float
-            Upper bound on each component of the optimized 3-vector.
+            Upper bound on each component of the XYZ body scale factors.
         """
         if isinstance(body_paths, str):
             body_paths = [body_paths]
