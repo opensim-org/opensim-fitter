@@ -106,16 +106,16 @@ def test_pendulum_bilevel_recovers_ground_truth_lengths(tmp_path):
 
     solution = solver.solve()
 
-    # Sanity: solution table covers the simulated 2.0 s @ 100 Hz (201 samples)
-    # and exposes both joint coordinates.
+    # Solution table covers the simulated 2.0 s @ 100 Hz (201 samples) and exposes both
+    #  joint coordinates.
     assert solution.states_table.getNumRows() == 201
     state_labels = list(solution.states_table.getColumnLabels())
     assert '/jointset/j0/q0/value' in state_labels
     assert '/jointset/j1/q1/value' in state_labels
 
-    # Regression contract: recovered X-scale factors match the ground-truth
-    # lengths. Y and Z scales should stay near 1.0 since the truth model only
-    # varies length along the local X axis.
+    # The recovered X-scale factors match the ground-truth lengths. Y and Z scales 
+    # should stay near 1.0 since the truth model only varies length along the local X 
+    # axis.
     assert [g.body_paths for g in solution.scale_groups] == [
         ['/bodyset/b0'], ['/bodyset/b1']
     ]
@@ -168,9 +168,7 @@ def test_pendulum_bilevel_recovers_shared_length_under_asymmetric_truth(
     assert solution.scale_groups[0].body_paths == [
         '/bodyset/b0', '/bodyset/b1']
 
-    # The shared scale must lie strictly between the two ground-truth lengths
-    # — it cannot match either body exactly. This is the load-bearing check
-    # that the shared constraint was actually enforced, not silently dropped.
+    # The shared scale must lie strictly between the two ground-truth lengths.
     shared_sx = solution.scale_factors[0, 0]
     assert true_b1_length < shared_sx < true_b0_length
 

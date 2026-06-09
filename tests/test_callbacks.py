@@ -23,9 +23,9 @@ def create_sliding_mass_model():
     translation; scaling the body X axis stretches m1's world position.
     """
     model = osim.Model()
-    model.setName('test_rig')
+    model.setName('sliding_mass')
     ground = model.getGround()
-    body = osim.Body('rig_body', 1.0, osim.Vec3(0), osim.Inertia(1))
+    body = osim.Body('body', 1.0, osim.Vec3(0), osim.Inertia(1))
     model.addBody(body)
     joint = osim.SliderJoint(
         'slider',
@@ -46,7 +46,7 @@ def create_n_sliding_body_model(n: int):
     are 1..n in body-addition order.
     """
     model = osim.Model()
-    model.setName('n_body_rig')
+    model.setName(f'{n}_sliding_mass')
     ground = model.getGround()
     for i in range(n):
         body = osim.Body(f'body_{i}', 1.0, osim.Vec3(0), osim.Inertia(1))
@@ -174,9 +174,9 @@ def test_bilevel_cost_function_constructs_marker_subcost():
     model.initSystem()
     cost = BilevelCostFunction(
         'cost', model,
-        scale_groups=[ScaleGroup(['/bodyset/rig_body'], [1])])
+        scale_groups=[ScaleGroup(['/bodyset/body'], [1])])
     assert cost.marker_cost is not None
-    assert cost.scale_groups == [ScaleGroup(['/bodyset/rig_body'], [1])]
+    assert cost.scale_groups == [ScaleGroup(['/bodyset/body'], [1])]
 
 
 def test_bilevel_cost_function_add_marker_registers_in_marker_cost():
@@ -184,7 +184,7 @@ def test_bilevel_cost_function_add_marker_registers_in_marker_cost():
     model.initSystem()
     cost = BilevelCostFunction(
         'cost', model,
-        scale_groups=[ScaleGroup(['/bodyset/rig_body'], [1])])
+        scale_groups=[ScaleGroup(['/bodyset/body'], [1])])
     cost.add_marker_bilevel_cost('/markerset/m0', osim.Vec3(0))
     assert cost.marker_cost.mobod_indexes.size() == 1
 
@@ -196,7 +196,7 @@ def test_bilevel_pack_scales_writes_to_mobod_indexes_keeps_ground_at_one():
     model.initSystem()
     cost = BilevelCostFunction(
         'cost', model,
-        scale_groups=[ScaleGroup(['/bodyset/rig_body'], [1])])
+        scale_groups=[ScaleGroup(['/bodyset/body'], [1])])
     arg = [ca.DM.zeros(len(cost.q_indexes)), ca.DM([2.0, 3.0, 4.0])]
     scales = cost.pack_scales(arg)
 
@@ -217,7 +217,7 @@ def test_bilevel_cost_function_empty_eval_is_zero():
     model.initSystem()
     cost = BilevelCostFunction(
         'cost', model,
-        scale_groups=[ScaleGroup(['/bodyset/rig_body'], [1])])
+        scale_groups=[ScaleGroup(['/bodyset/body'], [1])])
     q = ca.DM.zeros(len(cost.q_indexes))
     s = ca.DM.ones(3)
     assert float(cost(q, s)) == pytest.approx(0.0, abs=1e-12)
@@ -232,7 +232,7 @@ def test_bilevel_cost_function_scaling_changes_marker_world_position():
     model.initSystem()
     cost = BilevelCostFunction(
         'cost', model,
-        scale_groups=[ScaleGroup(['/bodyset/rig_body'], [1])])
+        scale_groups=[ScaleGroup(['/bodyset/body'], [1])])
     cost.add_marker_bilevel_cost('/markerset/m1', osim.Vec3(1.0, 0, 0))
 
     q = ca.DM.zeros(len(cost.q_indexes))
@@ -250,10 +250,10 @@ def test_bilevel_cost_function_jacobians_sliding_mass():
     model.initSystem()
     cost_jac = BilevelCostFunction(
         'cost_jac', model,
-        scale_groups=[ScaleGroup(['/bodyset/rig_body'], [1])])
+        scale_groups=[ScaleGroup(['/bodyset/body'], [1])])
     cost_fd = BilevelCostFunction(
         'cost_fd', model,
-        scale_groups=[ScaleGroup(['/bodyset/rig_body'], [1])],
+        scale_groups=[ScaleGroup(['/bodyset/body'], [1])],
         opts={'enable_fd': True})
 
     for cost in (cost_jac, cost_fd):
@@ -317,7 +317,7 @@ def test_bilevel_cost_function_jacobians_full_body():
 
 def test_bilevel_pack_scales_broadcasts_across_shared_group():
     """
-    A shared scale group must apply the same 3-vector to every member body's
+    A shared scale group must apply the same set of scale factors to every member body's
     slot in the packed VectorVec3; ground stays at (1, 1, 1).
     """
     model = create_n_sliding_body_model(2)
@@ -337,8 +337,8 @@ def test_bilevel_pack_scales_broadcasts_across_shared_group():
 
 def test_bilevel_pack_scales_mixed_groups_apply_independent_vectors():
     """
-    With both a shared and a solo group, each group's optimization triple
-    must land on its own member bodies independently.
+    With both a shared and a solo group, each group's scale factors must land on its 
+    own member bodies independently.
     """
     model = create_n_sliding_body_model(3)
     model.initSystem()
