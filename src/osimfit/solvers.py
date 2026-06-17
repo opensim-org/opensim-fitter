@@ -5,7 +5,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from .utilities import get_coordinate_indexes
 from .data_sources import DataSource, MarkerSource, TheiaFrameSource
-from .callbacks import TrackingCostFunction, BilevelCostFunction
+from .callbacks import TrackingCostFunction, BilevelCostFunction, ScaleGroup
+from .scaling import Axis, Scaler, ManualScaleFactor
 
 
 ################
@@ -33,8 +34,7 @@ class Bounds:
 
 @dataclass
 class ScaleFactor:
-    body_path: str
-    mobod_index: int
+    group: ScaleGroup
     bounds: Bounds
 
 
@@ -45,7 +45,13 @@ class ScaleFactor:
 @dataclass
 class Solution:
     """
-    Base class for solver solutions. Contains the optimized model states as an OpenSim
+    Base class for solver solutions.
+    """
+
+@dataclass
+class TrackingSolution(Solution):
+    """
+    Solution for tracking solvers. Contains the optimized model states as an OpenSim
     TimeSeriesTable and a static helper for constructing it from raw trajectory arrays.
     """
     states_table: osim.TimeSeriesTable
@@ -82,24 +88,6 @@ class Solution:
 
 
 @dataclass
-class TrackingSolution(Solution):
-    """
-    Solution for tracking solvers. Includes the optimized coordinate trajectories
-    and, when available, generalized velocities.
-
-    Attributes
-    ----------
-    coordinates: np.ndarray, shape (num_times, num_coords)
-    coordinate_names: list[str]
-        Absolute coordinate paths, matching columns of coordinates/velocities.
-    velocities: np.ndarray, shape (num_times, num_coords), optional
-    """
-    coordinates: np.ndarray = None
-    coordinate_names: list[str] = None
-    velocities: np.ndarray = None
-
-
-@dataclass
 class SplineTrackingSolution(TrackingSolution):
     """
     TrackingSolution for spline-based solvers. Adds the optimal B-spline control
@@ -120,13 +108,15 @@ class BilevelSolution(TrackingSolution):
 
     Attributes
     ----------
-    scale_factors: np.ndarray, shape (num_scaled_bodies, 3)
-        Optimal [sx, sy, sz] scale factors for each scaled body.
-    body_paths: list[str]
-        Absolute body paths, matching rows of scale_factors.
+    scale_factors: np.ndarray, shape (num_scale_factors, 3)
+        Optimal [sx, sy, sz] scale factors, one row per scale factor group.
+    scale_groups: list[ScaleGroup]
+        ScaleGroup objects paired row-wise with scale_factors. Each entry
+        names the bodies sharing that set of XYZ body scale factors. Single-body scale
+        factors appear as a ScaleGroup with one body path and mobilized body index.
     """
     scale_factors: np.ndarray = None
-    body_paths: list[str] = None
+    scale_groups: list[ScaleGroup] = None
 
 
 @dataclass
@@ -162,6 +152,10 @@ class Solver(ABC):
     convergence_tolerance: float, optional
         The convergence tolerance to use for the IPOPT solver. Default is 1e-4.
     """
+    # Concrete subclasses set this to the exact Solution subclass they accept as
+    # an initial guess (and return from solve()).
+    _guess_type: type = Solution
+
     def __init__(self, model, convergence_tolerance=1e-4):
         super().__init__()
 
@@ -197,6 +191,31 @@ class Solver(ABC):
         ipopt_options['print_level'] = print_level
 
         return ipopt_options
+
+    def _validate_guess(self, guess: Solution):
+        """
+        Validate that `guess` matches the solver's expected guess type and contains
+        usable data. Subclasses may override to add solver-specific checks; in that
+        case they should call `super()._validate_guess(guess)` first.
+        """
+        if type(guess) is not self._guess_type:
+            raise TypeError(
+                f'{type(self).__name__} expected an initial guess of type '
+                f'{self._guess_type.__name__}, but got {type(guess).__name__}.')
+
+        table = guess.states_table
+        if table.getNumRows() == 0 or table.getNumColumns() == 0:
+            raise ValueError(
+                'Initial guess states_table is empty '
+                f'({table.getNumRows()} rows, {table.getNumColumns()} columns).')
+
+        labels = set(table.getColumnLabels())
+        missing = [coord_path + '/value' for coord_path in self.coordinates_map
+                   if coord_path + '/value' not in labels]
+        if missing:
+            raise ValueError(
+                f'Initial guess states_table is missing required coordinate columns: '
+                f'{missing}.')
 
     @abstractmethod
     def solve(self, guess=None) -> Solution:
@@ -288,6 +307,15 @@ class TrackingSolver(Solver):
                     weight=position_weight)
 
         return callback
+    
+    def _validate_guess(self, guess: Solution):
+        super()._validate_guess(guess)
+        num_times = len(self.get_times_from_reference_data())
+        num_rows = guess.states_table.getNumRows()
+        if num_rows != num_times:
+            raise ValueError(
+                f'Initial guess states_table has {num_rows} rows but the reference '
+                f'data has {num_times} time samples.')
 
 
 ##############################
@@ -313,6 +341,8 @@ class InverseKinematicsSolver(TrackingSolver):
         See :py:class:`TrackingSolver`.
     """
 
+    _guess_type = TrackingSolution
+
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
                  orientation_weight=1.0):
         super().__init__(model, convergence_tolerance, position_weight,
@@ -334,16 +364,17 @@ class InverseKinematicsSolver(TrackingSolver):
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
         return callback, solver
 
-    def solve(self, guess=None) -> TrackingSolution:
-
-        if guess is not None:
-            raise ValueError(f'InverseKinematicsSolver does not currently support '
-                             f'using an initial guess.')
+    def solve(self, guess: TrackingSolution = None) -> TrackingSolution:
 
         times = self.get_times_from_reference_data()
         num_times = len(times)
 
-        # Define initial guess and bounds.
+        if guess is not None:
+            self._validate_guess(guess)
+
+        # Per-coordinate bounds, plus an initial x0 to use for the first time step
+        # when no guess is supplied. The loop below carries x0 forward from the
+        # previous step's solution (or pulls from the guess if provided).
         x0 = []
         lbx = []
         ubx = []
@@ -353,12 +384,25 @@ class InverseKinematicsSolver(TrackingSolver):
             lbx.append(coord.getRangeMin())
             ubx.append(coord.getRangeMax())
 
+        # When a guess is provided, pre-extract a (num_times, num_coords) array of
+        # initial values from the guess states_table so each timestep can be seeded
+        # from the corresponding row.
+        guess_q = None
+        if guess is not None:
+            guess_q = np.column_stack([
+                guess.states_table.getDependentColumn(
+                    coord_path + '/value').to_numpy()
+                for coord_path in self.coordinates_map])
+
         # Iterate over all of the time steps in the tracking data and solve the
         # optimization problem at each time step.
         statesTraj = osim.StatesTrajectory()
         q_traj = np.zeros((num_times, len(self.coordinate_indexes)))
         for itime, time in enumerate(times):
             print(f'Solving time {itime+1} of {num_times} (t={time:.3f} s)...')
+
+            if guess_q is not None:
+                x0 = guess_q[itime, :].tolist()
 
             callback, solver = self.create_tracking_solver(itime,
                     position_weight=self.position_weight,
@@ -376,12 +420,11 @@ class InverseKinematicsSolver(TrackingSolver):
             callback.state.setQ(osim.Vector.createFromMat(q))
             statesTraj.append(callback.state)
 
-            x0 = sol['x']
+            if guess_q is None:
+                x0 = sol['x']
 
         return TrackingSolution(
             states_table=statesTraj.exportToTable(self.model),
-            coordinates=q_traj,
-            coordinate_names=list(self.coordinates_map.keys()),
         )
 
 
@@ -448,11 +491,11 @@ class SplineBasedSolverMixin:
 
         return ca.DM(B), ca.DM(dB)
 
-    def extract_coordinate_initial_guess(self, guess, B, coord_path):
+    def extract_coordinate_initial_guess(self, states_table, B, coord_path):
         """Extract an initial guess for the spline control points for a given coordinate
           by solving a least squares problem.
         """
-        q_col = guess.getDependentColumn(coord_path + '/value').to_numpy()
+        q_col = states_table.getDependentColumn(coord_path + '/value').to_numpy()
         q_guess, _, _, _ = np.linalg.lstsq(np.array(B), q_col, rcond=None)
         return q_guess.tolist()
 
@@ -479,6 +522,8 @@ class SplineBasedInverseKinematicsSolver(SplineBasedSolverMixin, TrackingSolver)
         See :py:class:`SplineBasedSolverMixin`.
     """
 
+    _guess_type = SplineTrackingSolution
+
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
                  orientation_weight=1.0, degree=3, knot_interval=0.05):
         super().__init__(model, convergence_tolerance=convergence_tolerance,
@@ -486,16 +531,13 @@ class SplineBasedInverseKinematicsSolver(SplineBasedSolverMixin, TrackingSolver)
                          orientation_weight=orientation_weight,
                          degree=degree, knot_interval=knot_interval)
 
-    def solve(self, guess=None) -> SplineTrackingSolution:
+    def solve(self, guess: SplineTrackingSolution = None) -> SplineTrackingSolution:
 
         times = self.get_times_from_reference_data()
         num_times = len(times)
 
-        # Check the initial guess.
-        if guess is not None and guess.getNumRows() != num_times:
-            raise ValueError(f'Expected the initial guess to have the same number of '
-                             f'rows as the tracking data, but got {guess.getNumRows()} '
-                             f'and {num_times} rows, respectively.')
+        if guess is not None:
+            self._validate_guess(guess)
 
         # Define the knot vector.
         num_knots = int(times[-1] / self.knot_interval)
@@ -513,8 +555,9 @@ class SplineBasedInverseKinematicsSolver(SplineBasedSolverMixin, TrackingSolver)
         ubx = []
         for coord_path in self.coordinates_map:
             coord = osim.Coordinate.safeDownCast(self.model.getComponent(coord_path))
-            x0 += [coord.getDefaultValue()] * num_knots if not guess else \
-                  self.extract_coordinate_initial_guess(guess, B, coord_path)
+            x0 += ([coord.getDefaultValue()] * num_knots if guess is None
+                   else self.extract_coordinate_initial_guess(
+                       guess.states_table, B, coord_path))
             lbx += [coord.getRangeMin()] * num_knots
             ubx += [coord.getRangeMax()] * num_knots
 
@@ -549,11 +592,8 @@ class SplineBasedInverseKinematicsSolver(SplineBasedSolverMixin, TrackingSolver)
         qdot_opt = np.array(dB @ coeffs_opt)
 
         return SplineTrackingSolution(
-            states_table=Solution.create_states_table(
+            states_table=TrackingSolution.create_states_table(
                 self.model, self.state, self.coordinate_indexes, times, q_opt, qdot_opt),
-            coordinates=q_opt,
-            coordinate_names=list(self.coordinates_map.keys()),
-            velocities=qdot_opt,
             spline_nodes=np.array(coeffs_opt),
         )
     
@@ -591,21 +631,53 @@ class BilevelSolver(TrackingSolver):
         self.scale_regularization_weight = scale_regularization_weight
         self.scale_factors: list[ScaleFactor] = []
 
-    def add_scale_factor(self, body: osim.Body, lower_bound, upper_bound):
+    @property
+    def scale_groups(self) -> list[ScaleGroup]:
         """
-        Add a scale factor for a given body to be optimized over in the bilevel
-        optimization problem.
+        The list of :py:class:`ScaleGroup` objects configured on this solver via
+        :py:meth:`add_scale_factor`, in the order they were added. Useful for
+        constructing a :py:class:`BilevelSolution` initial guess that matches the
+        solver's configuration.
         """
-        path = body.getAbsolutePathString()
-        mobod_index = body.getMobilizedBodyIndex()
-        self.scale_factors.append(ScaleFactor(path, mobod_index,
-                                              Bounds(lower_bound, upper_bound)))
+        return [sf.group for sf in self.scale_factors]
+
+    def add_scale_factor(self, body_paths: str | list[str],
+                         lower_bound, upper_bound):
+        """
+        Add a set of XYZ body scale factors to be optimized over in the bilevel
+        optimization problem. Pass a single body path to scale one body, or a
+        list of body paths to share one set of scale factors across a group of bodies 
+        (e.g., for left-right symmetric scaling).
+
+        Parameters
+        ----------
+        body_paths: str or list[str]
+            Absolute model path(s) to the body or bodies whose scale factor will be 
+            optimized. A list shares one set of scale factors across every body in the 
+            group.
+        lower_bound: float
+            Lower bound on each component of the XYZ body scale factors.
+        upper_bound: float
+            Upper bound on each component of the XYZ body scale factors.
+        """
+        if isinstance(body_paths, str):
+            body_paths = [body_paths]
+        if not body_paths:
+            raise ValueError(
+                'body_paths must be a non-empty string or list of strings.')
+        mobod_indexes = []
+        for path in body_paths:
+            body = osim.Body.safeDownCast(self.model.getComponent(path))
+            mobod_indexes.append(int(body.getMobilizedBodyIndex()))
+        self.scale_factors.append(ScaleFactor(
+            group=ScaleGroup(list(body_paths), mobod_indexes),
+            bounds=Bounds(lower_bound, upper_bound)))
 
     def create_bilevel_callback(self, name: str, itime: int,
                                 position_weight: float,
                                 orientation_weight: float) -> BilevelCostFunction:
-        scale_indexes = [sf.mobod_index for sf in self.scale_factors]
-        callback = BilevelCostFunction(name, self.model, scale_indexes)
+        scale_groups = [sf.group for sf in self.scale_factors]
+        callback = BilevelCostFunction(name, self.model, scale_groups)
 
         for data in self.theia_frame_data:
             raise NotImplementedError('TheiaFrameSource is not currently supported '
@@ -618,6 +690,42 @@ class BilevelSolver(TrackingSolver):
                     weight=position_weight)
 
         return callback
+    
+    def update_model(self, model: osim.Model, solution: BilevelSolution) -> osim.Model:
+        """
+        Apply the solution's optimized per-group XYZ scale factors to `model`
+        in place and return it.
+        """
+        scaler = Scaler(model)
+        axes = (Axis.XAxis, Axis.YAxis, Axis.ZAxis)
+        for group, factors in zip(solution.scale_groups, solution.scale_factors):
+            for body_path in group.body_paths:
+                body_name = osim.Body.safeDownCast(
+                    model.getComponent(body_path)).getName()
+                for ax_idx, axis in enumerate(axes):
+                    scaler.add_scale_factor(ManualScaleFactor(
+                        body_name, axis, float(factors[ax_idx])))
+        return scaler.scale()
+    
+    def _validate_guess(self, guess: Solution):
+        super()._validate_guess(guess)
+        expected = self.scale_groups
+        if guess.scale_groups != expected:
+            raise ValueError(
+                f'Initial guess scale_groups do not match the solver configuration. '
+                f'Expected {len(expected)} group(s) matching '
+                f'{[g.body_paths for g in expected]}, got '
+                f'{len(guess.scale_groups) if guess.scale_groups is not None else 0} '
+                f'group(s) matching '
+                f'{[g.body_paths for g in (guess.scale_groups or [])]}.')
+
+        expected_shape = (len(expected), 3)
+        if guess.scale_factors is None or guess.scale_factors.shape != expected_shape:
+            shape = (None if guess.scale_factors is None
+                     else guess.scale_factors.shape)
+            raise ValueError(
+                f'Initial guess scale_factors must have shape {expected_shape}, '
+                f'got {shape}.')
 
 
 class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
@@ -644,6 +752,8 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
     knot_interval: float, optional
         See :py:class:`SplineBasedSolverMixin`.   
     """
+    _guess_type = SplineBilevelSolution
+
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
                  orientation_weight=1.0, scale_regularization_weight=0.0,
                  degree=3, knot_interval=0.05):
@@ -653,16 +763,13 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
                          scale_regularization_weight=scale_regularization_weight,
                          degree=degree, knot_interval=knot_interval)
 
-    def solve(self, guess=None) -> SplineBilevelSolution:
+    def solve(self, guess: SplineBilevelSolution = None) -> SplineBilevelSolution:
 
         times = self.get_times_from_reference_data()
         num_times = len(times)
 
-        # Check the initial guess.
-        if guess is not None and guess.getNumRows() != num_times:
-            raise ValueError(f'Expected the initial guess to have the same number of '
-                             f'rows as the tracking data, but got {guess.getNumRows()} '
-                             f'and {num_times} rows, respectively.')
+        if guess is not None:
+            self._validate_guess(guess)
 
         # Define the knot vector.
         num_knots = int(times[-1] / self.knot_interval)
@@ -680,14 +787,21 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
         ubx = []
         for coord_path in self.coordinates_map:
             coord = osim.Coordinate.safeDownCast(self.model.getComponent(coord_path))
-            x0 += [coord.getDefaultValue()] * num_knots if not guess else \
-                  self.extract_coordinate_initial_guess(guess, B, coord_path)
+            x0 += ([coord.getDefaultValue()] * num_knots if guess is None
+                   else self.extract_coordinate_initial_guess(
+                       guess.states_table, B, coord_path))
             lbx += [coord.getRangeMin()] * num_knots
             ubx += [coord.getRangeMax()] * num_knots
-        for sf in self.scale_factors:
-            x0 += [1.0, 1.0, 1.0]
-            lbx += [sf.bounds.lower_bound] * 3
-            ubx += [sf.bounds.upper_bound] * 3
+        if guess is None:
+            for sf in self.scale_factors:
+                x0 += [1.0, 1.0, 1.0]
+                lbx += [sf.bounds.lower_bound] * 3
+                ubx += [sf.bounds.upper_bound] * 3
+        else:
+            x0 += guess.scale_factors.flatten().tolist()
+            for sf in self.scale_factors:
+                lbx += [sf.bounds.lower_bound] * 3
+                ubx += [sf.bounds.upper_bound] * 3
 
         # Map the control points to the full predicted trajectory via the spline basis
         # matrix.
@@ -729,12 +843,9 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
         scale_factors_mat = scales_opt.reshape(len(self.scale_factors), 3)
 
         return SplineBilevelSolution(
-            states_table=Solution.create_states_table(
+            states_table=TrackingSolution.create_states_table(
                 self.model, self.state, self.coordinate_indexes, times, q_opt, qdot_opt),
-            coordinates=q_opt,
-            coordinate_names=list(self.coordinates_map.keys()),
-            velocities=qdot_opt,
             scale_factors=scale_factors_mat,
-            body_paths=[sf.body_path for sf in self.scale_factors],
+            scale_groups=self.scale_groups,
             spline_nodes=np.array(coeffs_opt),
         )

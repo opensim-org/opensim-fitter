@@ -4,9 +4,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import opensim as osim
 from osimfit.data_sources import TheiaFrameSource
-from osimfit.scaling import PositionDataScaler, FrameMeasurement, Axis, ScaleFactor, \
+from osimfit.scaling import PositionBasedScaler, FrameMeasurement, Axis, \
                             AnthropometricScaler, AnthropometricMeasurement
-from osimfit.solvers import InverseKinematicsSolver, SplineBasedInverseKinematicsSolver
+from osimfit.solvers import (InverseKinematicsSolver,
+                             SplineBasedInverseKinematicsSolver,
+                             SplineTrackingSolution)
 
 # EXAMPLE JUMP
 # ------------
@@ -68,18 +70,18 @@ scale_map = {
     'calcn_l': ['l_foot', 'l_toes', Axis.YAxis]
 }
 
-# Load the model and Theia frame data, and create a PositionDataScaler object.
+# Load the model and Theia frame data, and create a PositionBasedScaler object.
 model = osim.Model('unscaled_generic.osim')
 c3d_source = TheiaFrameSource('pose_0.c3d')
-position_scaler = PositionDataScaler(model, c3d_source)
+position_scaler = PositionBasedScaler(model, c3d_source)
 
-# Add scaling rules to the PositionDataScaler based on the mapping above.
+# Add scaling rules to the PositionBasedScaler based on the mapping above.
 for segment_name, (data_label_1, data_label_2, axis) in scale_map.items():
     measurement = FrameMeasurement(frame_map[data_label_1], frame_map[data_label_2])
-    scale_factor = ScaleFactor(data_label_1, data_label_2, measurement, axis)
-    position_scaler.add_scale(segment_name, scale_factor)
+    position_scaler.add_measurement_scale_factor(
+        segment_name, axis, measurement, data_label_1, data_label_2)
 
-# Add symmetry pairs. Internally, the PositionDataScaler will average the scale factors
+# Add symmetry pairs. Internally, the PositionBasedScaler will average the scale factors
 # computed for each pair of symmetric segments to ensure left-right symmetry.
 position_scaler.add_symmetry_pair('humerus_l', 'humerus_r')
 position_scaler.add_symmetry_pair('radius_l', 'radius_r')
@@ -122,10 +124,14 @@ ansur_measurements = {
 # Create the AnthropometricScaler and add measurements based on the mapping above.
 anthropometric_scaler = AnthropometricScaler(scaled_model, sex='female')
 
-# Add measurements to the AnthropometricScaler. Each measurement is defined by a pair of
-# stations and an axis along which to apply the measurement.
-for ansur_label, (station1_path, station2_path, axis) in ansur_measurements.items():
-    measurement = AnthropometricMeasurement(station1_path, station2_path, axis)
+# Build the measurements once so we can reuse them by label below.
+ansur_measurement_map = {
+    label: AnthropometricMeasurement(station1_path, station2_path, axis)
+    for label, (station1_path, station2_path, axis) in ansur_measurements.items()
+}
+
+# Register every measurement so it participates in the joint MVN distribution.
+for ansur_label, measurement in ansur_measurement_map.items():
     anthropometric_scaler.add_measurement(ansur_label, measurement)
 
 # Select of subset of the measurements that we will use to condition the
@@ -142,16 +148,20 @@ anthropometric_scaler.add_conditional_measurement('waistbacklength')
 
 # Define the scale factors that will be generated from the conditioned anthropometric
 # measurements.
-anthropometric_scaler.add_scale_factor('torso', 'biacromialbreadth', Axis.ZAxis)
-anthropometric_scaler.add_scale_factor('pelvis', 'bicristalbreadth', Axis.ZAxis)
-anthropometric_scaler.add_scale_factor('tibia_r', 'bimalleolarbreadth', Axis.YAxis)
-anthropometric_scaler.add_scale_factor('tibia_r', 'bimalleolarbreadth', Axis.ZAxis)
-anthropometric_scaler.add_scale_factor('tibia_l', 'bimalleolarbreadth', Axis.YAxis)
-anthropometric_scaler.add_scale_factor('tibia_l', 'bimalleolarbreadth', Axis.ZAxis)
-anthropometric_scaler.add_scale_factor('calcn_r', 'footlength', Axis.XAxis)
-anthropometric_scaler.add_scale_factor('calcn_r', 'footbreadthhorizontal', Axis.ZAxis)
-anthropometric_scaler.add_scale_factor('calcn_l', 'footlength', Axis.XAxis)
-anthropometric_scaler.add_scale_factor('calcn_l', 'footbreadthhorizontal', Axis.ZAxis)
+anthro_scale_rules = [
+    ('torso',   'biacromialbreadth',     Axis.ZAxis),
+    ('pelvis',  'bicristalbreadth',      Axis.ZAxis),
+    ('tibia_r', 'bimalleolarbreadth',    Axis.YAxis),
+    ('tibia_r', 'bimalleolarbreadth',    Axis.ZAxis),
+    ('tibia_l', 'bimalleolarbreadth',    Axis.YAxis),
+    ('tibia_l', 'bimalleolarbreadth',    Axis.ZAxis),
+    ('calcn_r', 'footlength',            Axis.XAxis),
+    ('calcn_r', 'footbreadthhorizontal', Axis.ZAxis),
+    ('calcn_l', 'footlength',            Axis.XAxis),
+    ('calcn_l', 'footbreadthhorizontal', Axis.ZAxis),
+]
+for segment, ansur_label, axis in anthro_scale_rules:
+    anthropometric_scaler.add_anthropometric_scale_factor(segment, axis, ansur_label)
 
 # Scale the model.
 anthro_scaled_model = anthropometric_scaler.scale()
@@ -185,7 +195,8 @@ solver = SplineBasedInverseKinematicsSolver(anthro_scaled_model,
                                             orientation_weight=5.0,
                                             knot_interval=0.10)
 solver.add_theia_frame_reference_data(theia_frame_source)
-spline_ik_solution = solver.solve(osim.TimeSeriesTable('jump_1_ik_solution.sto'))
+spline_ik_solution = solver.solve(SplineTrackingSolution(
+    states_table=osim.TimeSeriesTable('jump_1_ik_solution.sto')))
 sto = osim.STOFileAdapter()
 sto.write(spline_ik_solution.states_table, 'jump_1_spline_ik_solution.sto')
 
