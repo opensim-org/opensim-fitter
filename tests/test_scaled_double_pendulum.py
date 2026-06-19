@@ -3,11 +3,12 @@ End-to-end regression test mirroring examples/example_pendulum/example_pendulum.
 
 Synthesizes marker data from a double pendulum with known body lengths
 (1.25 m and 0.75 m), then runs SplineBasedBilevelSolver against an unscaled
-model (both lengths = 1.0 m) and asserts the recovered scale factors recover
+model (both lengths = 1.0 m) and asserts the recovered body scales recover
 the ground-truth lengths.
 """
 
 import opensim as osim
+import numpy as np
 
 from osimfit.data_sources import MarkerSource
 from osimfit.solvers import SplineBasedBilevelSolver
@@ -98,11 +99,11 @@ def test_pendulum_bilevel_recovers_ground_truth_lengths(tmp_path):
         convergence_tolerance=1e-5,
         knot_interval=0.05,
         position_weight=5.0,
-        scale_regularization_weight=1e-2,
+        body_scale_regularization_weight=1e-2,
     )
     solver.add_marker_reference_data(marker_source)
-    solver.add_scale_factor('/bodyset/b0', 0.5, 2.0)
-    solver.add_scale_factor('/bodyset/b1', 0.5, 2.0)
+    solver.add_body_scale('/bodyset/b0', 0.5, 2.0)
+    solver.add_body_scale('/bodyset/b1', 0.5, 2.0)
 
     solution = solver.solve()
 
@@ -113,23 +114,23 @@ def test_pendulum_bilevel_recovers_ground_truth_lengths(tmp_path):
     assert '/jointset/j0/q0/value' in state_labels
     assert '/jointset/j1/q1/value' in state_labels
 
-    # The recovered X-scale factors match the ground-truth lengths. Y and Z scales 
+    # The recovered X-axis body scales match the ground-truth lengths. Y and Z scales 
     # should stay near 1.0 since the truth model only varies length along the local X 
     # axis.
-    assert [g.body_paths for g in solution.scale_groups] == [
+    assert [g.body_paths for g in solution.body_scale_groups] == [
         ['/bodyset/b0'], ['/bodyset/b1']
     ]
-    assert abs(solution.scale_factors[0, 0] - true_b0_length) < 0.02
-    assert abs(solution.scale_factors[1, 0] - true_b1_length) < 0.02
+    assert abs(solution.body_scales[0, 0] - true_b0_length) < 0.02
+    assert abs(solution.body_scales[1, 0] - true_b1_length) < 0.02
     for body_idx in (0, 1):
         for axis in (1, 2):
-            assert abs(solution.scale_factors[body_idx, axis] - 1.0) < 0.05
+            assert abs(solution.body_scales[body_idx, axis] - 1.0) < 0.05
 
 
 def test_pendulum_bilevel_recovers_shared_length_under_asymmetric_truth(
         tmp_path):
     """
-    A single scale factor shared across both pendulum bodies must converge to
+    A single body scale shared across both pendulum bodies must converge to
     a compromise value strictly between the two ground-truth lengths. This
     proves the grouped-scale machinery wires through end-to-end: one
     optimization variable, broadcast to two mobilized bodies, with a
@@ -154,41 +155,150 @@ def test_pendulum_bilevel_recovers_shared_length_under_asymmetric_truth(
         convergence_tolerance=1e-5,
         knot_interval=0.05,
         position_weight=5.0,
-        scale_regularization_weight=1e-2,
+        body_scale_regularization_weight=1e-2,
     )
     solver.add_marker_reference_data(marker_source)
-    solver.add_scale_factor(
+    solver.add_body_scale(
         ['/bodyset/b0', '/bodyset/b1'], 0.5, 2.0)
 
     solution = solver.solve()
 
-    # One scale factor group → one row of 3 components.
-    assert solution.scale_factors.shape == (1, 3)
-    assert len(solution.scale_groups) == 1
-    assert solution.scale_groups[0].body_paths == [
+    # One body scale group → one row of 3 components.
+    assert solution.body_scales.shape == (1, 3)
+    assert len(solution.body_scale_groups) == 1
+    assert solution.body_scale_groups[0].body_paths == [
         '/bodyset/b0', '/bodyset/b1']
 
     # The shared scale must lie strictly between the two ground-truth lengths.
-    shared_sx = solution.scale_factors[0, 0]
+    shared_sx = solution.body_scales[0, 0]
     assert true_b1_length < shared_sx < true_b0_length
 
     # Y and Z scales remain near 1.0 since the truth varies length along X.
     for axis in (1, 2):
-        assert abs(solution.scale_factors[0, axis] - 1.0) < 0.05
+        assert abs(solution.body_scales[0, axis] - 1.0) < 0.05
 
 
-def test_pendulum_update_model_applies_recovered_scale_factors(tmp_path):
+def _build_custom_joint_pendulum(trans_amplitude: float):
+    """
+    Build a single-body pendulum on a CustomJoint with two driven axes (both
+    bound to coordinate `q0`):
+
+    - Rotation about Y: `angle(q0) = q0` (LinearFunction(1, 0)).
+    - Translation along X: `x(q0) = trans_amplitude * sin(q0)` (a Sine).
+
+    Optimizing a Vec3 translation-scale on this CustomJoint multiplies the
+    X-translation function output by the optimized X component.
+    """
+    model = osim.Model()
+    model.setName('custom_joint_pendulum')
+    body = osim.Body('body', 1.0, osim.Vec3(0), osim.Inertia(1))
+    model.addBody(body)
+
+    st = osim.SpatialTransform()
+    empty = osim.ArrayStr()
+    qn = osim.ArrayStr(); qn.append('q0')
+
+    ax = st.upd_rotation1()
+    ax.setCoordinateNames(empty); ax.set_axis(osim.Vec3(1, 0, 0))
+    ax.set_function(osim.Constant(0.0))
+    ax = st.upd_rotation2()
+    ax.setCoordinateNames(qn); ax.set_axis(osim.Vec3(0, 1, 0))
+    ax.set_function(osim.LinearFunction(1.0, 0.0))
+    ax = st.upd_rotation3()
+    ax.setCoordinateNames(empty); ax.set_axis(osim.Vec3(0, 0, 1))
+    ax.set_function(osim.Constant(0.0))
+    qn_t = osim.ArrayStr(); qn_t.append('q0')
+    ax = st.upd_translation1()
+    ax.setCoordinateNames(qn_t); ax.set_axis(osim.Vec3(1, 0, 0))
+    ax.set_function(osim.Sine(trans_amplitude, 1.0, 0.0))
+    ax = st.upd_translation2()
+    ax.setCoordinateNames(empty); ax.set_axis(osim.Vec3(0, 1, 0))
+    ax.set_function(osim.Constant(0.0))
+    ax = st.upd_translation3()
+    ax.setCoordinateNames(empty); ax.set_axis(osim.Vec3(0, 0, 1))
+    ax.set_function(osim.Constant(0.0))
+
+    cj = osim.CustomJoint(
+        'cj', model.getGround(), osim.Vec3(0), osim.Vec3(0),
+        body, osim.Vec3(0), osim.Vec3(0), st)
+    model.addJoint(cj)
+    model.addMarker(osim.Marker('m0', body, osim.Vec3(0)))
+    model.finalizeConnections()
+    return model
+
+
+def _simulate_custom_joint_markers(trc_path: str, trans_amplitude: float):
+    model = _build_custom_joint_pendulum(trans_amplitude)
+    state = model.initSystem()
+    state.setTime(0.0)
+    coord = model.getCoordinateSet().get(0)
+    coord.setValue(state, 0.5)
+    coord.setSpeedValue(state, 0.5)
+
+    manager = osim.Manager(model)
+    manager.setIntegratorFixedStepSize(0.01)
+    manager.initialize(state)
+    manager.integrate(2.0)
+    states = manager.getStatesTable()
+
+    controls = osim.TimeSeriesTable(states.getIndependentColumn())
+    output_paths = osim.StdVectorString()
+    output_paths.append('/markerset/.*location')
+    markers = osim.analyzeVec3(model, states, controls, output_paths)
+    markers.addTableMetaDataString('DataRate', '100.0')
+    markers.addTableMetaDataString('Units', 'm')
+    osim.TRCFileAdapter().write(markers, trc_path)
+
+
+def test_pendulum_bilevel_recovers_translation_scale(tmp_path):
+    """
+    Truth pendulum carries an X-translation function with amplitude 0.6.
+    Run the bilevel solver against an unscaled model (amplitude 0.4) with
+    one translation-scale group; verify the X-axis translation scale
+    recovers the ratio (0.6 / 0.4 = 1.5).
+    """
+    true_amplitude = 0.6
+    unscaled_amplitude = 0.4
+    true_ratio = true_amplitude / unscaled_amplitude
+
+    trc_path = str(tmp_path / 'cj_markers.trc')
+    _simulate_custom_joint_markers(trc_path, true_amplitude)
+
+    raw_labels = osim.TimeSeriesTableVec3(trc_path).getColumnLabels()
+    label_map = {label: label.replace('|location', '') for label in raw_labels}
+
+    unscaled_model = _build_custom_joint_pendulum(unscaled_amplitude)
+    unscaled_model.initSystem()
+
+    marker_source = MarkerSource(trc_path, label_map=label_map)
+    solver = SplineBasedBilevelSolver(
+        unscaled_model,
+        convergence_tolerance=1e-5,
+        knot_interval=0.05,
+        position_weight=5.0,
+        translation_scale_regularization_weight=1e-3,
+    )
+    solver.add_marker_reference_data(marker_source)
+    solver.add_translation_scale_group('/jointset/cj', 0.5, 3.0)
+    solution = solver.solve()
+
+    assert solution.translation_scales.shape == (1, 3)
+    recovered_x = solution.translation_scales[0, 0]
+    assert abs(recovered_x - true_ratio) < 0.05
+
+
+def test_pendulum_update_model_applies_recovered_body_scales(tmp_path):
     """
     update_model must scale a model with the bilevel-recovered factors. At the
     default state (q0=q1=0) the pendulum hangs straight along +X, so the marker
-    ground positions are exact functions of the per-body scale factors:
+    ground positions are exact functions of the per-body scales:
 
         m0_ground.x = length1 * sx_b0
         m1_ground.x = length1 * sx_b0 + length2 * sx_b1
 
     With unscaled lengths of 1.0 m, those reduce to the recovered scales — which
     in turn match the ground-truth body lengths to within the same tolerance the
-    solver achieves on the raw scale factors.
+    solver achieves on the raw body scales.
     """
     true_b0_length = 1.25
     true_b1_length = 0.75
@@ -208,11 +318,11 @@ def test_pendulum_update_model_applies_recovered_scale_factors(tmp_path):
         convergence_tolerance=1e-5,
         knot_interval=0.05,
         position_weight=5.0,
-        scale_regularization_weight=1e-2,
+        body_scale_regularization_weight=1e-2,
     )
     solver.add_marker_reference_data(marker_source)
-    solver.add_scale_factor('/bodyset/b0', 0.5, 2.0)
-    solver.add_scale_factor('/bodyset/b1', 0.5, 2.0)
+    solver.add_body_scale('/bodyset/b0', 0.5, 2.0)
+    solver.add_body_scale('/bodyset/b1', 0.5, 2.0)
     solution = solver.solve()
 
     # Apply the recovered scales to a fresh unscaled model so this assertion is

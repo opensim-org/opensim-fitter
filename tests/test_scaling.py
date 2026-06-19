@@ -13,7 +13,7 @@ from osimfit.scaling import (
     Axis,
     FrameMeasurement,
     MarkerMeasurement,
-    MeasurementScaleFactor,
+    MeasurementBodyScale,
     PositionBasedScaler,
 )
 from osimfit.data_sources import DataSource
@@ -81,7 +81,7 @@ def create_one_body_test_model():
 
 def empty_positions_table():
     """
-    Minimal positions table just for constructing MeasurementScaleFactors in
+    Minimal positions table just for constructing MeasurementBodyScales in
     the container-shape tests.
     """
     table = osim.TimeSeriesTableVec3()
@@ -175,40 +175,40 @@ def test_anthropometric_z_axis_returns_zero_for_pure_x_offset():
 def create_position_based_scaler():
     """
     Build a PositionBasedScaler over the rig model, backed by a positions table
-    with columns 'a' and 'b' so add_measurement_scale_factor calls can resolve
+    with columns 'a' and 'b' so add_measurement_body_scale calls can resolve
     their data labels.
     """
     return PositionBasedScaler(create_one_body_test_model(),
                                PositionsOnlySource(empty_positions_table()))
 
 
-def create_measurement_scale_factor(body_name='rig_body'):
+def create_measurement_body_scale(body_name='rig_body'):
     """
-    Build a throwaway MeasurementScaleFactor — its data isn't exercised by the
-    add_scale_factor / add_symmetry_pair container tests.
+    Build a throwaway MeasurementBodyScale — its data isn't exercised by the
+    add_body_scale / add_symmetry_pair container tests.
     """
     table = empty_positions_table()
     measurement = FrameMeasurement('/bodyset/rig_body', '/bodyset/rig_body')
-    return MeasurementScaleFactor(
+    return MeasurementBodyScale(
         body_name, Axis.XAxis, measurement,
         table.getDependentColumn('a'),
         table.getDependentColumn('b'))
 
 
-def test_position_based_scaler_add_scale_factor_appends_to_list():
+def test_position_based_scaler_add_body_scale_appends_to_list():
     scaler = create_position_based_scaler()
-    sf = create_measurement_scale_factor(body_name='rig_body')
-    scaler.add_scale_factor(sf)
-    assert scaler.scale_factors == [sf]
+    sf = create_measurement_body_scale(body_name='rig_body')
+    scaler.add_body_scale(sf)
+    assert scaler.body_scales == [sf]
 
 
-def test_position_based_scaler_add_scale_factor_preserves_order():
+def test_position_based_scaler_add_body_scale_preserves_order():
     scaler = create_position_based_scaler()
-    sf1 = create_measurement_scale_factor(body_name='rig_body')
-    sf2 = create_measurement_scale_factor(body_name='rig_body')
-    scaler.add_scale_factor(sf1)
-    scaler.add_scale_factor(sf2)
-    assert scaler.scale_factors == [sf1, sf2]
+    sf1 = create_measurement_body_scale(body_name='rig_body')
+    sf2 = create_measurement_body_scale(body_name='rig_body')
+    scaler.add_body_scale(sf1)
+    scaler.add_body_scale(sf2)
+    assert scaler.body_scales == [sf1, sf2]
 
 
 def test_position_based_scaler_seeds_unity_scaleset_per_body():
@@ -222,14 +222,14 @@ def test_position_based_scaler_seeds_unity_scaleset_per_body():
     assert factors[2] == pytest.approx(1.0, abs=1e-12)
 
 
-def test_position_based_scaler_add_measurement_scale_factor_constructs_and_appends():
+def test_position_based_scaler_add_measurement_body_scale_constructs_and_appends():
     scaler = create_position_based_scaler()
     measurement = FrameMeasurement('/bodyset/rig_body', '/bodyset/rig_body')
-    scaler.add_measurement_scale_factor(
+    scaler.add_measurement_body_scale(
         'rig_body', Axis.YAxis, measurement, 'a', 'b')
-    assert len(scaler.scale_factors) == 1
-    sf = scaler.scale_factors[0]
-    assert isinstance(sf, MeasurementScaleFactor)
+    assert len(scaler.body_scales) == 1
+    sf = scaler.body_scales[0]
+    assert isinstance(sf, MeasurementBodyScale)
     assert sf.body_name == 'rig_body'
     assert sf.axis is Axis.YAxis
     # The data labels were resolved against the scaler's positions table; both
@@ -248,16 +248,16 @@ def test_position_based_scaler_add_symmetry_pair_appends_tuple():
     ]
 
 
-# Test AnthropometricScaleFactor.
+# Test AnthropometricBodyScale.
 
-def test_anthropometric_scale_factor_applies_expected_scale():
+def test_anthropometric_body_scale_applies_expected_scale():
     model = create_one_body_test_model()
     scaler = AnthropometricScaler(model)
     scaler.context.model_values['mylabel'] = 100.0
     scaler.context.conditioned_values['mylabel'] = 200.0
     measurement = AnthropometricMeasurement('/s0', '/s1')
     scaler.add_measurement('mylabel', measurement)
-    scaler.add_anthropometric_scale_factor('rig_body', Axis.YAxis, 'mylabel')
+    scaler.add_anthropometric_body_scale('rig_body', Axis.YAxis, 'mylabel')
 
     scaler.populate_scaleset()
 
@@ -270,9 +270,9 @@ def test_anthropometric_scale_factor_applies_expected_scale():
     assert factors[2] == pytest.approx(1.0, abs=1e-12)
 
 
-def test_anthropometric_scale_factor_requires_registered_measurement():
+def test_anthropometric_body_scale_requires_registered_measurement():
     model = create_one_body_test_model()
     scaler = AnthropometricScaler(model)
     with pytest.raises(ValueError, match="No anthropometric measurement"):
-        scaler.add_anthropometric_scale_factor(
+        scaler.add_anthropometric_body_scale(
             'rig_body', Axis.YAxis, 'unregistered_label')

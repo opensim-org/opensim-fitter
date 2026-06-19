@@ -322,25 +322,6 @@ class MultivariateNormal:
         plt.show()
 
 
-def get_coordinate_indexes(model: osim.Model, skip_dependent_coordinates: bool=True):
-    """Get a mapping of coordinate paths to their indexes in the state vector.
-    """
-    state = model.getWorkingState()
-    state_paths = osim.createStateVariableNamesInSystemOrder(model)
-    coordinates_map = {}
-    for i, state_path in enumerate(state_paths):
-        if 'value' in state_path:
-            coord_path = state_path.replace('/value', '')
-            coordinate = osim.Coordinate.safeDownCast(model.getComponent(coord_path))
-            if skip_dependent_coordinates:
-                if not coordinate.isDependent(state):
-                    coordinates_map[coord_path] = i
-            else:
-                coordinates_map[coord_path] = i
-
-    return coordinates_map
-
-
 def plot_coordinates(model: osim.Model, states: osim.StatesTrajectory,
                      pdf_fpath: str, convert_radians_to_degrees: bool=False,
                      coordinate_ranges: dict = None):
@@ -437,7 +418,6 @@ def plot_coordinates(model: osim.Model, states: osim.StatesTrajectory,
             fig.tight_layout()
             pdf.savefig(fig)
             plt.close(fig)
-
 
 
 def compute_marker_errors(model: osim.Model, states: osim.StatesTrajectory,

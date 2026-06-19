@@ -2,33 +2,7 @@ import numpy as np
 import casadi as ca
 import opensim as osim
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from .utilities import get_coordinate_indexes
-
-
-###############
-# SCALE GROUP #
-###############
-
-
-@dataclass
-class ScaleGroup:
-    """
-    A group of mobilized bodies sharing one set of XYZ body scale factors. The group 
-    defines the list of OpenSim body paths and corresponding mobilized body indexes for
-    each set of scale factors.
-
-    Attributes
-    ----------
-    body_paths: list[str]
-        Absolute model paths to the bodies in this group.
-    mobod_indexes: list[int]
-        MobilizedBodyIndex values for the bodies in this group, paired with
-        body_paths.
-    """
-    body_paths: list[str]
-    mobod_indexes: list[int]
-
+from .model import ModelCache, BodyScaleGroup, TranslationScaleGroup
 
 #########
 # COSTS #
@@ -38,7 +12,7 @@ class ScaleGroup:
 class TrackingCost(ABC):
     """
     A base class for tracking cost functions that compute a scalar error and its
-    Jacobian with respect to the model's generalized coordinates, body scale factors,
+    Jacobian with respect to the model's generalized coordinates, body scales,
     and other optimization variables. To implement a new tracking cost, extend this 
     class and implement the abstract methods (calc_error, calc_jacobian) to compute the 
     error and its Jacobian.
@@ -57,30 +31,28 @@ class TrackingCost(ABC):
 
 class FrameTrackingCost(TrackingCost):
     """
-    A tracking cost that computes the aggregate error between model frames' positions 
-    and orientations and corresponding reference data as a function of the model's 
+    A tracking cost that computes the aggregate error between model frames' positions
+    and orientations and corresponding reference data as a function of the model's
     generalized coordinates. Individual frames are registered via add_frame().
 
     Parameters
     ----------
-    model: osim.Model
-        The OpenSim model to use for evaluating the function and its Jacobian.
+    mc: ModelCache
+        The `ModelCache` wrapping the OpenSim model used for
+        evaluating the function and its Jacobian and caching model information.
     """
-    def __init__(self, model: osim.Model):
-        self.model = model
-        self.q_indexes = list(get_coordinate_indexes(
-            model, skip_dependent_coordinates=True).values())
-        self.matter = model.getMatterSubsystem()
-
+    def __init__(self, mc: ModelCache):
+        self.mc = mc
         self.frames = []
         self.mobod_indexes = osim.SimTKArrayMobilizedBodyIndex()
         self.stations = osim.SimTKArrayVec3()
+        self.num_tasks: int = 0
         self.positions = []
         self.orientations = []
         self.position_weights = []
         self.orientation_weights = []
 
-    def add_frame(self, frame_path: str, position: osim.Vec3, 
+    def add_frame(self, frame_path: str, position: osim.Vec3,
                   orientation: osim.Quaternion, position_weight: float = 1.0,
                   orientation_weight: float = 1.0):
         """
@@ -100,7 +72,7 @@ class FrameTrackingCost(TrackingCost):
         orientation_weight: float
             (Optional) The cost weight for the orientation error. Default: 1.0.
         """
-        if not self.model.hasComponent(frame_path):
+        if not self.mc.model.hasComponent(frame_path):
             raise ValueError(f'Model does not have a component at path {frame_path}.')
         if position_weight < 0:
             raise ValueError(f'Expected position_weight to be non-negative, but got '
@@ -109,13 +81,13 @@ class FrameTrackingCost(TrackingCost):
             raise ValueError(f'Expected orientation_weight to be non-negative, but got '
                              f'{orientation_weight}.')
 
-        frame = osim.PhysicalFrame.safeDownCast(self.model.getComponent(frame_path))
+        frame = osim.PhysicalFrame.safeDownCast(self.mc.model.getComponent(frame_path))
         self.frames.append(frame)
         self.mobod_indexes.push_back(frame.getMobilizedBodyIndex())
         self.stations.push_back(osim.Vec3(frame.findTransformInBaseFrame().p()))
+        self.num_tasks = self.mobod_indexes.size()
         self.positions.append(position.to_numpy())
-        self.orientations.append(
-            np.array([orientation.get(i) for i in range(4)]))
+        self.orientations.append(np.array([orientation.get(i) for i in range(4)]))
         self.position_weights.append(position_weight)
         self.orientation_weights.append(orientation_weight)
 
@@ -134,25 +106,24 @@ class FrameTrackingCost(TrackingCost):
         return error
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
-        nb = self.mobod_indexes.size()
-        if nb == 0:
-            return [np.zeros((1, len(self.q_indexes)))]
+        if self.num_tasks == 0:
+            return [np.zeros((1, len(self.mc.q_indexes)))]
 
-        # Inialize arrays used to calculate position and orientation error Jacobians 
-        # via the grouped Simbody operators.
-        spatialError = osim.VectorOfSpatialVec(nb, osim.SpatialVec(0))
+        # Loop over all frames and compute the "spatial error" (i.e., the combined 
+        # position and orientation error) for each.
+        spatialError = osim.VectorOfSpatialVec(self.num_tasks, osim.SpatialVec(0))
         for i, frame in enumerate(self.frames):
             wp = self.position_weights[i]
             wo = self.orientation_weights[i]
 
-            # Position error
+            # Position error.
             p_model = frame.getPositionInGround(state)
             p_error = osim.Vec3(
                 2.0 * wp * (p_model[0] - self.positions[i][0]),
                 2.0 * wp * (p_model[1] - self.positions[i][1]),
                 2.0 * wp * (p_model[2] - self.positions[i][2]))
 
-            # Orientation error
+            # Orientation error.
             eps = self._calc_quaternion(state, frame)
             jac_eps = self._calc_quaternion_jacobian(eps)
             omega = jac_eps.T @ self.orientations[i]
@@ -165,11 +136,11 @@ class FrameTrackingCost(TrackingCost):
 
         # Calculate the frame (position and orientation) error Jacobian.
         vec = osim.Vector(state.getNQ(), 0.0)
-        self.matter.multiplyByFrameJacobianTranspose(
+        self.mc.matter.multiplyByFrameJacobianTranspose(
             state, self.mobod_indexes, self.stations, spatialError, vec)
         J = vec.to_numpy()
 
-        return [np.expand_dims(J[self.q_indexes], axis=0)]
+        return [np.expand_dims(J[self.mc.q_indexes], axis=0)]
 
     def _calc_quaternion(self, state, frame):
         rotation = frame.getRotationInGround(state)
@@ -189,24 +160,22 @@ class FrameTrackingCost(TrackingCost):
 
 class MarkerTrackingCost(TrackingCost):
     """
-    A tracking cost that computes the aggregate error between model markers' positions 
-    and corresponding reference positions as a function of the model's generalized 
+    A tracking cost that computes the aggregate error between model markers' positions
+    and corresponding reference positions as a function of the model's generalized
     coordinates. Individual markers are registered via add_marker().
 
     Parameters
     ----------
-    model: osim.Model
-        The OpenSim model to use for evaluating the function and its Jacobian.
+    mc: ModelCache
+        The `ModelCache` wrapping the OpenSim model used for
+        evaluating the function and its Jacobian and caching model information.
     """
-    def __init__(self, model: osim.Model):
-        self.model = model
-        self.q_indexes = list(get_coordinate_indexes(
-            model, skip_dependent_coordinates=True).values())
-        self.matter = model.getMatterSubsystem()
-
+    def __init__(self, mc: ModelCache):
+        self.mc = mc
         self.markers = []
         self.mobod_indexes = osim.SimTKArrayMobilizedBodyIndex()
         self.stations = osim.SimTKArrayVec3()
+        self.num_tasks: int = 0
         self.positions = []
         self.weights = []
 
@@ -223,20 +192,19 @@ class MarkerTrackingCost(TrackingCost):
         weight: float
             (Optional) The cost weight for the position error. Default: 1.0.
         """
-        if not self.model.hasComponent(marker_path):
+        if not self.mc.model.hasComponent(marker_path):
             raise ValueError(f'Model does not have a component at path {marker_path}.')
         if weight < 0:
             raise ValueError(f'Expected weight to be non-negative, but got {weight}.')
 
-        marker = osim.Marker.safeDownCast(self.model.getComponent(marker_path))
+        marker = osim.Marker.safeDownCast(self.mc.model.getComponent(marker_path))
         frame = osim.PhysicalFrame.safeDownCast(
             marker.getParentFrame().findBaseFrame())
-        state = self.model.getWorkingState()
-        self.model.realizePosition(state)
-
+        self.mc.model.realizePosition(self.mc.state)
         self.markers.append(marker)
         self.mobod_indexes.push_back(frame.getMobilizedBodyIndex())
-        self.stations.push_back(marker.findLocationInFrame(state, frame))
+        self.stations.push_back(marker.findLocationInFrame(self.mc.state, frame))
+        self.num_tasks = self.mobod_indexes.size()
         self.positions.append(position.to_numpy())
         self.weights.append(weight)
 
@@ -249,13 +217,12 @@ class MarkerTrackingCost(TrackingCost):
         return error
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
-        nb = self.mobod_indexes.size()
-        if nb == 0:
-            return [np.zeros((1, len(self.q_indexes)))]
+        if self.num_tasks == 0:
+            return [np.zeros((1, len(self.mc.q_indexes)))]
 
         # Inialize the array used to calculate the position error Jacobian via the
         # grouped Simbody operator.
-        f_GP = osim.VectorVec3(nb, osim.Vec3(0))
+        f_GP = osim.VectorVec3(self.num_tasks, osim.Vec3(0))
         for i, (marker, position, weight) in enumerate(
                 zip(self.markers, self.positions, self.weights)):
             p_model = marker.getLocationInGround(state)
@@ -266,39 +233,61 @@ class MarkerTrackingCost(TrackingCost):
 
         # Calculate the position error Jacobian.
         vec = osim.Vector(state.getNQ(), 0.0)
-        self.matter.multiplyByStationJacobianTranspose(
+        self.mc.matter.multiplyByStationJacobianTranspose(
             state, self.mobod_indexes, self.stations, f_GP, vec)
 
-        return [np.expand_dims(vec.to_numpy()[self.q_indexes], axis=0)]
-
+        return [np.expand_dims(vec.to_numpy()[self.mc.q_indexes], axis=0)]
 
 class MarkerBilevelCost(TrackingCost):
     """
     A tracking cost that computes the aggregate error between model markers' scaled
     positions and corresponding reference positions as a function of the model's
-    generalized coordinates and body scale factors. Individual markers are registered
-    via add_marker().
+    generalized coordinates, body scales, and (optionally) per-CustomJoint
+    translation scales. Individual markers are registered via add_marker().
 
     Parameters
     ----------
-    model: osim.Model
-        The OpenSim model to use for evaluating the function and its Jacobian.
-    scale_groups: list[ScaleGroup]
-        Groups of bodies each sharing one set of XYZ body scale factors. Each entry 
-        contains a list of mobilized body indexes defining which bodies are scaled and 
+    mc: ModelCache
+        The `ModelCache` wrapping the OpenSim model used for
+        evaluating the function and its Jacobian and caching model information.
+    body_scale_groups: list[BodyScaleGroup]
+        Groups of bodies each sharing one set of XYZ body scales. Each entry
+        contains a list of mobilized body indexes defining which bodies are scaled and
         how Jacobian columns are aggregated.
+    translation_scale_groups: list[TranslationScaleGroup], optional
+        Groups of CustomJoints sharing one set of XYZ translation-scale factors.
+        Defaults to no translation-scale optimization.
     """
-    def __init__(self, model: osim.Model, scale_groups: list[ScaleGroup]):
-        self.model = model
-        self.q_indexes = list(get_coordinate_indexes(
-            model, skip_dependent_coordinates=True).values())
-        self.scale_groups = scale_groups
-        self.matter = model.getMatterSubsystem()
-
+    def __init__(self, mc: ModelCache, body_scale_groups: list[BodyScaleGroup],
+                 translation_scale_groups: list[TranslationScaleGroup] = []):
+        self.mc = mc
+        self.body_scale_groups = body_scale_groups
+        self.translation_scale_groups = translation_scale_groups
         self.mobod_indexes = osim.SimTKArrayMobilizedBodyIndex()
         self.stations = osim.SimTKArrayVec3()
+        self.num_tasks: int = 0
         self.positions = []
         self.weights = []
+
+        # Cache references to joints associated with each inboard and outboard frame in
+        # each scale group.
+        for group in self.body_scale_groups:
+            group.outboard_joints = [
+                self.mc.get_joint_for_mobilized_body_index(int(k))
+                for k in group.mobod_indexes]
+            group.inboard_joints = [
+                self.mc.get_joint_for_mobilized_body_index(c)
+                for k in group.mobod_indexes
+                for c in self.mc.children_of[int(k)]]
+
+        # Cache references to CustomJoints translations scales in each translation scale
+        # group.
+        for group in self.translation_scale_groups:
+            custom_joints = []
+            for path in group.joint_paths:
+                cj = osim.CustomJoint.safeDownCast(self.mc.model.getComponent(path))
+                custom_joints.append(cj)
+            group.custom_joints = custom_joints
 
     def add_marker(self, marker_path: str, position: osim.Vec3, weight: float = 1.0):
         """
@@ -313,80 +302,114 @@ class MarkerBilevelCost(TrackingCost):
         weight: float
             (Optional) The cost weight for the position error. Default: 1.0.
         """
-        if not self.model.hasComponent(marker_path):
+        if not self.mc.model.hasComponent(marker_path):
             raise ValueError(f'Model does not have a component at path {marker_path}.')
         if weight < 0:
             raise ValueError(f'Expected weight to be non-negative, but got {weight}.')
 
-        marker = osim.Marker.safeDownCast(self.model.getComponent(marker_path))
-        frame = osim.PhysicalFrame.safeDownCast(
-            marker.getParentFrame().findBaseFrame())
-        state = self.model.getWorkingState()
-
+        marker = osim.Marker.safeDownCast(self.mc.model.getComponent(marker_path))
+        frame = osim.PhysicalFrame.safeDownCast(marker.getParentFrame().findBaseFrame())
         self.mobod_indexes.push_back(frame.getMobilizedBodyIndex())
-        self.stations.push_back(marker.findLocationInFrame(state, frame))
+        self.stations.push_back(marker.findLocationInFrame(self.mc.state, frame))
+        self.num_tasks = self.mobod_indexes.size()
         self.positions.append(position.to_numpy())
         self.weights.append(weight)
 
+    def apply_scales(self, body_scales: np.ndarray, translation_scales: np.ndarray, 
+                     state: osim.State) -> None:
+        """
+        Apply body-scale and translation-scale overrides to `state`. Invalidates 
+        Stage::Instance and higher.
+
+        Parameters
+        ----------
+        body_scales: np.ndarray, shape (3 * len(body_scale_groups),)
+            XYZ body-scale variables, one 3-vector per BodyScaleGroup.
+        translation_scales: np.ndarray, shape (3 * len(ts_groups),)
+            XYZ translation-scale variables, one 3-vector per TranslationScaleGroup.
+        state: osim.State
+            The State to update.
+        """
+        # Apply inboard and outboard frame positions to the model based on the current
+        # set of body scales.
+        self.mc.set_scaled_mobilizer_frame_positions(state, self.body_scale_groups, 
+                                                     body_scales)
+
+        # Apply translation scales to the model.
+        for g_idx, group in enumerate(self.translation_scale_groups):
+            ts = np.asarray(translation_scales[3*g_idx : 3*g_idx+3], dtype=float)
+            tscale_vec = osim.Vec3(float(ts[0]), float(ts[1]), float(ts[2]))
+            for cj in group.custom_joints:
+                cj.setTranslationScale(state, tscale_vec)
+
     def calc_error(self, state, **kwargs) -> float:
-        scales = kwargs['scales']
-        nb = self.mobod_indexes.size() 
-        if nb == 0:
+        if self.num_tasks == 0:
             return 0.0
 
-        # Calculate position errors across all markers.
-        p_GS = osim.VectorVec3(nb, osim.Vec3(0))
-        self.matter.calcScaledStationPosition(state, scales, self.mobod_indexes,
-                                              self.stations, p_GS)
-
         error = 0.0
-        for i, (position, weight) in enumerate(zip(self.positions, self.weights)):
-            p = p_GS.get(i).to_numpy()
-            error += weight * np.square(np.linalg.norm(p - position))
+        for i in range(self.num_tasks):
+            k = int(self.mobod_indexes.getElt(i))
+            station = self.stations.getElt(i)
+            p_GS = self.mc.matter.getMobilizedBody(k).getBodyTransform(state) \
+                                 .shiftFrameStationToBase(station)
+            p = p_GS.to_numpy()
+            error += self.weights[i] * np.square(np.linalg.norm(p - self.positions[i]))
         return error
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
-        scales = kwargs['scales']
-        nb = self.mobod_indexes.size()
-        if nb == 0:
-            return [np.zeros((1, len(self.q_indexes))),
-                    np.zeros((1, 3*len(self.scale_groups)))]
+        Jq = np.zeros((1, len(self.mc.q_indexes)))
+        Js = np.zeros((1, 3 * len(self.body_scale_groups)))
+        Jt = np.zeros((1, 3 * len(self.translation_scale_groups)))
+        if self.num_tasks == 0:
+            return [Jq, Js, Jt]
 
-        # Calculate scaled station positions acrss all markers
-        p_GS = osim.VectorVec3(nb, osim.Vec3(0))
-        self.matter.calcScaledStationPosition(state, scales, self.mobod_indexes,
-                                              self.stations, p_GS)
+        # Calculate the per-marker error gradient in Ground. This is a force-like term 
+        # will be multiplied with (the transpose of) each position Jacobian below.
+        dp_GS = osim.VectorVec3(self.num_tasks, osim.Vec3(0))
+        for i in range(self.num_tasks):
+            k = int(self.mobod_indexes.getElt(i))
+            station = self.stations.getElt(i)
+            p_GS = self.mc.matter.getMobilizedBody(k).getBodyTransform(state) \
+                                 .shiftFrameStationToBase(station).to_numpy()
+            dp_GS.set(i, osim.Vec3(
+                2.0 * self.weights[i] * (p_GS[0] - self.positions[i][0]),
+                2.0 * self.weights[i] * (p_GS[1] - self.positions[i][1]),
+                2.0 * self.weights[i] * (p_GS[2] - self.positions[i][2])))
 
-        # Position errors
-        f_GS = osim.VectorVec3(nb, osim.Vec3(0))
-        for i, (position, weight) in enumerate(zip(self.positions, self.weights)):
-            p = p_GS.get(i)
-            f_GS.set(i, osim.Vec3(
-                2.0 * weight * (p[0] - position[0]),
-                2.0 * weight * (p[1] - position[1]),
-                2.0 * weight * (p[2] - position[2])))
-
-        # Calculate the error Jacobian with respect to the model coordinates.
+        # Calculate the Jacobian of the position error with respect to the coordinates.
         vec = osim.Vector(state.getNQ(), 0.0)
-        self.matter.multiplyByScaledStationJacobianTranspose(
-            state, scales, self.mobod_indexes, self.stations, f_GS, vec)
-        Jq = np.expand_dims(vec.to_numpy()[self.q_indexes], axis=0)
+        self.mc.matter.multiplyByStationJacobianTranspose(state, self.mobod_indexes, 
+                                                          self.stations, dp_GS, vec)
+        Jq[0, :] = vec.to_numpy()[self.mc.q_indexes]
 
-        # Calculate the error Jacobian with respect to body scale factors.
-        # For a shared scalar s_i applied to every body k in group G_i, the
-        # chain rule gives dE/ds_i = sum_{k in G_i} dE/ds_k, so the per-group
-        # Jacobian column is the sum of the Simbody per-body sensitivities.
-        vecVec3 = osim.VectorVec3(self.model.getNumBodies() + 1, osim.Vec3(0))
-        self.matter.multiplyByStationJacobianWrtBodyScalesTranspose(
-            state, self.mobod_indexes, self.stations, f_GS, vecVec3)
-        Js = np.zeros((1, 3*len(self.scale_groups)))
-        for i, group in enumerate(self.scale_groups):
+        # Scatter per-station gradients for each task into a vector respresenting the 
+        # error gradient with respect to body origins, which we need for the Jacobian
+        # operations below. Since the body scales only apply a translational shift and 
+        # no rotation, `dp_GS_i / dp_GB[k_i] = I`, and we can compute the vector via:
+        # 
+        #     f_GB.get(k) += f_GS.get(i)   # for each marker i on body k
+        #
+        dp_GB = osim.VectorVec3(self.mc.num_mobod, osim.Vec3(0))
+        for i in range(self.num_tasks):
+            k = int(self.mobod_indexes.getElt(i))
+            cur = dp_GB.get(k).to_numpy() + dp_GS.get(i).to_numpy()
+            dp_GB.set(k, osim.Vec3(float(cur[0]), float(cur[1]), float(cur[2])))
+
+        # Calculate the position-error Jacobian with respect to body scales.
+        Js = self.mc.calc_position_jacobian_wrt_body_scales(state, dp_GB, 
+                                                              self.body_scale_groups)
+
+        # Calculate the position-error Jacobian with respect to the CustomJoint 
+        # translation scales.
+        for g_idx, group in enumerate(self.translation_scale_groups):
             col = np.zeros(3)
-            for k in group.mobod_indexes:
-                col += vecVec3.get(k).to_numpy()
-            Js[0, 3*i:3*(i+1)] = col
+            for cj in group.custom_joints:
+                tcol = cj.multiplyByPositionJacobianWrtTranslationScaleTranspose(
+                        state, dp_GB)
+                col += tcol.to_numpy()
+            Jt[0, 3*g_idx:3*(g_idx+1)] = col
 
-        return [Jq, Js]
+        return [Jq, Js, Jt]
 
 
 class Function(ca.Callback, ABC):
@@ -400,15 +423,16 @@ class Function(ca.Callback, ABC):
     ----------
     name: str
         The name of the callback function.
-    model: osim.Model
-        The OpenSim model to use for evaluating the function and its Jacobian.
+    mc: ModelCache
+        The `ModelCache` wrapping the OpenSim model used for evaluating the function 
+        and its Jacobian and caching model information.
     opts: dict
         A dictionary of options to pass to the CasADi callback constructor.
     """
-    def __init__(self, name: str, model: osim.Model, opts: dict = {}):
+    def __init__(self, name: str, mc: ModelCache, opts: dict = {}):
         ca.Callback.__init__(self)
-        self.model = model
-        self.state = self.model.getWorkingState()
+        self.mc = mc
+        self.state = self.mc.state
         self.enable_fd = opts.get("enable_fd", False)
         self.construct(name, opts)
 
@@ -503,17 +527,16 @@ class TrackingCostFunction(Function):
     ----------
     name: str
         The name of the callback function.
-    model: osim.Model
-        The OpenSim model to use for evaluating the function and its Jacobian.
+    mc: ModelCache
+        The `ModelCache` wrapping the OpenSim model used for evaluating the function and 
+        its Jacobian and caching model information.
     opts: dict
         A dictionary of options to pass to the CasADi callback constructor.
     """
-    def __init__(self, name: str, model: osim.Model, opts={}):
-        self.q_indexes = list(get_coordinate_indexes(
-            model, skip_dependent_coordinates=True).values())
-        Function.__init__(self, name, model, opts=opts)
-        self.marker_cost = MarkerTrackingCost(model)
-        self.frame_cost = FrameTrackingCost(model)
+    def __init__(self, name: str, mc: ModelCache, opts={}):
+        Function.__init__(self, name, mc, opts=opts)
+        self.marker_cost = MarkerTrackingCost(mc)
+        self.frame_cost = FrameTrackingCost(mc)
 
     def apply_state(self, arg):
         """
@@ -521,9 +544,9 @@ class TrackingCostFunction(Function):
         position stage.
         """
         q = np.zeros(self.state.getNQ())
-        q[self.q_indexes] = np.squeeze(arg[0].full())
+        q[self.mc.q_indexes] = np.squeeze(arg[0].full())
         self.state.setQ(osim.Vector.createFromMat(q))
-        self.model.realizePosition(self.state)
+        self.mc.model.realizePosition(self.state)
 
     def add_frame_tracking_cost(self, frame_path: str,
                                 position: osim.Vec3,
@@ -546,7 +569,7 @@ class TrackingCostFunction(Function):
 
     def _get_input_size(self, i):
         if i == 0:
-            return len(self.q_indexes)
+            return len(self.mc.q_indexes)
         else:
             raise IndexError(f'Invalid input index {i} for TrackingCostFunction.')
 
@@ -572,71 +595,68 @@ class TrackingCostFunction(Function):
 class BilevelCostFunction(Function):
     """
     A CasADi callback that evaluates the sum of tracking costs over a set of model
-    markers with respect to the model's generalized coordinates and a set of body scale
-    factors.
+    markers with respect to the model's generalized coordinates, a set of body
+    scales, and (optionally) a set of per-`CustomJoint` translation scales.
 
     Parameters
     ----------
     name: str
         The name of the callback function.
-    model: osim.Model
-        The OpenSim model to use for evaluating the function and its Jacobian.
-    scale_groups: list[ScaleGroup]
-        Groups of bodies each sharing one set of XYZ body scale factors. The 
-        optimization input is sized 3 * len(scale_groups), and the i-th 3-vector of body
-        scales is broadcast to every body in scale_groups[i].
+    mc: ModelCache
+        The `ModelCache` wrapping the OpenSim model used for evaluating the function and 
+        its Jacobian and caching model information.
+    body_scale_groups: list[BodyScaleGroup]
+        Groups of bodies each sharing one set of XYZ body scales. The i-th 3-vector of 
+        body scales is broadcast to every body in `body_scale_groups[i]`.
+    translation_scale_groups: list[TranslationScaleGroup], optional
+        Groups of CustomJoints sharing one set of XYZ translation-scale factors.
+        Defaults to no translation-scale optimization.
     opts: dict
         A dictionary of options to pass to the CasADi callback constructor.
     """
-    def __init__(self, name: str, model: osim.Model,
-                 scale_groups: list[ScaleGroup], opts={}):
-        self.q_indexes = list(get_coordinate_indexes(
-            model, skip_dependent_coordinates=True).values())
-        self.scale_groups = scale_groups
-        Function.__init__(self, name, model, opts=opts)
-        self.marker_cost = MarkerBilevelCost(model, scale_groups)
+    def __init__(self, name: str, mc: ModelCache, 
+                 body_scale_groups: list[BodyScaleGroup],
+                 translation_scale_groups: list[TranslationScaleGroup] = [], opts={}):
+        self.body_scale_groups = body_scale_groups
+        self.translation_scale_groups = translation_scale_groups
+        Function.__init__(self, name, mc, opts=opts)
+        self.marker_cost = MarkerBilevelCost(mc, body_scale_groups, 
+                                             self.translation_scale_groups)
 
     def apply_state(self, arg):
         """
-        Apply the input coordinates to the model state and realize the system to the
-        position stage.
+        Apply input coordinates and scale variables to the model State, then realize
+        to Position.
         """
+        body_scales = np.squeeze(arg[1].full())
+        body_scales = np.atleast_1d(body_scales).astype(float)
+        tscales = np.squeeze(arg[2].full()) if len(self.translation_scale_groups) > 0 \
+                  else np.zeros(0)
+        tscales = np.atleast_1d(tscales).astype(float)
+        self.marker_cost.apply_scales(body_scales, tscales, self.state)
+
         q = np.zeros(self.state.getNQ())
-        q[self.q_indexes] = np.squeeze(arg[0].full())
+        q[self.mc.q_indexes] = np.squeeze(arg[0].full())
         self.state.setQ(osim.Vector.createFromMat(q))
-        self.model.realizePosition(self.state)
-
-    def pack_scales(self, arg) -> osim.VectorVec3:
-
-        # Define a VectorVec3 of scale factors, where the scale factors for bodies not
-        # being optimized are set to 1.0. This vector includes scale factors for all
-        # bodies in the model, including the ground body at index 0.
-        scales = osim.VectorVec3(self.model.getNumBodies()+1, osim.Vec3(1.0))
-
-        # Broadcast each 3-vector of scale factors to every body in its group, so that
-        # bodies sharing one scale factor receive identical per-body scales.
-        for i, group in enumerate(self.scale_groups):
-            s_vec = osim.Vec3(*arg[1][3*i:3*i+3].full().flatten())
-            for mobod_index in group.mobod_indexes:
-                scales[mobod_index] = s_vec
-
-        return scales
+        self.mc.model.realizePosition(self.state)
 
     def add_marker_bilevel_cost(self, marker_path: str, position: osim.Vec3,
                                 weight: float = 1.0):
         self.marker_cost.add_marker(marker_path, position, weight=weight)
 
     def _get_num_inputs(self):
-        return 2
+        return 3
 
     def _get_num_outputs(self):
         return 1
 
     def _get_input_size(self, i):
         if i == 0:
-            return len(self.q_indexes)
+            return len(self.mc.q_indexes)
         elif i == 1:
-            return 3 * len(self.scale_groups)
+            return 3 * len(self.body_scale_groups)
+        elif i == 2:
+            return 3 * len(self.translation_scale_groups)
         else:
             raise IndexError(f'Invalid input index {i} for BilevelCostFunction.')
 
@@ -648,12 +668,10 @@ class BilevelCostFunction(Function):
 
     def _eval(self, arg):
         self.apply_state(arg)
-        scales = self.pack_scales(arg)
-        error = self.marker_cost.calc_error(self.state, scales=scales)
+        error = self.marker_cost.calc_error(self.state)
         return [error]
 
     def _jac_eval(self, arg):
         self.apply_state(arg)
-        scales = self.pack_scales(arg)
-        jac = self.marker_cost.calc_jacobian(self.state, scales=scales)
-        return [jac[0], jac[1]]
+        jac = self.marker_cost.calc_jacobian(self.state)
+        return [jac[0], jac[1], jac[2]]
