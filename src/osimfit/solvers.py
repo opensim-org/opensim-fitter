@@ -217,6 +217,42 @@ class Solver(ABC):
                 f'Initial guess states_table is missing required coordinate columns: '
                 f'{missing}.')
 
+    @staticmethod
+    def compute_average_trapezoidal_error(errors, times):
+        """
+        Time-averaged error computed from a per-timestep symbolic error vector using the 
+        trapezoidal rule:
+
+            cost = (1 / (t_{N-1} - t_0))
+                   * sum_{i=0}^{N-2} 0.5 * (t_{i+1} - t_i) * (e_i + e_{i+1})
+
+        Compared to a simple mean (``ca.sum(errors) / num_times``), this is an
+        exact time average for piecewise-linear ``errors`` and handles
+        non-uniform time spacing correctly. Dividing by the total duration
+        keeps the cost in the same units as the per-timestep error so weights
+        on companion cost terms (e.g., scale-factor regularization) need not be
+        retuned when switching averaging schemes.
+
+        Parameters
+        ----------
+        errors: ca.MX, shape (num_times, 1)
+            Symbolic per-timestep errors.
+        times: array-like of float, length num_times
+            Strictly increasing time vector associated with `errors`.
+
+        Returns
+        -------
+        ca.MX
+            Scalar time-averaged error expression.
+        """
+        times = np.asarray(times, dtype=float)
+        dt = np.diff(times)
+        weights = np.zeros(len(times))
+        weights[:-1] += 0.5 * dt
+        weights[1:]  += 0.5 * dt
+        duration = times[-1] - times[0]
+        return ca.dot(ca.DM(weights), errors) / duration
+
     @abstractmethod
     def solve(self, guess=None) -> Solution:
         pass
@@ -575,14 +611,14 @@ class SplineBasedInverseKinematicsSolver(SplineBasedSolverMixin, TrackingSolver)
                 orientation_weight=self.orientation_weight))
             errors[itime] = callbacks[itime](q[itime, :].T)
 
-        # Define the overall cost as the average tracking error across all time steps.
-        f = ca.sum(errors) / num_times
+        # Compute total cost.
+        f = self.compute_average_trapezoidal_error(errors, times)
 
+        # Solve.
         nlp = {'x': ca.vec(coeffs), 'f': f}
         opts = {}
         opts['ipopt'] = self.get_ipopt_options(print_level=5)
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
-
         sol = solver(x0=x0, lbx=lbx, ubx=ubx)
 
         # Reconstruct the optimal trajectory by evaluating the spline at the
@@ -628,8 +664,41 @@ class BilevelSolver(TrackingSolver):
                  orientation_weight=1.0, scale_regularization_weight=0.0):
         super().__init__(model, convergence_tolerance, position_weight,
                          orientation_weight)
+        if scale_regularization_weight < 0:
+            raise ValueError(
+                f'Expected scale_regularization_weight to be non-negative, but '
+                f'got {scale_regularization_weight}.')
         self.scale_regularization_weight = scale_regularization_weight
         self.scale_factors: list[ScaleFactor] = []
+
+    @staticmethod
+    def compute_scale_regularization(s, weight, target=1.0):
+        """
+        Quadratic regularization penalty on a vector of body scale factors:
+
+            cost = weight * sum_i (s_i - target)^2
+
+        Encourages each scale factor to stay near ``target`` (typically 1.0,
+        i.e., identity scaling) so that the optimizer only deviates from the
+        nominal scaling when doing so produces a substantial improvement in
+        the primary tracking cost. The expression is symbolic in ``s``; CasADi
+        differentiates it automatically.
+
+        Parameters
+        ----------
+        s: ca.MX or ca.SX
+            Symbolic vector of scale factors.
+        weight: float
+            Non-negative scalar applied to the sum-of-squares.
+        target: float, optional
+            Per-component target value. Default is 1.0.
+
+        Returns
+        -------
+        ca.MX or ca.SX
+            Scalar regularization cost expression.
+        """
+        return weight * ca.sum((s - target)**2)
 
     @property
     def scale_groups(self) -> list[ScaleGroup]:
@@ -817,17 +886,17 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
                 orientation_weight=self.orientation_weight))
             tracking_errors[itime] = callbacks[itime](q[itime, :].T, s)
 
-        # Define the overall cost as the average tracking error across all time steps,
-        # plus an optional regularization term on the scale factors.
-        f_track = ca.sum(tracking_errors) / num_times
-        f_scale_reg = self.scale_regularization_weight * ca.sum((s - 1.0)**2)
+        # Compute total cost.
+        f_track = self.compute_average_trapezoidal_error(tracking_errors, times)
+        f_scale_reg = self.compute_scale_regularization(
+            s, weight=self.scale_regularization_weight)
         f = f_track + f_scale_reg
 
+        # Solve.
         nlp = {'x': ca.vertcat(ca.vec(coeffs), s), 'f': f}
         opts = {}
         opts['ipopt'] = self.get_ipopt_options(print_level=5)
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
-
         sol = solver(x0=x0, lbx=lbx, ubx=ubx)
 
         # Reconstruct the optimal trajectory by evaluating the spline at the
