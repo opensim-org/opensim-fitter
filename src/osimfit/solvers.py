@@ -3,10 +3,10 @@ import casadi as ca
 import opensim as osim
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from .utilities import get_coordinate_indexes
 from .data_sources import DataSource, MarkerSource, TheiaFrameSource
-from .callbacks import TrackingCostFunction, BilevelCostFunction, ScaleGroup
-from .scaling import Axis, Scaler, ManualScaleFactor
+from .callbacks import TrackingCostFunction, BilevelCostFunction
+from .model import ModelCache, BodyScaleGroup, TranslationScaleGroup
+from .scaling import Axis, Scaler, ManualBodyScale
 
 
 ################
@@ -33,8 +33,14 @@ class Bounds:
 
 
 @dataclass
-class ScaleFactor:
-    group: ScaleGroup
+class BodyScale:
+    group: BodyScaleGroup
+    bounds: Bounds
+
+
+@dataclass
+class TranslationScale:
+    group: TranslationScaleGroup
     bounds: Bounds
 
 
@@ -104,19 +110,27 @@ class SplineTrackingSolution(TrackingSolution):
 class BilevelSolution(TrackingSolution):
     """
     Solution for bilevel solvers. Separates the optimized coordinate trajectories
-    from the optimized body scale factors.
+    from the optimized body scales and (optionally) per-CustomJoint translation scales.
 
     Attributes
     ----------
-    scale_factors: np.ndarray, shape (num_scale_factors, 3)
-        Optimal [sx, sy, sz] scale factors, one row per scale factor group.
-    scale_groups: list[ScaleGroup]
-        ScaleGroup objects paired row-wise with scale_factors. Each entry
-        names the bodies sharing that set of XYZ body scale factors. Single-body scale
-        factors appear as a ScaleGroup with one body path and mobilized body index.
+    body_scales: np.ndarray, shape (num_body_scales, 3)
+        Optimal [sx, sy, sz] body scales, one row per body scale group.
+    body_scale_groups: list[BodyScaleGroup]
+        BodyScaleGroup objects paired row-wise with body_scales. Each entry
+        names the bodies sharing that set of XYZ body scales. Single-body
+        scales appear as a BodyScaleGroup with one body path and mobilized body index.
+    translation_scales: np.ndarray, shape (num_scales, 3), optional
+        Optimal [sx, sy, sz] translation scales, one row per translation-scale
+        group. ``None`` if no translation-scale variables were registered.
+    translation_scale_groups: list[TranslationScaleGroup], optional
+        TranslationScaleGroup objects paired row-wise with 
+        translation_scales.
     """
-    scale_factors: np.ndarray = None
-    scale_groups: list[ScaleGroup] = None
+    body_scales: np.ndarray = None
+    body_scale_groups: list[BodyScaleGroup] = None
+    translation_scales: np.ndarray = None
+    translation_scale_groups: list[TranslationScaleGroup] = None
 
 
 @dataclass
@@ -156,22 +170,19 @@ class Solver(ABC):
     # an initial guess (and return from solve()).
     _guess_type: type = Solution
 
-    def __init__(self, model, convergence_tolerance=1e-4):
+    def __init__(self, model: str | osim.Model, convergence_tolerance: float=1e-4):
         super().__init__()
 
-        # Load the model.
+        # Remove muscles and create the ModelCache. 
         modelProcessor = osim.ModelProcessor(model)
         modelProcessor.append(osim.ModOpRemoveMuscles())
-        self.model =  modelProcessor.process()
-        self.state = self.model.initSystem()
-        # For now, disallow models with joints where qdot != u.
-        assert(self.state.getNQ() == self.state.getNU())
+        self.mc = ModelCache(modelProcessor.process())
+        self.state = self.mc.state
 
-        # Create a mapping between coordinate paths and their indexes in the state
-        # vector.
-        self.coordinates_map = get_coordinate_indexes(self.model,
-                                                      skip_dependent_coordinates=True)
-        self.coordinate_indexes = list(self.coordinates_map.values())
+
+        # Convenience aliases for the cached coordinate maps.
+        self.q_map = self.mc.q_map
+        self.q_indexes = self.mc.q_indexes
 
         # Optimization settings.
         self.convergence_tolerance = convergence_tolerance
@@ -210,7 +221,7 @@ class Solver(ABC):
                 f'({table.getNumRows()} rows, {table.getNumColumns()} columns).')
 
         labels = set(table.getColumnLabels())
-        missing = [coord_path + '/value' for coord_path in self.coordinates_map
+        missing = [coord_path + '/value' for coord_path in self.q_map
                    if coord_path + '/value' not in labels]
         if missing:
             raise ValueError(
@@ -230,7 +241,7 @@ class Solver(ABC):
         exact time average for piecewise-linear ``errors`` and handles
         non-uniform time spacing correctly. Dividing by the total duration
         keeps the cost in the same units as the per-timestep error so weights
-        on companion cost terms (e.g., scale-factor regularization) need not be
+        on companion cost terms (e.g., body-scale regularization) need not be
         retuned when switching averaging schemes.
 
         Parameters
@@ -268,9 +279,9 @@ class TrackingSolver(Solver):
     Parameters
     ----------
     model: str or osim.Model
-        See :py:class:`Solver`.
+        See `Solver`.
     convergence_tolerance: float, optional
-        See :py:class:`Solver`.
+        See `Solver`.
     position_weight: float, optional
         The weight to use for position-based tracking costs. Default is 1.0.
     orientation_weight: float, optional
@@ -324,7 +335,7 @@ class TrackingSolver(Solver):
         Create a CasADi callback function for computing the tracking cost at a given
         time step, which can be used in the formulation of an optimization problem.
         """
-        callback = TrackingCostFunction(name, self.model)
+        callback = TrackingCostFunction(name, self.mc)
 
         for data in self.theia_frame_data:
             for iframe, frame_path in enumerate(data.labels):
@@ -368,13 +379,13 @@ class InverseKinematicsSolver(TrackingSolver):
     Parameters
     ----------
     model: str or osim.Model
-        See :py:class:`Solver`.
+        See `Solver`.
     convergence_tolerance: float, optional
-        See :py:class:`Solver`.
+        See `Solver`.
     position_weight: float, optional
-        See :py:class:`TrackingSolver`.
+        See `TrackingSolver`.
     orientation_weight: float, optional
-        See :py:class:`TrackingSolver`.
+        See `TrackingSolver`.
     """
 
     _guess_type = TrackingSolution
@@ -389,7 +400,7 @@ class InverseKinematicsSolver(TrackingSolver):
         A helper function to create a CasADi solver for the tracking problem at a
         given time step.
         """
-        x = ca.SX.sym('x', len(self.coordinate_indexes))
+        x = ca.SX.sym('x', len(self.q_indexes))
         callback = self.create_tracking_callback('tracking_cost', itime,
                                                  position_weight=position_weight,
                                                  orientation_weight=orientation_weight)
@@ -414,8 +425,8 @@ class InverseKinematicsSolver(TrackingSolver):
         x0 = []
         lbx = []
         ubx = []
-        for coord_path in self.coordinates_map:
-            coord = osim.Coordinate.safeDownCast(self.model.getComponent(coord_path))
+        for coord_path in self.q_map:
+            coord = osim.Coordinate.safeDownCast(self.mc.model.getComponent(coord_path))
             x0.append(coord.getDefaultValue())
             lbx.append(coord.getRangeMin())
             ubx.append(coord.getRangeMax())
@@ -428,12 +439,12 @@ class InverseKinematicsSolver(TrackingSolver):
             guess_q = np.column_stack([
                 guess.states_table.getDependentColumn(
                     coord_path + '/value').to_numpy()
-                for coord_path in self.coordinates_map])
+                for coord_path in self.q_map])
 
         # Iterate over all of the time steps in the tracking data and solve the
         # optimization problem at each time step.
         statesTraj = osim.StatesTrajectory()
-        q_traj = np.zeros((num_times, len(self.coordinate_indexes)))
+        q_traj = np.zeros((num_times, len(self.q_indexes)))
         for itime, time in enumerate(times):
             print(f'Solving time {itime+1} of {num_times} (t={time:.3f} s)...')
 
@@ -452,7 +463,7 @@ class InverseKinematicsSolver(TrackingSolver):
             # StatesTrajectory.append() copies the state by value, so reuse is safe.
             callback.state.setTime(time)
             q = np.zeros(callback.state.getNQ())
-            q[self.coordinate_indexes] = q_traj[itime, :]
+            q[self.q_indexes] = q_traj[itime, :]
             callback.state.setQ(osim.Vector.createFromMat(q))
             statesTraj.append(callback.state)
 
@@ -460,7 +471,7 @@ class InverseKinematicsSolver(TrackingSolver):
                 x0 = sol['x']
 
         return TrackingSolution(
-            states_table=statesTraj.exportToTable(self.model),
+            states_table=statesTraj.exportToTable(self.mc.model),
         )
 
 
@@ -545,17 +556,17 @@ class SplineBasedInverseKinematicsSolver(SplineBasedSolverMixin, TrackingSolver)
     Parameters
     ----------
     model: str or osim.Model
-        See :py:class:`Solver`.
+        See `Solver`.
     convergence_tolerance: float, optional
-        See :py:class:`Solver`.
+        See `Solver`.
     position_weight: float, optional
-        See :py:class:`TrackingSolver`.
+        See `TrackingSolver`.
     orientation_weight: float, optional
-        See :py:class:`TrackingSolver`.
+        See `TrackingSolver`.
     degree: int, optional
-        See :py:class:`SplineBasedSolverMixin`.
+        See `SplineBasedSolverMixin`.
     knot_interval: float, optional
-        See :py:class:`SplineBasedSolverMixin`.
+        See `SplineBasedSolverMixin`.
     """
 
     _guess_type = SplineTrackingSolution
@@ -585,12 +596,12 @@ class SplineBasedInverseKinematicsSolver(SplineBasedSolverMixin, TrackingSolver)
 
         # Define the optimization variables, which are the spline control points for
         # each coordinate.
-        coeffs = ca.MX.sym('coeffs', num_knots, len(self.coordinate_indexes))
+        coeffs = ca.MX.sym('coeffs', num_knots, len(self.q_indexes))
         x0 = []
         lbx = []
         ubx = []
-        for coord_path in self.coordinates_map:
-            coord = osim.Coordinate.safeDownCast(self.model.getComponent(coord_path))
+        for coord_path in self.q_map:
+            coord = osim.Coordinate.safeDownCast(self.mc.model.getComponent(coord_path))
             x0 += ([coord.getDefaultValue()] * num_knots if guess is None
                    else self.extract_coordinate_initial_guess(
                        guess.states_table, B, coord_path))
@@ -623,13 +634,13 @@ class SplineBasedInverseKinematicsSolver(SplineBasedSolverMixin, TrackingSolver)
 
         # Reconstruct the optimal trajectory by evaluating the spline at the
         # input data time points.
-        coeffs_opt = ca.reshape(sol['x'], num_knots, len(self.coordinate_indexes))
+        coeffs_opt = ca.reshape(sol['x'], num_knots, len(self.q_indexes))
         q_opt = np.array(B @ coeffs_opt)    # (num_times, num_coords)
         qdot_opt = np.array(dB @ coeffs_opt)
 
         return SplineTrackingSolution(
             states_table=TrackingSolution.create_states_table(
-                self.model, self.state, self.coordinate_indexes, times, q_opt, qdot_opt),
+                self.mc.model, self.state, self.q_indexes, times, q_opt, qdot_opt),
             spline_nodes=np.array(coeffs_opt),
         )
     
@@ -640,54 +651,64 @@ class SplineBasedInverseKinematicsSolver(SplineBasedSolverMixin, TrackingSolver)
 class BilevelSolver(TrackingSolver):
     """
     An abstract base class for solvers that solve bilevel optimization problems,
-    i.e., problems that optimize over both the kinematics and body scale factors to
+    i.e., problems that optimize over both the kinematics and body scales to
     minimize tracking error. Concrete subclasses must implement the solve() method,
     which should return a Solution object.
 
     Parameters
     ----------
     model: str or osim.Model
-        See :py:class:`Solver`.
+        See `Solver`.
     convergence_tolerance: float, optional
-        See :py:class:`Solver`.
+        See `Solver`.
     position_weight: float, optional
-        See :py:class:`TrackingSolver`.
+        See `TrackingSolver`.
     orientation_weight: float, optional
-        See :py:class:`TrackingSolver`.
-    scale_regularization_weight: float, optional
-        The weight to apply to the regularization term on the scale factors in the
-        bilevel optimization problem to encourage them to stay close to 1.0 if changes
-        in the scale factor don't substantially improve the tracking cost. Default is
-        0.0 (i.e., no regularization).
+        See `TrackingSolver`.
+    body_scale_regularization_weight: float, optional
+        The weight to apply to the regularization term on the body scales in the
+        bilevel optimization problem. Default is 0.0 (i.e., no regularization).
+    translation_scale_regularization_weight: float, optional
+        The weight to apply to the regularization term on the `CustomJoint` function
+        translation scales in the bilevel optimization. Default is 0.0 (i.e., no 
+        regularization).
     """
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
-                 orientation_weight=1.0, scale_regularization_weight=0.0):
+                 orientation_weight=1.0, body_scale_regularization_weight=0.0,
+                 translation_scale_regularization_weight=0.0):
         super().__init__(model, convergence_tolerance, position_weight,
                          orientation_weight)
-        if scale_regularization_weight < 0:
+        if body_scale_regularization_weight < 0:
             raise ValueError(
-                f'Expected scale_regularization_weight to be non-negative, but '
-                f'got {scale_regularization_weight}.')
-        self.scale_regularization_weight = scale_regularization_weight
-        self.scale_factors: list[ScaleFactor] = []
+                f'Expected body_scale_regularization_weight to be non-negative, but '
+                f'got {body_scale_regularization_weight}.')
+        if translation_scale_regularization_weight < 0:
+            raise ValueError(
+                f'Expected translation_scale_regularization_weight to be '
+                f'non-negative, but got '
+                f'{translation_scale_regularization_weight}.')
+        self.body_scale_regularization_weight = body_scale_regularization_weight
+        self.translation_scale_regularization_weight = (
+            translation_scale_regularization_weight)
+        self.body_scales: list[BodyScale] = []
+        self.translation_scales: list[TranslationScale] = []
 
     @staticmethod
     def compute_scale_regularization(s, weight, target=1.0):
         """
-        Quadratic regularization penalty on a vector of body scale factors:
+        Quadratic regularization penalty on a vector of scale factors:
 
             cost = weight * sum_i (s_i - target)^2
 
         Encourages each scale factor to stay near ``target`` (typically 1.0,
         i.e., identity scaling) so that the optimizer only deviates from the
         nominal scaling when doing so produces a substantial improvement in
-        the primary tracking cost. The expression is symbolic in ``s``; CasADi
-        differentiates it automatically.
+        the primary tracking cost.
 
         Parameters
         ----------
         s: ca.MX or ca.SX
-            Symbolic vector of scale factors.
+            Symbolic vector of scales.
         weight: float
             Non-negative scalar applied to the sum-of-squares.
         target: float, optional
@@ -701,33 +722,40 @@ class BilevelSolver(TrackingSolver):
         return weight * ca.sum((s - target)**2)
 
     @property
-    def scale_groups(self) -> list[ScaleGroup]:
+    def body_scale_groups(self) -> list[BodyScaleGroup]:
         """
-        The list of :py:class:`ScaleGroup` objects configured on this solver via
-        :py:meth:`add_scale_factor`, in the order they were added. Useful for
-        constructing a :py:class:`BilevelSolution` initial guess that matches the
-        solver's configuration.
+        The list of `BodyScaleGroup` objects configured on this solver via 
+        `add_body_scale`, in the order they were added. Useful for constructing a 
+        `BilevelSolution` initial guess that matches the solver's configuration.
         """
-        return [sf.group for sf in self.scale_factors]
+        return [bs.group for bs in self.body_scales]
 
-    def add_scale_factor(self, body_paths: str | list[str],
-                         lower_bound, upper_bound):
+    @property
+    def translation_scale_groups(self) -> list[TranslationScaleGroup]:
         """
-        Add a set of XYZ body scale factors to be optimized over in the bilevel
+        The list of `TranslationScaleGroup` objects configured on this solver via 
+        `add_translation_scale_group`, in the order they were added.
+        """
+        return [ts.group for ts in self.translation_scales]
+
+    def add_body_scale(self, body_paths: str | list[str],
+                         lower_bound: float, upper_bound: float):
+        """
+        Add a set of XYZ body scales to be optimized over in the bilevel
         optimization problem. Pass a single body path to scale one body, or a
-        list of body paths to share one set of scale factors across a group of bodies 
+        list of body paths to share one set of body scales across a group of bodies 
         (e.g., for left-right symmetric scaling).
 
         Parameters
         ----------
         body_paths: str or list[str]
-            Absolute model path(s) to the body or bodies whose scale factor will be 
-            optimized. A list shares one set of scale factors across every body in the 
+            Absolute model path(s) to the body or bodies whose body scale will be 
+            optimized. A list shares one set of body scales across every body in the 
             group.
         lower_bound: float
-            Lower bound on each component of the XYZ body scale factors.
+            Lower bound on each component of the XYZ body scales.
         upper_bound: float
-            Upper bound on each component of the XYZ body scale factors.
+            Upper bound on each component of the XYZ body scales.
         """
         if isinstance(body_paths, str):
             body_paths = [body_paths]
@@ -736,21 +764,41 @@ class BilevelSolver(TrackingSolver):
                 'body_paths must be a non-empty string or list of strings.')
         mobod_indexes = []
         for path in body_paths:
-            body = osim.Body.safeDownCast(self.model.getComponent(path))
+            body = osim.Body.safeDownCast(self.mc.model.getComponent(path))
             mobod_indexes.append(int(body.getMobilizedBodyIndex()))
-        self.scale_factors.append(ScaleFactor(
-            group=ScaleGroup(list(body_paths), mobod_indexes),
-            bounds=Bounds(lower_bound, upper_bound)))
+        self.body_scales.append(BodyScale(
+            group=BodyScaleGroup(list(body_paths), mobod_indexes),
+            bounds=Bounds(lower_bound, upper_bound),))
+
+    def add_translation_scale_group(self, joint_paths,
+                                    lower_bound: float, upper_bound: float):
+        """
+        Register one set of XYZ translation-scale variables shared across the named
+        `CustomJoint`s.
+
+        Parameters
+        ----------
+        joint_paths: str or list[str]
+            Absolute model path(s) to the CustomJoint(s) sharing one set of XYZ
+            translation-scale factors.
+        lower_bound, upper_bound: float
+            Bounds on each component of the XYZ translation-scale Vec3.
+        """
+        group = self.mc.create_translation_scale_group(joint_paths)
+        self.translation_scales.append(TranslationScale(
+            group=group, bounds=Bounds(lower_bound, upper_bound)))
 
     def create_bilevel_callback(self, name: str, itime: int,
                                 position_weight: float,
                                 orientation_weight: float) -> BilevelCostFunction:
-        scale_groups = [sf.group for sf in self.scale_factors]
-        callback = BilevelCostFunction(name, self.model, scale_groups)
+        body_scale_groups = [bs.group for bs in self.body_scales]
+        tscale_groups = [ts.group for ts in self.translation_scales]
+        callback = BilevelCostFunction(name, self.mc, body_scale_groups,
+                                       translation_scale_groups=tscale_groups)
 
         for data in self.theia_frame_data:
             raise NotImplementedError('TheiaFrameSource is not currently supported '
-                                      'with scale factor optimization.')
+                                      'with body scale optimization.')
 
         for data in self.marker_data:
             for iframe, marker_path in enumerate(data.labels):
@@ -759,77 +807,141 @@ class BilevelSolver(TrackingSolver):
                     weight=position_weight)
 
         return callback
-    
+
     def update_model(self, model: osim.Model, solution: BilevelSolution) -> osim.Model:
         """
-        Apply the solution's optimized per-group XYZ scale factors to `model`
-        in place and return it.
+        Apply the solution's optimized per-group XYZ body scales and
+        CustomJoint translation scales to `model` in place and return it. The body
+        scales update the inboard and outboard frames of each Joint only. Translation 
+        scales are applied to their respective `CustomJoint`s. If a `CustomJoint` was
+        not included in the optimization, then the translation scales are set to their
+        pre-existing values (i.e., the values prior to a Model::scale() call). This 
+        deviates from the default behavior in OpenSim, but aligns with the conventions
+        of the bilevel optimization solvers.
         """
+        model.initSystem()
+
+        # Capture the translation scales currently on every CustomJoint, before
+        # body scaling compounds them, so they can be restored afterward.
+        existing_scales = ModelCache.get_translation_scales(model)
+
         scaler = Scaler(model)
         axes = (Axis.XAxis, Axis.YAxis, Axis.ZAxis)
-        for group, factors in zip(solution.scale_groups, solution.scale_factors):
+        for group, factors in zip(solution.body_scale_groups, solution.body_scales):
             for body_path in group.body_paths:
                 body_name = osim.Body.safeDownCast(
                     model.getComponent(body_path)).getName()
                 for ax_idx, axis in enumerate(axes):
-                    scaler.add_scale_factor(ManualScaleFactor(
+                    scaler.add_body_scale(ManualBodyScale(
                         body_name, axis, float(factors[ax_idx])))
-        return scaler.scale()
-    
+        model = scaler.scale()
+
+        # If there are no existing scales, then there are no CustomJoints in the model, 
+        # so we can safely return.
+        if not existing_scales:
+            return model
+
+        # Restore every CustomJoint's pre-existing translation scale, undoing the
+        # incidental MultiplierFunction scaling body scaling leaves on the
+        # translation functions. Unoptimized CustomJoints keep these values.
+        ModelCache.apply_translation_scales(model, existing_scales)
+
+        # Update the optimized CustomJoints with their optimized translation
+        # scales, composed with the pre-existing scale.
+        if solution.translation_scales is not None:
+            scales: dict[str, np.ndarray] = {}
+            for group, tscale in zip(solution.translation_scale_groups,
+                                     solution.translation_scales):
+                for joint_path in group.joint_paths:
+                    scales[joint_path] = (existing_scales[joint_path] *
+                                          np.asarray(tscale, dtype=float))
+            ModelCache.apply_translation_scales(model, scales)
+
+        model.finalizeConnections()
+        model.initSystem()
+        return model
+
     def _validate_guess(self, guess: Solution):
         super()._validate_guess(guess)
-        expected = self.scale_groups
-        if guess.scale_groups != expected:
+        expected = self.body_scale_groups
+        if guess.body_scale_groups != expected:
             raise ValueError(
-                f'Initial guess scale_groups do not match the solver configuration. '
+                f'Initial guess body_scale_groups do not match the solver configuration. '
                 f'Expected {len(expected)} group(s) matching '
                 f'{[g.body_paths for g in expected]}, got '
-                f'{len(guess.scale_groups) if guess.scale_groups is not None else 0} '
+                f'{len(guess.body_scale_groups) if guess.body_scale_groups is not None else 0} '
                 f'group(s) matching '
-                f'{[g.body_paths for g in (guess.scale_groups or [])]}.')
+                f'{[g.body_paths for g in (guess.body_scale_groups or [])]}.')
 
         expected_shape = (len(expected), 3)
-        if guess.scale_factors is None or guess.scale_factors.shape != expected_shape:
-            shape = (None if guess.scale_factors is None
-                     else guess.scale_factors.shape)
+        if guess.body_scales is None or guess.body_scales.shape != expected_shape:
+            shape = (None if guess.body_scales is None
+                     else guess.body_scales.shape)
             raise ValueError(
-                f'Initial guess scale_factors must have shape {expected_shape}, '
+                f'Initial guess body_scales must have shape {expected_shape}, '
                 f'got {shape}.')
+
+        expected_ts_groups = self.translation_scale_groups
+        guess_ts_groups = guess.translation_scale_groups
+        if expected_ts_groups:
+            if guess_ts_groups != expected_ts_groups:
+                raise ValueError(
+                    f'Initial guess translation_scale_groups do not match '
+                    f'the solver configuration. Expected {len(expected_ts_groups)} '
+                    f'group(s) matching '
+                    f'{[g.joint_paths for g in expected_ts_groups]}, got '
+                    f'{len(guess_ts_groups) if guess_ts_groups is not None else 0} '
+                    f'group(s) matching '
+                    f'{[g.joint_paths for g in (guess_ts_groups or [])]}.')
+            ts_shape = (len(expected_ts_groups), 3)
+            if (guess.translation_scales is None or
+                    guess.translation_scales.shape != ts_shape):
+                shape = (None if guess.translation_scales is None
+                         else guess.translation_scales.shape)
+                raise ValueError(
+                    f'Initial guess translation_scales must have shape '
+                    f'{ts_shape}, got {shape}.')
 
 
 class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
     """
     A solver for bilevel optimization problems that optimize over both the kinematics
-    and body scale factors to minimize tracking error, where the predicted trajectories
+    and body scales to minimize tracking error, where the predicted trajectories
     are represented as B-splines and the optimization variables are the spline control
-    points and scale factors.
+    points and body scales.
 
     Parameters
     ----------
     model: str or osim.Model
-        See :py:class:`Solver`.
+        See `Solver`.
     convergence_tolerance: float, optional
-        See :py:class:`Solver`.
+        See `Solver`.
     position_weight: float, optional
-        See :py:class:`TrackingSolver`.
+        See `TrackingSolver`.
     orientation_weight: float, optional
-        See :py:class:`TrackingSolver`.
-    scale_regularization_weight: float, optional
-        See :py:class:`BilevelSolver`.
+        See `TrackingSolver`.
+    body_scale_regularization_weight: float, optional
+        See `BilevelSolver`.
+    translation_scale_regularization_weight: float, optional
+        See `BilevelSolver`.
     degree: int, optional
-        See :py:class:`SplineBasedSolverMixin`.
+        See `SplineBasedSolverMixin`.
     knot_interval: float, optional
-        See :py:class:`SplineBasedSolverMixin`.   
+        See `SplineBasedSolverMixin`.   
     """
     _guess_type = SplineBilevelSolution
 
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
-                 orientation_weight=1.0, scale_regularization_weight=0.0,
+                 orientation_weight=1.0, body_scale_regularization_weight=0.0,
+                 translation_scale_regularization_weight=0.0,
                  degree=3, knot_interval=0.05):
         super().__init__(model, convergence_tolerance=convergence_tolerance,
                          position_weight=position_weight,
                          orientation_weight=orientation_weight,
-                         scale_regularization_weight=scale_regularization_weight,
+                         body_scale_regularization_weight=(
+                             body_scale_regularization_weight),
+                         translation_scale_regularization_weight=(
+                             translation_scale_regularization_weight),
                          degree=degree, knot_interval=knot_interval)
 
     def solve(self, guess: SplineBilevelSolution = None) -> SplineBilevelSolution:
@@ -844,33 +956,50 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
         num_knots = int(times[-1] / self.knot_interval)
         knots = self.build_knots_vector(times, num_knots)
 
-        # Pre-compute the spline basis matrix, which is independent of the optimization
-        # variables.
+        # Pre-compute the spline basis matrix and its derivative.
         B, dB = self.build_spline_basis_matrix(times, knots)
 
-        # Define the optimization variables: spline control points and scale factors.
-        coeffs = ca.MX.sym('coeffs', num_knots, len(self.coordinate_indexes))
-        s = ca.MX.sym('scale_factors', 3*len(self.scale_factors))
+        # Define the optimization variables: spline control points, body scale
+        # factors, and per-CustomJoint translation scales.
+        n_groups = len(self.body_scales)
+        n_ts = len(self.translation_scales)
+        coeffs = ca.MX.sym('coeffs', num_knots, len(self.q_indexes))
+        s = ca.MX.sym('body_scales', 3 * n_groups)
+        ts = ca.MX.sym('translation_scales', 3 * n_ts)
         x0 = []
         lbx = []
         ubx = []
-        for coord_path in self.coordinates_map:
-            coord = osim.Coordinate.safeDownCast(self.model.getComponent(coord_path))
+        for coord_path in self.q_map:
+            coord = osim.Coordinate.safeDownCast(self.mc.model.getComponent(coord_path))
             x0 += ([coord.getDefaultValue()] * num_knots if guess is None
                    else self.extract_coordinate_initial_guess(
                        guess.states_table, B, coord_path))
             lbx += [coord.getRangeMin()] * num_knots
             ubx += [coord.getRangeMax()] * num_knots
+
+        # Set the guess and bounds for body scales.
         if guess is None:
-            for sf in self.scale_factors:
+            for bs in self.body_scales:
                 x0 += [1.0, 1.0, 1.0]
-                lbx += [sf.bounds.lower_bound] * 3
-                ubx += [sf.bounds.upper_bound] * 3
+                lbx += [bs.bounds.lower_bound] * 3
+                ubx += [bs.bounds.upper_bound] * 3
         else:
-            x0 += guess.scale_factors.flatten().tolist()
-            for sf in self.scale_factors:
-                lbx += [sf.bounds.lower_bound] * 3
-                ubx += [sf.bounds.upper_bound] * 3
+            x0 += guess.body_scales.flatten().tolist()
+            for bs in self.body_scales:
+                lbx += [bs.bounds.lower_bound] * 3
+                ubx += [bs.bounds.upper_bound] * 3
+
+        # Set the guess and bounds for translation scales.
+        if guess is None or guess.translation_scales is None:
+            for tsf in self.translation_scales:
+                x0 += [1.0, 1.0, 1.0]
+                lbx += [tsf.bounds.lower_bound] * 3
+                ubx += [tsf.bounds.upper_bound] * 3
+        else:
+            x0 += guess.translation_scales.flatten().tolist()
+            for tsf in self.translation_scales:
+                lbx += [tsf.bounds.lower_bound] * 3
+                ubx += [tsf.bounds.upper_bound] * 3
 
         # Map the control points to the full predicted trajectory via the spline basis
         # matrix.
@@ -884,16 +1013,18 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
                 f'scaled_tracking_cost_time_{itime}', itime,
                 position_weight=self.position_weight,
                 orientation_weight=self.orientation_weight))
-            tracking_errors[itime] = callbacks[itime](q[itime, :].T, s)
+            tracking_errors[itime] = callbacks[itime](q[itime, :].T, s, ts)
 
         # Compute total cost.
         f_track = self.compute_average_trapezoidal_error(tracking_errors, times)
         f_scale_reg = self.compute_scale_regularization(
-            s, weight=self.scale_regularization_weight)
-        f = f_track + f_scale_reg
+            s, weight=self.body_scale_regularization_weight)
+        f_tscale_reg = self.compute_scale_regularization(
+            ts, weight=self.translation_scale_regularization_weight)
+        f = f_track + f_scale_reg + f_tscale_reg
 
         # Solve.
-        nlp = {'x': ca.vertcat(ca.vec(coeffs), s), 'f': f}
+        nlp = {'x': ca.vertcat(ca.vec(coeffs), s, ts), 'f': f}
         opts = {}
         opts['ipopt'] = self.get_ipopt_options(print_level=5)
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
@@ -901,20 +1032,27 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
 
         # Reconstruct the optimal trajectory by evaluating the spline at the
         # input data time points.
-        num_coeff_vars = num_knots * len(self.coordinate_indexes)
+        num_coeff_vars = num_knots * len(self.q_indexes)
         coeffs_opt = ca.reshape(sol['x'][:num_coeff_vars], num_knots,
-                                len(self.coordinate_indexes))
+                                len(self.q_indexes))
         q_opt = np.array(B @ coeffs_opt)    # (num_times, num_coords)
         qdot_opt = np.array(dB @ coeffs_opt)
 
-        # Reshape scale factors from flat vector to (num_scaled_bodies, 3).
-        scales_opt = np.array(sol['x'][num_coeff_vars:]).flatten()
-        scale_factors_mat = scales_opt.reshape(len(self.scale_factors), 3)
+        # Slice body scales and translation scales from the flat solution vector.
+        x_flat = np.array(sol['x']).flatten()
+        scales_flat = x_flat[num_coeff_vars : num_coeff_vars + 3 * n_groups]
+        body_scales_mat = scales_flat.reshape(n_groups, 3) if n_groups else \
+            np.zeros((0, 3))
+        tscales_flat = x_flat[num_coeff_vars + 3 * n_groups :]
+        custom_joint_ts_mat = tscales_flat.reshape(n_ts, 3) if n_ts else None
+        custom_joint_ts_groups = (self.translation_scale_groups if n_ts else None)
 
         return SplineBilevelSolution(
             states_table=TrackingSolution.create_states_table(
-                self.model, self.state, self.coordinate_indexes, times, q_opt, qdot_opt),
-            scale_factors=scale_factors_mat,
-            scale_groups=self.scale_groups,
+                self.mc.model, self.state, self.q_indexes, times, q_opt, qdot_opt),
+            body_scales=body_scales_mat,
+            body_scale_groups=self.body_scale_groups,
+            translation_scales=custom_joint_ts_mat,
+            translation_scale_groups=custom_joint_ts_groups,
             spline_nodes=np.array(coeffs_opt),
         )

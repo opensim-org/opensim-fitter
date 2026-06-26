@@ -11,7 +11,7 @@ from .data_sources import DataSource
 
 class Axis(Enum):
     """
-    Cartesian axis identifier used to specify the direction of a scale factor or
+    Cartesian axis identifier used to specify the direction of a body scale or
     measurement.
     """
     XAxis = 0
@@ -32,7 +32,7 @@ class Measurement(ABC):
         pass
 
 
-class ScaleFactor(ABC):
+class BodyScale(ABC):
     """
     Abstract base class for a single per-body, per-axis scaling rule. Subclasses
     encapsulate how a scale value is computed (e.g., from position data, from
@@ -41,9 +41,9 @@ class ScaleFactor(ABC):
     Parameters
     ----------
     body_name: str
-        Name of the body to which this scale factor is applied.
+        Name of the body to which this body scale is applied.
     axis: Axis
-        Axis along which the scale factor is applied.
+        Axis along which the body scale is applied.
     """
     def __init__(self, body_name: str, axis: Axis):
         super().__init__()
@@ -51,7 +51,7 @@ class ScaleFactor(ABC):
         self.axis = axis
 
     @abstractmethod
-    def get_scale_factor(self, model: osim.Model, state: osim.State) -> float:
+    def get_body_scale(self, model: osim.Model, state: osim.State) -> float:
         pass
 
 
@@ -71,24 +71,24 @@ class Scaler(ABC):
         super().__init__()
         self.model = model
         self.state = model.initSystem()
-        self.scale_factors: list[ScaleFactor] = []
+        self.body_scales: list[BodyScale] = []
         self.scaleset: osim.ScaleSet = None
 
-    def add_scale_factor(self, scale_factor: ScaleFactor) -> None:
+    def add_body_scale(self, body_scale: BodyScale) -> None:
         """
-        Register a `ScaleFactor`.
+        Register a `BodyScale`.
         """
-        self.scale_factors.append(scale_factor)
+        self.body_scales.append(body_scale)
 
     def populate_scaleset(self):
         """
-        Populate the internal `osim.ScaleSet` from the set of registered `ScaleFactor`s.
+        Populate the internal `osim.ScaleSet` from the set of registered `BodyScale`s.
         """
         factors_by_body: dict[str, dict[Axis, list[float]]] = (
             collections.defaultdict(lambda: collections.defaultdict(list)))
-        for sf in self.scale_factors:
-            factor = sf.get_scale_factor(self.model, self.state)
-            factors_by_body[sf.body_name][sf.axis].append(factor)
+        for bs in self.body_scales:
+            factor = bs.get_body_scale(self.model, self.state)
+            factors_by_body[bs.body_name][bs.axis].append(factor)
 
         self.scaleset = osim.ScaleSet()
         bodyset = self.model.getBodySet()
@@ -122,25 +122,25 @@ class Scaler(ABC):
 # MANUAL SCALER #
 #################
 
-class ManualScaleFactor(ScaleFactor):
+class ManualBodyScale(BodyScale):
     """
-    A manually-prescribed scale factor for a given body and axis.
+    A manually-prescribed body scale for a given body and axis.
 
     Parameters
     ----------
     body_name: str
-        See :py:class:`ScaleFactor`.
+        See :py:class:`BodyScale`.
     axis: Axis
-        See :py:class:`ScaleFactor`.
-    scale_factor: float
-        The scale factor applied to the specified body and axis.
+        See :py:class:`BodyScale`.
+    body_scale: float
+        The body scale applied to the specified body and axis.
     """
-    def __init__(self, body_name: str, axis: Axis, scale_factor: float):
+    def __init__(self, body_name: str, axis: Axis, body_scale: float):
         super().__init__(body_name, axis)
-        self.scale_factor = scale_factor
+        self.body_scale = body_scale
 
-    def get_scale_factor(self, model: osim.Model, state: osim.State) -> float:
-        return self.scale_factor
+    def get_body_scale(self, model: osim.Model, state: osim.State) -> float:
+        return self.body_scale
 
 
 ########################
@@ -205,17 +205,17 @@ class MarkerMeasurement(Measurement):
         return np.linalg.norm(marker1_position - marker2_position)
 
 
-class MeasurementScaleFactor(ScaleFactor):
+class MeasurementBodyScale(BodyScale):
     """
-    Computes a scale factor as the ratio of a data-derived distance measurement to the
+    Computes a body scale as the ratio of a data-derived distance measurement to the
     corresponding model measurement, averaged over all frames in the position data.
 
     Parameters
     ----------
     body_name: str
-        See :py:class:`ScaleFactor`.
+        See :py:class:`BodyScale`.
     axis: Axis
-        See :py:class:`ScaleFactor`.
+        See :py:class:`BodyScale`.
     measurement: Measurement
         Model measurement corresponding to the distance between the two data positions.
     position1_data: osim.VectorVec3
@@ -231,7 +231,7 @@ class MeasurementScaleFactor(ScaleFactor):
         self.position2_data = position2_data
         assert(self.position1_data.size() == self.position2_data.size())
 
-    def get_scale_factor(self, model: osim.Model, state: osim.State) -> float:
+    def get_body_scale(self, model: osim.Model, state: osim.State) -> float:
         model_measurement = self.measurement.compute_measurement(model, state)
 
         # Magnitude of relative position between the data source elements, averaged
@@ -267,23 +267,23 @@ class PositionBasedScaler(Scaler):
         self.data_source = data_source
         self.positions = data_source.get_positions_table()
 
-    def add_measurement_scale_factor(self, body_name: str, axis: Axis,
+    def add_measurement_body_scale(self, body_name: str, axis: Axis,
                                      measurement: Measurement, data_label1: str,
                                      data_label2: str) -> None:
         """
-        Build a `MeasurementScaleFactor` given an `Axis`, `Measurement`, and labels to
+        Build a `MeasurementBodyScale` given an `Axis`, `Measurement`, and labels to
         position data columns in the `DataSource` of this `PositionBasedScaler`.
         """
         position1_data = self.positions.getDependentColumn(data_label1)
         position2_data = self.positions.getDependentColumn(data_label2)
-        self.add_scale_factor(MeasurementScaleFactor(
+        self.add_body_scale(MeasurementBodyScale(
             body_name, axis, measurement, position1_data, position2_data))
 
     def add_symmetry_pair(self, body1_name: str, body2_name: str) -> None:
         self.symmetry_pairs.append((body1_name, body2_name))
 
     def apply_scaleset_symmetry(self):
-        # Apply symmetry to scale factors.
+        # Apply symmetry to body scales.
         for body1_name, body2_name in self.symmetry_pairs:
             scale1 = self.scaleset.get(body1_name)
             scale2 = self.scaleset.get(body2_name)
@@ -354,31 +354,31 @@ class AnthropometricMeasurement(ABC):
 class AnthropometricContext:
     """
     Shared mutable bag holding the per-label values produced inside
-    `AnthropometricScaler.scale()`. Each `AnthropometricScaleFactor` reads from this
+    `AnthropometricScaler.scale()`. Each `AnthropometricBodyScale` reads from this
     context at append-time to compute its ratio.
     """
     model_values: dict[str, float] = field(default_factory=dict)
     conditioned_values: dict[str, float] = field(default_factory=dict)
 
 
-class AnthropometricScaleFactor(ScaleFactor):
+class AnthropometricBodyScale(BodyScale):
     """
-    Scale factor computed as the ratio of a conditioned anthropometric measurement
+    Body scale computed as the ratio of a conditioned anthropometric measurement
     (from a multivariate-normal model fit to the ANSUR II dataset) to the
     corresponding model-side measurement.
 
     Parameters
     ----------
     body_name: str
-        See :py:class:`ScaleFactor`.
+        See :py:class:`BodyScale`.
     axis: Axis
-        See :py:class:`ScaleFactor`.
+        See :py:class:`BodyScale`.
     ansur_label : str
         ANSUR II label identifying the measurement.
     measurement : AnthropometricMeasurement
         Measurement used to compute the model-side value.
     context : AnthropometricContext
-        Shared context populated by the scaler before `append_scale_factor` runs.
+        Shared context populated by the scaler before `append_body_scale` runs.
     """
     def __init__(self, body_name: str, axis: Axis, ansur_label: str,
                  measurement: AnthropometricMeasurement,
@@ -388,7 +388,7 @@ class AnthropometricScaleFactor(ScaleFactor):
         self.measurement = measurement
         self.context = context
 
-    def get_scale_factor(self, model: osim.Model, state: osim.State) -> float:
+    def get_body_scale(self, model: osim.Model, state: osim.State) -> float:
         model_value = self.context.model_values[self.ansur_label]
         conditioned_value = self.context.conditioned_values[self.ansur_label]
         return conditioned_value / model_value
@@ -402,7 +402,7 @@ class AnthropometricScaler(Scaler):
     ANSUR II measurements, conditions that distribution on the corresponding
     model-side measurements (computed on the supplied model in its current state),
     and uses the mean of each conditioned marginal as the "target" subject value.
-    Each registered scale factor then applies a per-body, per-axis scale equal to
+    Each registered body scale then applies a per-body, per-axis scale equal to
     the ratio of the conditioned target to the model-side measurement.
 
     Typical workflow
@@ -410,18 +410,18 @@ class AnthropometricScaler(Scaler):
     1. Construct the scaler with the model and, optionally, the subject's sex.
     2. Register every ANSUR II measurement that should participate in the joint
        MVN distribution via `add_measurement`. This includes both
-       measurements directly tied to scale factors and "context-only"
+       measurements directly tied to body scales and "context-only"
        measurements that exist solely to improve the joint correlations.
     3. Mark a subset of the registered measurements as conditioning variables via
        `add_conditional_measurement`. These are the measurements you
        trust enough to fix at their model-side values; everything else is
        inferred from the conditioned MVN.
-    4. Declare per-body, per-axis scale factors with
-       `add_anthropometric_scale_factor`, referencing labels that have
+    4. Declare per-body, per-axis body scales with
+       `add_anthropometric_body_scale`, referencing labels that have
        already been registered in step 2.
     5. Call `scale` to apply the result to the model.
 
-    Step (2) must precede step (4): adding a scale factor for an unregistered
+    Step (2) must precede step (4): adding a body scale for an unregistered
     label raises `ValueError`. Labels passed to step (3) must also have been registered
     in step (2).
 
@@ -431,7 +431,7 @@ class AnthropometricScaler(Scaler):
     subject, conditioning the MVN on stature and tibial height. `stature` and
     `tibialheight` are registered both because they condition the
     distribution and because (in the case of `tibialheight`) they drive a
-    scale factor; ``biacromialbreadth`` is registered because its scale factor
+    body scale; ``biacromialbreadth`` is registered because its body scale
     needs to read its conditioned mean.
 
         scaler = AnthropometricScaler(model, sex='female')
@@ -452,10 +452,10 @@ class AnthropometricScaler(Scaler):
         scaler.add_conditional_measurement('stature')
         scaler.add_conditional_measurement('tibialheight')
 
-        # Declare scale factors. Each ansur_label must already be registered.
-        scaler.add_anthropometric_scale_factor(
+        # Declare body scales. Each ansur_label must already be registered.
+        scaler.add_anthropometric_body_scale(
             'torso', Axis.ZAxis, 'biacromialbreadth')
-        scaler.add_anthropometric_scale_factor(
+        scaler.add_anthropometric_body_scale(
             'tibia_r', Axis.YAxis, 'tibialheight')
 
         scaled_model = scaler.scale()
@@ -476,7 +476,7 @@ class AnthropometricScaler(Scaler):
         Labels of measurements used to condition the MVN distribution.
     context: AnthropometricContext
         Shared bag of per-label model and conditioned values populated by
-        `scale` and read by each `AnthropometricScaleFactor`.
+        `scale` and read by each `AnthropometricBodyScale`.
     """
     def __init__(self, model: osim.Model, sex: str = None):
         super().__init__(model)
@@ -498,7 +498,7 @@ class AnthropometricScaler(Scaler):
         """
         Register an anthropometric measurement. Use this for measurements that need
         to participate in the joint multivariate normal distribution but are not
-        directly tied to a scale factor (e.g., conditional-only measurements, or
+        directly tied to a body scale (e.g., conditional-only measurements, or
         measurements that just enrich the joint correlations).
 
         Parameters
@@ -523,10 +523,10 @@ class AnthropometricScaler(Scaler):
         """
         self.conditional_measurements.append(ansur_label)
 
-    def add_anthropometric_scale_factor(self, body_name: str, axis: Axis,
+    def add_anthropometric_body_scale(self, body_name: str, axis: Axis,
                                         ansur_label: str) -> None:
         """
-        Build an `AnthropometricScaleFactor` with the scaler's shared context
+        Build an `AnthropometricBodyScale` with the scaler's shared context
         auto-filled, and register it. The associated `AnthropometricMeasurement`
         must already be registered via `add_measurement`.
 
@@ -535,7 +535,7 @@ class AnthropometricScaler(Scaler):
         body_name: str
             The name of a body in the model.
         axis: Axis
-            The axis along which the scale factor is applied.
+            The axis along which the body scale is applied.
         ansur_label: str
             The label to an anthropometric measurement used in the ANSUR II dataset.
             Must match a label previously registered via `add_measurement`.
@@ -549,8 +549,8 @@ class AnthropometricScaler(Scaler):
             raise ValueError(
                 f"No anthropometric measurement registered for '{ansur_label}'. "
                 f"Call add_measurement('{ansur_label}', ...) before adding a "
-                f"scale factor for it.")
-        self.add_scale_factor(AnthropometricScaleFactor(
+                f"body scale for it.")
+        self.add_body_scale(AnthropometricBodyScale(
             body_name, axis, ansur_label, self.measurements[ansur_label],
             self.context))
 
@@ -581,7 +581,7 @@ class AnthropometricScaler(Scaler):
                             for label in self.conditional_measurements}
         mvn_conditioned = mvn.condition(condition_values)
 
-        # Extract the means of the conditioned distribution for use in scale factors.
+        # Extract the means of the conditioned distribution for use in body scales.
         self.context.conditioned_values.clear()
         for var, mean in zip(mvn_conditioned.get_variables(),
                              mvn_conditioned.get_mean()):

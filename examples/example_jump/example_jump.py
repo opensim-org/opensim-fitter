@@ -20,7 +20,7 @@ from osimfit.solvers import (InverseKinematicsSolver,
 # ----------------------
 # First, we will scale a generic OpenSim model based on the positions of body segments
 # measured by Theia. This is similar to the approach used by the OpenSim scale tool,
-# which computes scale factors for each body segment based on the ratio of measured
+# which computes body scales for each body segment based on the ratio of measured
 # distances between experimental markers and the corresponding distances between
 # virtual markers on the model.
 
@@ -47,7 +47,7 @@ frame_map = {
 
 # Define a mapping between model body segments and the scaling "rules" to apply during
 # model scaling. Each rule consists of two Theia frame data labels and the axis
-# along which to apply the scale factor. The scale factor is computed as the ratio of
+# along which to apply the body scale. The body scale is computed as the ratio of
 # the distance between the two Theia frames in the experimental data and the distance
 # between the corresponding points on the model.
 # (segment_name --> [data_label_1, data_label_2, axis])
@@ -78,10 +78,10 @@ position_scaler = PositionBasedScaler(model, c3d_source)
 # Add scaling rules to the PositionBasedScaler based on the mapping above.
 for segment_name, (data_label_1, data_label_2, axis) in scale_map.items():
     measurement = FrameMeasurement(frame_map[data_label_1], frame_map[data_label_2])
-    position_scaler.add_measurement_scale_factor(
+    position_scaler.add_measurement_body_scale(
         segment_name, axis, measurement, data_label_1, data_label_2)
 
-# Add symmetry pairs. Internally, the PositionBasedScaler will average the scale factors
+# Add symmetry pairs. Internally, the PositionBasedScaler will average the body scales
 # computed for each pair of symmetric segments to ensure left-right symmetry.
 position_scaler.add_symmetry_pair('humerus_l', 'humerus_r')
 position_scaler.add_symmetry_pair('radius_l', 'radius_r')
@@ -146,7 +146,7 @@ anthropometric_scaler.add_conditional_measurement('tibialheight')
 anthropometric_scaler.add_conditional_measurement('trochanterionheight')
 anthropometric_scaler.add_conditional_measurement('waistbacklength')
 
-# Define the scale factors that will be generated from the conditioned anthropometric
+# Define the body scales that will be generated from the conditioned anthropometric
 # measurements.
 anthro_scale_rules = [
     ('torso',   'biacromialbreadth',     Axis.ZAxis),
@@ -161,7 +161,7 @@ anthro_scale_rules = [
     ('calcn_l', 'footbreadthhorizontal', Axis.ZAxis),
 ]
 for segment, ansur_label, axis in anthro_scale_rules:
-    anthropometric_scaler.add_anthropometric_scale_factor(segment, axis, ansur_label)
+    anthropometric_scaler.add_anthropometric_body_scale(segment, axis, ansur_label)
 
 # Scale the model.
 anthro_scaled_model = anthropometric_scaler.scale()

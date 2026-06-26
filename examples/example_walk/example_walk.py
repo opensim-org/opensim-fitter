@@ -46,7 +46,7 @@ marker_map = {label: f'/markerset/{label}' for label in marker_labels}
 # --------------------
 # Define scaling rules as a list of (segment, marker_1, marker_2, axis) tuples.
 # Each rule specifies a segment to scale, two markers whose inter-distance defines
-# the scale factor, and the axis along which to apply it.
+# the body scale, and the axis along which to apply it.
 scale_rules = [
     ('torso', 'R.PSIS', 'R.Shoulder', Axis.YAxis),
     ('torso', 'L.PSIS', 'L.Shoulder', Axis.YAxis),
@@ -105,10 +105,10 @@ position_scaler = PositionBasedScaler(model, marker_source)
 # Add scaling rules to the PositionBasedScaler.
 for segment_name, marker_1, marker_2, axis in scale_rules:
     measurement = MarkerMeasurement(marker_map[marker_1], marker_map[marker_2])
-    position_scaler.add_measurement_scale_factor(
+    position_scaler.add_measurement_body_scale(
         segment_name, axis, measurement, marker_1, marker_2)
 
-# Add symmetry pairs. Internally, the PositionBasedScaler will average the scale factors
+# Add symmetry pairs. Internally, the PositionBasedScaler will average the body scales
 # computed for each pair of symmetric segments to ensure left-right symmetry.
 position_scaler.add_symmetry_pair('humerus_l', 'humerus_r')
 position_scaler.add_symmetry_pair('radius_l', 'radius_r')
@@ -163,7 +163,7 @@ ansur_measurement_map = {
 }
 
 # Register every measurement so it participates in the joint MVN distribution.
-# Measurements directly used by scale factors will be registered redundantly by the
+# Measurements directly used by body scales will be registered redundantly by the
 # harvest step inside scale() — that's harmless.
 for ansur_label, measurement in ansur_measurement_map.items():
     anthropometric_scaler.add_measurement(ansur_label, measurement)
@@ -180,7 +180,7 @@ anthropometric_scaler.add_conditional_measurement('tibialheight')
 anthropometric_scaler.add_conditional_measurement('trochanterionheight')
 anthropometric_scaler.add_conditional_measurement('waistbacklength')
 
-# Define the scale factors that will be generated from the conditioned anthropometric
+# Define the body scales that will be generated from the conditioned anthropometric
 # measurements.
 anthro_scale_rules = [
     ('torso',   'biacromialbreadth',     Axis.ZAxis),
@@ -199,7 +199,7 @@ anthro_scale_rules = [
     ('toes_l',  'footbreadthhorizontal', Axis.ZAxis),
 ]
 for segment, ansur_label, axis in anthro_scale_rules:
-    anthropometric_scaler.add_anthropometric_scale_factor(
+    anthropometric_scaler.add_anthropometric_body_scale(
         segment, axis, ansur_label)
 
 # Scale the model.
@@ -232,44 +232,52 @@ solver = SplineBasedBilevelSolver(unscaled_model,
                                   convergence_tolerance=1e-3,
                                   knot_interval=0.08,
                                   position_weight=5.0,
-                                  scale_regularization_weight=1e-1)
+                                  body_scale_regularization_weight=1e-1,
+                                  translation_scale_regularization_weight=1e-2)
 solver.add_marker_reference_data(marker_source)
-# Add scale factors for the two bodies including lower and upper bounds for the
-# optimization variables.
-solver.add_scale_factor('/bodyset/torso', 0.5, 2.0)
-solver.add_scale_factor('/bodyset/pelvis', 0.5, 2.0)
-solver.add_scale_factor(['/bodyset/humerus_r', '/bodyset/humerus_l'], 0.5, 2.0)
-solver.add_scale_factor(['/bodyset/radius_r', '/bodyset/radius_l',
+# Add body scales for each body in the model. Apply the same scales to groups of bodies,
+# including those that should share left-right symmetry.
+solver.add_body_scale('/bodyset/torso', 0.5, 2.0)
+solver.add_body_scale('/bodyset/pelvis', 0.5, 2.0)
+solver.add_body_scale(['/bodyset/humerus_r', '/bodyset/humerus_l'], 0.5, 2.0)
+solver.add_body_scale(['/bodyset/radius_r', '/bodyset/radius_l',
                          '/bodyset/ulna_r', '/bodyset/ulna_l',
                          '/bodyset/hand_r', '/bodyset/hand_l'], 0.5, 2.0)
-solver.add_scale_factor(['/bodyset/femur_r', '/bodyset/femur_l',
+solver.add_body_scale(['/bodyset/femur_r', '/bodyset/femur_l',
                          '/bodyset/patella_r', '/bodyset/patella_l'], 0.5, 2.0)
-solver.add_scale_factor(['/bodyset/tibia_r', '/bodyset/tibia_l'], 0.5, 2.0)
-solver.add_scale_factor(['/bodyset/calcn_r', '/bodyset/calcn_l',
+solver.add_body_scale(['/bodyset/tibia_r', '/bodyset/tibia_l'], 0.5, 2.0)
+solver.add_body_scale(['/bodyset/calcn_r', '/bodyset/calcn_l',
                          '/bodyset/toes_r', '/bodyset/toes_l'], 0.5, 2.0)
+# Add "translation scales", which scale the translation offsets of CustomJoints
+# with translational coordinates in the model.
+solver.add_translation_scale_group([
+    '/jointset/walker_knee_r', '/jointset/walker_knee_l'], 0.5, 2.0)
 
-# Combine the per-body XYZ scale factors from the two scaling stages above by
+# Combine the per-body XYZ body scales from the two scaling stages above by
 # element-wise multiplication.
 def per_body_factors(scaleset, body_name):
     factors = scaleset.get(body_name).getScaleFactors()
     return np.array([factors[0], factors[1], factors[2]])
 
-scale_factor_guess = np.zeros((len(solver.scale_groups), 3))
-for igroup, group in enumerate(solver.scale_groups):
+body_scale_guess = np.zeros((len(solver.body_scale_groups), 3))
+for igroup, group in enumerate(solver.body_scale_groups):
     per_body = []
     for body_path in group.body_paths:
         body_name = body_path.rsplit('/', 1)[-1]
         per_body.append(
             per_body_factors(position_scaler.scaleset, body_name)
             * per_body_factors(anthropometric_scaler.scaleset, body_name))
-    scale_factor_guess[igroup, :] = np.mean(per_body, axis=0)
+    body_scale_guess[igroup, :] = np.mean(per_body, axis=0)
+
 
 # Create an initial guess based on the the kinematics from the inverse kinematics 
-# solution and the combined scale factors.
+# solution and the combined body scales.
 guess = SplineBilevelSolution(
     states_table=osim.TimeSeriesTable('walk_ik_solution.sto'),
-    scale_groups=solver.scale_groups,
-    scale_factors=scale_factor_guess)
+    body_scale_groups=solver.body_scale_groups,
+    body_scales=body_scale_guess,
+    translation_scales=np.ones((len(solver.translation_scale_groups), 3)),
+    translation_scale_groups=solver.translation_scale_groups)
 bilevel_solution = solver.solve(guess)
 sto.write(bilevel_solution.states_table, 'walk_bilevel_solution.sto')
 bilevel_scaled_model = solver.update_model(unscaled_model, bilevel_solution)

@@ -6,7 +6,7 @@ from osimfit.solvers import SplineBasedBilevelSolver
 # EXAMPLE PENDULUM
 # ----------------
 # This example is a simple demonstration of bilevel optimization where both generalized
-# coordinates (i.e., joint angles) and body scale factors are optimized to fit marker
+# coordinates (i.e., joint angles) and body scales are optimized to fit marker
 # data. This is a "round-trip" example, where we first create synthetic marker data by
 # simulating a double pendulum with known body lengths, and then we run the
 # optimization to see if we can recover the original kinematics and body lengths of the
@@ -101,12 +101,12 @@ solver = SplineBasedBilevelSolver(model,
                                   convergence_tolerance=1e-5,
                                   knot_interval=0.05,
                                   position_weight=5.0,
-                                  scale_regularization_weight=1e-2)
+                                  body_scale_regularization_weight=1e-2)
 solver.add_marker_reference_data(marker_source)
-# Add scale factors for the two bodies including lower and upper bounds for the
+# Add body scales for the two bodies including lower and upper bounds for the
 # optimization variables.
-solver.add_scale_factor('/bodyset/b0', 0.5, 2.0)
-solver.add_scale_factor('/bodyset/b1', 0.5, 2.0)
+solver.add_body_scale('/bodyset/b0', 0.5, 2.0)
+solver.add_body_scale('/bodyset/b1', 0.5, 2.0)
 
 # Solve!
 solution = solver.solve()
@@ -118,8 +118,8 @@ sto.write(solution.states_table, 'double_pendulum_ik_solution.sto')
 # Print the optimized body lengths.
 print("\nOptimized body lengths")
 print("----------------------")
-print(f' b0 length = {solution.scale_factors[0,0]:.3f} m')
-print(f' b1 length = {solution.scale_factors[1,0]:.3f} m\n')
+print(f' b0 length = {solution.body_scales[0,0]:.3f} m')
+print(f' b1 length = {solution.body_scales[1,0]:.3f} m\n')
 
 # Plot joint kinematics from the solution compared to the original simulation.
 import matplotlib.pyplot as plt
