@@ -124,7 +124,7 @@ class BilevelSolution(TrackingSolution):
         Optimal [sx, sy, sz] translation scales, one row per translation-scale
         group. ``None`` if no translation-scale variables were registered.
     translation_scale_groups: list[TranslationScaleGroup], optional
-        TranslationScaleGroup objects paired row-wise with 
+        TranslationScaleGroup objects paired row-wise with
         translation_scales.
     """
     body_scales: np.ndarray = None
@@ -173,12 +173,11 @@ class Solver(ABC):
     def __init__(self, model: str | osim.Model, convergence_tolerance: float=1e-4):
         super().__init__()
 
-        # Remove muscles and create the ModelCache. 
+        # Remove muscles and create the ModelCache.
         modelProcessor = osim.ModelProcessor(model)
         modelProcessor.append(osim.ModOpRemoveMuscles())
         self.mc = ModelCache(modelProcessor.process())
         self.state = self.mc.state
-
 
         # Convenience aliases for the cached coordinate maps.
         self.q_map = self.mc.q_map
@@ -231,7 +230,7 @@ class Solver(ABC):
     @staticmethod
     def compute_average_trapezoidal_error(errors, times):
         """
-        Time-averaged error computed from a per-timestep symbolic error vector using the 
+        Time-averaged error computed from a per-timestep symbolic error vector using the
         trapezoidal rule:
 
             cost = (1 / (t_{N-1} - t_0))
@@ -354,7 +353,7 @@ class TrackingSolver(Solver):
                     weight=position_weight)
 
         return callback
-    
+
     def _validate_guess(self, guess: Solution):
         super()._validate_guess(guess)
         num_times = len(self.get_times_from_reference_data())
@@ -549,8 +548,8 @@ class SplineBasedSolverMixin:
 
 class SplineBasedInverseKinematicsSolver(SplineBasedSolverMixin, TrackingSolver):
     """
-    An inverse kinematics solver that optimizes model coordinate values to minimize 
-    tracking error, where the predicted trajectories are represented as B-splines and 
+    An inverse kinematics solver that optimizes model coordinate values to minimize
+    tracking error, where the predicted trajectories are represented as B-splines and
     the optimization variables are the spline control points.
 
     Parameters
@@ -643,7 +642,7 @@ class SplineBasedInverseKinematicsSolver(SplineBasedSolverMixin, TrackingSolver)
                 self.mc.model, self.state, self.q_indexes, times, q_opt, qdot_opt),
             spline_nodes=np.array(coeffs_opt),
         )
-    
+
 ###################
 # BILEVEL SOLVERS #
 ###################
@@ -670,7 +669,7 @@ class BilevelSolver(TrackingSolver):
         bilevel optimization problem. Default is 0.0 (i.e., no regularization).
     translation_scale_regularization_weight: float, optional
         The weight to apply to the regularization term on the `CustomJoint` function
-        translation scales in the bilevel optimization. Default is 0.0 (i.e., no 
+        translation scales in the bilevel optimization. Default is 0.0 (i.e., no
         regularization).
     """
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
@@ -724,8 +723,8 @@ class BilevelSolver(TrackingSolver):
     @property
     def body_scale_groups(self) -> list[BodyScaleGroup]:
         """
-        The list of `BodyScaleGroup` objects configured on this solver via 
-        `add_body_scale`, in the order they were added. Useful for constructing a 
+        The list of `BodyScaleGroup` objects configured on this solver via
+        `add_body_scale`, in the order they were added. Useful for constructing a
         `BilevelSolution` initial guess that matches the solver's configuration.
         """
         return [bs.group for bs in self.body_scales]
@@ -733,7 +732,7 @@ class BilevelSolver(TrackingSolver):
     @property
     def translation_scale_groups(self) -> list[TranslationScaleGroup]:
         """
-        The list of `TranslationScaleGroup` objects configured on this solver via 
+        The list of `TranslationScaleGroup` objects configured on this solver via
         `add_translation_scale_group`, in the order they were added.
         """
         return [ts.group for ts in self.translation_scales]
@@ -743,14 +742,14 @@ class BilevelSolver(TrackingSolver):
         """
         Add a set of XYZ body scales to be optimized over in the bilevel
         optimization problem. Pass a single body path to scale one body, or a
-        list of body paths to share one set of body scales across a group of bodies 
+        list of body paths to share one set of body scales across a group of bodies
         (e.g., for left-right symmetric scaling).
 
         Parameters
         ----------
         body_paths: str or list[str]
-            Absolute model path(s) to the body or bodies whose body scale will be 
-            optimized. A list shares one set of body scales across every body in the 
+            Absolute model path(s) to the body or bodies whose body scale will be
+            optimized. A list shares one set of body scales across every body in the
             group.
         lower_bound: float
             Lower bound on each component of the XYZ body scales.
@@ -812,10 +811,10 @@ class BilevelSolver(TrackingSolver):
         """
         Apply the solution's optimized per-group XYZ body scales and
         CustomJoint translation scales to `model` in place and return it. The body
-        scales update the inboard and outboard frames of each Joint only. Translation 
+        scales update the inboard and outboard frames of each Joint only. Translation
         scales are applied to their respective `CustomJoint`s. If a `CustomJoint` was
         not included in the optimization, then the translation scales are set to their
-        pre-existing values (i.e., the values prior to a Model::scale() call). This 
+        pre-existing values (i.e., the values prior to a Model::scale() call). This
         deviates from the default behavior in OpenSim, but aligns with the conventions
         of the bilevel optimization solvers.
         """
@@ -836,7 +835,7 @@ class BilevelSolver(TrackingSolver):
                         body_name, axis, float(factors[ax_idx])))
         model = scaler.scale()
 
-        # If there are no existing scales, then there are no CustomJoints in the model, 
+        # If there are no existing scales, then there are no CustomJoints in the model,
         # so we can safely return.
         if not existing_scales:
             return model
@@ -927,7 +926,7 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
     degree: int, optional
         See `SplineBasedSolverMixin`.
     knot_interval: float, optional
-        See `SplineBasedSolverMixin`.   
+        See `SplineBasedSolverMixin`.
     """
     _guess_type = SplineBilevelSolution
 
