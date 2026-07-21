@@ -49,7 +49,7 @@ class DataSource(ABC):
                     "trim_to_range must be a tuple of (start_time, end_time).")
             if not trim_to_range[0] < trim_to_range[1]:
                 raise ValueError(
-                    f"Expected the end time in trim_to_range to be greater than the " 
+                    f"Expected the end time in trim_to_range to be greater than the "
                     f"start time, but received {trim_to_range[1]} and "
                     f"{trim_to_range[0]}, respectively.")
         self.trim_to_range = trim_to_range

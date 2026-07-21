@@ -8,7 +8,7 @@ import numpy as np
 import casadi as ca
 import opensim as osim
 from pathlib import Path
-from osimfit.callbacks import (BilevelCostFunction, BodyScaleGroup, 
+from osimfit.callbacks import (BilevelCostFunction, BodyScaleGroup,
                                TrackingCostFunction, TranslationScaleGroup)
 from osimfit.model import ModelCache
 
@@ -184,7 +184,7 @@ def test_tracking_cost_function_jacobian_sliding_mass():
     model = create_sliding_mass_model()
     model.initSystem()
     cost_jac = TrackingCostFunction('cost_jac', ModelCache(model))
-    cost_fd = TrackingCostFunction('cost_fd', ModelCache(model), 
+    cost_fd = TrackingCostFunction('cost_fd', ModelCache(model),
                                    opts={'enable_fd': True})
 
     for cost in (cost_jac, cost_fd):
@@ -204,7 +204,7 @@ def test_tracking_cost_function_jacobian_full_body():
     model = osim.Model(MODEL_FPATH)
     model.initSystem()
     cost_jac = TrackingCostFunction('cost_jac', ModelCache(model))
-    cost_fd = TrackingCostFunction('cost_fd', ModelCache(model), 
+    cost_fd = TrackingCostFunction('cost_fd', ModelCache(model),
                                    opts={'enable_fd': True})
 
     for cost in (cost_jac, cost_fd):

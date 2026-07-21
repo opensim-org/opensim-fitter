@@ -114,8 +114,8 @@ def test_pendulum_bilevel_recovers_ground_truth_lengths(tmp_path):
     assert '/jointset/j0/q0/value' in state_labels
     assert '/jointset/j1/q1/value' in state_labels
 
-    # The recovered X-axis body scales match the ground-truth lengths. Y and Z scales 
-    # should stay near 1.0 since the truth model only varies length along the local X 
+    # The recovered X-axis body scales match the ground-truth lengths. Y and Z scales
+    # should stay near 1.0 since the truth model only varies length along the local X
     # axis.
     assert [g.body_paths for g in solution.body_scale_groups] == [
         ['/bodyset/b0'], ['/bodyset/b1']
