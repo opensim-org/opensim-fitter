@@ -8,16 +8,16 @@ from osimfit.scaling import (Axis, PositionBasedScaler, MarkerMeasurement,
                              AnthropometricMeasurement, AnthropometricScaler)
 from osimfit.solvers import (InverseKinematicsSolver, SplineBasedBilevelSolver,
                              SplineBilevelSolution)
-from osimfit.utilities import (compute_marker_errors, plot_marker_errors, 
+from osimfit.utilities import (compute_marker_errors, plot_marker_errors,
                                plot_coordinates)
 
 # EXAMPLE WALK
 # ------------
 # This example demonstrates how to perform scaling and inverse kinematics for a walking
 # motion using OpenSim Fitter. The example data comes from the Rajagopal et al. (2016)
-# model distribution. The model has been modified from the original for the purposes of 
+# model distribution. The model has been modified from the original for the purposes of
 # the example: the wrist joints have been welded, the subtalar and toe joints have been
-# unlocked, and stations corresponding to anatomical locations have been added (to 
+# unlocked, and stations corresponding to anatomical locations have been added (to
 # support the anthropometric scaling step).
 
 # Load data
@@ -270,7 +270,7 @@ for igroup, group in enumerate(solver.body_scale_groups):
     body_scale_guess[igroup, :] = np.mean(per_body, axis=0)
 
 
-# Create an initial guess based on the the kinematics from the inverse kinematics 
+# Create an initial guess based on the the kinematics from the inverse kinematics
 # solution and the combined body scales.
 guess = SplineBilevelSolution(
     states_table=osim.TimeSeriesTable('walk_ik_solution.sto'),
@@ -286,7 +286,7 @@ bilevel_scaled_model.printToXML('subject_bilevel_scaled_walk.osim')
 # Convert the solution to a StatesTrajectory for computing marker errors.
 states_table = osim.TimeSeriesTable('walk_bilevel_solution.sto')
 states_table.addTableMetaDataString('inDegrees', 'no')
-states_traj = osim.StatesTrajectory.createFromStatesTable(bilevel_scaled_model, 
+states_traj = osim.StatesTrajectory.createFromStatesTable(bilevel_scaled_model,
                                                           states_table, True)
 
 # Plotting
@@ -312,9 +312,9 @@ coordinate_ranges = {
     'arm_add_l':        (-100, 100),
     'arm_rot_l':        (-100, 100),
 }
-plot_coordinates(bilevel_scaled_model, states_traj, 
+plot_coordinates(bilevel_scaled_model, states_traj,
                  'walk_bilevel_solution_coordinates.pdf',
-                 convert_radians_to_degrees=True, 
+                 convert_radians_to_degrees=True,
                  coordinate_ranges=coordinate_ranges)
 
 # Plot the marker errors.

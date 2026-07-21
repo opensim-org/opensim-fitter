@@ -64,7 +64,7 @@ class ModelCache:
     """
     A thin wrapper around `osim.Model` that pre-computes and caches lookups
     used repeatedly by solvers and callback functions. It also provides useful methods
-    for complicated calculations used by solvers (e.g., converting gradients with 
+    for complicated calculations used by solvers (e.g., converting gradients with
     respect to body scales).
 
     Parameters
@@ -84,7 +84,7 @@ class ModelCache:
         Total Simbody mobod count, including Ground at index 0.
     q_map: dict[str, int]
         Mapping from absolute coordinate path to its q-index in the State,
-        restricted to independent coordinates (e.g., coupled coordinates are 
+        restricted to independent coordinates (e.g., coupled coordinates are
         excluded).
     q_indexes: list[int]
         The q-indexes of the independent coordinates, in registration order.
@@ -105,20 +105,20 @@ class ModelCache:
         self.state = self.model.initSystem()
         self.matter = self.model.getMatterSubsystem()
         self.num_mobod = self.model.getNumBodies() + 1
-        self.q_map = self._get_coordinate_index_map(self.model, 
+        self.q_map = self._get_coordinate_index_map(self.model,
                                                     skip_dependent_coordinates=True)
         self.q_indexes = list(self.q_map.values())
 
         # For now, disallow models with joints where qdot != u.
         assert(self.state.getNQ() == self.state.getNU())
 
-        # Mobilized body parents. 
+        # Mobilized body parents.
         self.parent_of: dict[int, int] = {}
         for k in range(1, self.num_mobod):
             mb = self.matter.getMobilizedBody(k)
             self.parent_of[k] = int(mb.getParentMobilizedBody()
                                       .getMobilizedBodyIndex())
-            
+
         # Mobilized body children.
         self.children_of: dict[int, list[int]] = {
             k: [] for k in range(self.num_mobod)}
@@ -141,7 +141,7 @@ class ModelCache:
             self.baseline_R_BM[k] = osim.Rotation(X_BM.R())
 
     @staticmethod
-    def _get_coordinate_index_map(model: osim.Model, 
+    def _get_coordinate_index_map(model: osim.Model,
                                   skip_dependent_coordinates: bool=True) -> dict:
         """
         Get a mapping between coordinate paths and their indexes in the state vector.
@@ -169,7 +169,7 @@ class ModelCache:
         return q_map
 
     @staticmethod
-    def _translation_axes_are_axis_aligned(st: osim.SpatialTransform, 
+    def _translation_axes_are_axis_aligned(st: osim.SpatialTransform,
                                            tol: float = 1e-9) -> bool:
         """
         Return true if each `TransformAxis` of the provided `SpatialTransform`, when
@@ -201,12 +201,12 @@ class ModelCache:
     @staticmethod
     def _validate_custom_joint_can_scale(cj: osim.CustomJoint) -> None:
         """
-        Raise `ValueError` if `cj` cannot be part of a translation scale. A CustomJoint 
-        is scalable when its translation TransformAxes are axis-aligned (see 
-        `_translation_axes_are_axis_aligned`) and at least one carries a non-trivial 
+        Raise `ValueError` if `cj` cannot be part of a translation scale. A CustomJoint
+        is scalable when its translation TransformAxes are axis-aligned (see
+        `_translation_axes_are_axis_aligned`) and at least one carries a non-trivial
         function that `SpatialTransform::scale` would promote to a `MultiplierFunction`.
 
-        A translation axis function is non-trivial when it is present (e.g., 
+        A translation axis function is non-trivial when it is present (e.g.,
         `axis.hasFunction()` is True), is not a pure prismatic identity (e.g.,
         `osim.LinearFunction(1, 0)`), and is not a zero constant (e.g.,
         `osim.Constant(0)`).
@@ -295,7 +295,7 @@ class ModelCache:
     @staticmethod
     def get_translation_scales(model: osim.Model) -> dict[str, np.ndarray]:
         """
-        Return a dictionary mapping joint paths to per-axis translation scales, each 
+        Return a dictionary mapping joint paths to per-axis translation scales, each
         currently applied to a CustomJoint as a length-3 array.
 
         Parameters
@@ -316,7 +316,7 @@ class ModelCache:
             cj = osim.CustomJoint.safeDownCast(model.getComponent(joint_path))
             if cj is None:
                 continue
-            
+
             st = cj.getSpatialTransform()
             scales[joint_path] = np.ones(3)
             for i in range(3):
@@ -433,11 +433,11 @@ class ModelCache:
                     float(p_PF[0]), float(p_PF[1]), float(p_PF[2])))
                 self.matter.getMobilizedBody(c).setInboardFrame(state, X_PF)
 
-    def calc_position_jacobian_wrt_body_scales(self, state: osim.State, 
+    def calc_position_jacobian_wrt_body_scales(self, state: osim.State,
                 dp_GB: osim.VectorVec3, body_scale_groups: list[BodyScaleGroup]) -> np.ndarray:
         """
         Return the position-error Jacobian with respect to body scales given a
-        `State` object with scaled inboard and outboard applied and a vector `dp_GB` 
+        `State` object with scaled inboard and outboard applied and a vector `dp_GB`
         representing the position-error gradient with respect to body origin positions.
 
         Parameters
@@ -447,11 +447,11 @@ class ModelCache:
             frame positions should already be applied.
         dp_GB: osim.VectorVec3
             The gradient of the position-error with respect to body origin positions.
-            Length is equal to the number of mobilized bodies in the system (including 
+            Length is equal to the number of mobilized bodies in the system (including
             ground).
         body_scale_groups: list[BodyScaleGroup]
             A list of `BodyScaleGroup`, one for each body scale. The cached references
-            to `Joint`s should be populated to provide to access inboard and outboard 
+            to `Joint`s should be populated to provide to access inboard and outboard
             frame indexes.
         """
         dp_BM = osim.VectorVec3(self.num_mobod, osim.Vec3(0))
@@ -460,7 +460,7 @@ class ModelCache:
         dp_PF = osim.VectorVec3(self.num_mobod, osim.Vec3(0))
         self.matter.multiplyByPositionJacobianWrtInboardFramePositionsTranspose(
             state, dp_GB, dp_PF)
-        
+
         ds_body = np.zeros((self.num_mobod, 3))
         for cx in range(1, self.num_mobod):
             px = self.parent_of[cx]
@@ -475,4 +475,3 @@ class ModelCache:
             Js[0, 3*i:3*(i+1)] = col
 
         return Js
- 
