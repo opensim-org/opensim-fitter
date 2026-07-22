@@ -229,29 +229,29 @@ sto.write(ik_solution.states_table, 'walk_ik_solution.sto')
 # Construct a SplineBasedBilevelSolver to solve for the model kinematics and body
 # lengths that best match the marker data.
 solver = SplineBasedBilevelSolver(unscaled_model,
-                                  convergence_tolerance=1e-3,
-                                  knot_interval=0.08,
+                                  convergence_tolerance=1e-2,
+                                  knot_interval=0.05,
                                   position_weight=5.0,
-                                  body_scale_regularization_weight=1e-1,
-                                  translation_scale_regularization_weight=1e-2)
+                                  body_scale_regularization_weight=1e-1)
 solver.add_marker_reference_data(marker_source)
 # Add body scales for each body in the model. Apply the same scales to groups of bodies,
 # including those that should share left-right symmetry.
-solver.add_body_scale('/bodyset/torso', 0.5, 2.0)
-solver.add_body_scale('/bodyset/pelvis', 0.5, 2.0)
-solver.add_body_scale(['/bodyset/humerus_r', '/bodyset/humerus_l'], 0.5, 2.0)
+bounds = [0.5, 2.0]
+solver.add_body_scale('/bodyset/torso', bounds[0], bounds[1])
+solver.add_body_scale('/bodyset/pelvis', bounds[0], bounds[1])
+solver.add_body_scale(['/bodyset/humerus_r', '/bodyset/humerus_l'],
+                      bounds[0], bounds[1])
 solver.add_body_scale(['/bodyset/radius_r', '/bodyset/radius_l',
-                         '/bodyset/ulna_r', '/bodyset/ulna_l',
-                         '/bodyset/hand_r', '/bodyset/hand_l'], 0.5, 2.0)
+                       '/bodyset/ulna_r', '/bodyset/ulna_l',
+                       '/bodyset/hand_r', '/bodyset/hand_l'],
+                      bounds[0], bounds[1])
 solver.add_body_scale(['/bodyset/femur_r', '/bodyset/femur_l',
-                         '/bodyset/patella_r', '/bodyset/patella_l'], 0.5, 2.0)
-solver.add_body_scale(['/bodyset/tibia_r', '/bodyset/tibia_l'], 0.5, 2.0)
+                       '/bodyset/patella_r', '/bodyset/patella_l'],
+                      bounds[0], bounds[1])
+solver.add_body_scale(['/bodyset/tibia_r', '/bodyset/tibia_l'], bounds[0], bounds[1])
 solver.add_body_scale(['/bodyset/calcn_r', '/bodyset/calcn_l',
-                         '/bodyset/toes_r', '/bodyset/toes_l'], 0.5, 2.0)
-# Add "translation scales", which scale the translation offsets of CustomJoints
-# with translational coordinates in the model.
-solver.add_translation_scale_group([
-    '/jointset/walker_knee_r', '/jointset/walker_knee_l'], 0.5, 2.0)
+                       '/bodyset/toes_r', '/bodyset/toes_l'],
+                      bounds[0], bounds[1])
 
 # Combine the per-body XYZ body scales from the two scaling stages above by
 # element-wise multiplication.
@@ -275,9 +275,7 @@ for igroup, group in enumerate(solver.body_scale_groups):
 guess = SplineBilevelSolution(
     states_table=osim.TimeSeriesTable('walk_ik_solution.sto'),
     body_scale_groups=solver.body_scale_groups,
-    body_scales=body_scale_guess,
-    translation_scales=np.ones((len(solver.translation_scale_groups), 3)),
-    translation_scale_groups=solver.translation_scale_groups)
+    body_scales=body_scale_guess)
 bilevel_solution = solver.solve(guess)
 sto.write(bilevel_solution.states_table, 'walk_bilevel_solution.sto')
 bilevel_scaled_model = solver.update_model(unscaled_model, bilevel_solution)

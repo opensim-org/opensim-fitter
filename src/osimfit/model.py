@@ -114,10 +114,11 @@ class ModelCache:
 
         # Mobilized body parents.
         self.parent_of: dict[int, int] = {}
-        for k in range(1, self.num_mobod):
-            mb = self.matter.getMobilizedBody(k)
-            self.parent_of[k] = int(mb.getParentMobilizedBody()
-                                      .getMobilizedBodyIndex())
+        for i in range(self.model.getNumJoints()):
+            joint = self.model.getJointSet().get(i)
+            cix = int(joint.getChildFrame().getMobilizedBodyIndex())
+            pix = int(joint.getParentFrame().getMobilizedBodyIndex())
+            self.parent_of[cix] = pix
 
         # Mobilized body children.
         self.children_of: dict[int, list[int]] = {
@@ -131,14 +132,17 @@ class ModelCache:
         self.baseline_R_PF: dict[int, osim.Rotation] = {}
         self.baseline_p_BM: dict[int, np.ndarray] = {}
         self.baseline_R_BM: dict[int, osim.Rotation] = {}
-        for k in range(1, self.num_mobod):
-            mb = self.matter.getMobilizedBody(k)
-            X_PF = mb.getInboardFrame(self.state)
-            self.baseline_p_PF[k] = X_PF.p().to_numpy()
-            self.baseline_R_PF[k] = osim.Rotation(X_PF.R())
-            X_BM = mb.getOutboardFrame(self.state)
-            self.baseline_p_BM[k] = X_BM.p().to_numpy()
-            self.baseline_R_BM[k] = osim.Rotation(X_BM.R())
+        for i in range(self.model.getNumJoints()):
+            # TODO: this logic breaks for joints that contain multiple mobilized bodies
+            # (e.g., ScapulothoracicJoint).
+            joint = self.model.getJointSet().get(i)
+            mbx = int(joint.getChildFrame().getMobilizedBodyIndex())
+            X_PF = joint.getInboardFrame(self.state)
+            self.baseline_p_PF[mbx] = X_PF.p().to_numpy()
+            self.baseline_R_PF[mbx] = osim.Rotation(X_PF.R())
+            X_BM = joint.getOutboardFrame(self.state)
+            self.baseline_p_BM[mbx] = X_BM.p().to_numpy()
+            self.baseline_R_BM[mbx] = osim.Rotation(X_BM.R())
 
     @staticmethod
     def _get_coordinate_index_map(model: osim.Model,
@@ -423,7 +427,7 @@ class ModelCache:
                 p_BM = self.baseline_p_BM[k] * s
                 X_BM = osim.Transform(self.baseline_R_BM[k], osim.Vec3(
                     float(p_BM[0]), float(p_BM[1]), float(p_BM[2])))
-                self.matter.getMobilizedBody(k).setOutboardFrame(state, X_BM)
+                joint.setOutboardFrame(state, X_BM)
 
             # Inboard frame (X_PF) of every joint driving a group body's child.
             for joint in group.inboard_joints:
@@ -431,7 +435,7 @@ class ModelCache:
                 p_PF = self.baseline_p_PF[c] * s
                 X_PF = osim.Transform(self.baseline_R_PF[c], osim.Vec3(
                     float(p_PF[0]), float(p_PF[1]), float(p_PF[2])))
-                self.matter.getMobilizedBody(c).setInboardFrame(state, X_PF)
+                joint.setInboardFrame(state, X_PF)
 
     def calc_position_jacobian_wrt_body_scales(self, state: osim.State,
                 dp_GB: osim.VectorVec3, body_scale_groups: list[BodyScaleGroup]) -> np.ndarray:
@@ -455,10 +459,10 @@ class ModelCache:
             frame indexes.
         """
         dp_BM = osim.VectorVec3(self.num_mobod, osim.Vec3(0))
-        self.matter.multiplyByPositionJacobianWrtOutboardFramePositionsTranspose(
+        self.model.multiplyByPositionJacobianWrtOutboardFramePositionsTranspose(
             state, dp_GB, dp_BM)
         dp_PF = osim.VectorVec3(self.num_mobod, osim.Vec3(0))
-        self.matter.multiplyByPositionJacobianWrtInboardFramePositionsTranspose(
+        self.model.multiplyByPositionJacobianWrtInboardFramePositionsTranspose(
             state, dp_GB, dp_PF)
 
         ds_body = np.zeros((self.num_mobod, 3))

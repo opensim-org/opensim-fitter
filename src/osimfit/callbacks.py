@@ -44,7 +44,7 @@ class FrameTrackingCost(TrackingCost):
     def __init__(self, mc: ModelCache):
         self.mc = mc
         self.frames = []
-        self.mobod_indexes = osim.SimTKArrayMobilizedBodyIndex()
+        self.mobod_indexes = osim.SimTKArrayInt()
         self.stations = osim.SimTKArrayVec3()
         self.num_tasks: int = 0
         self.positions = []
@@ -136,7 +136,7 @@ class FrameTrackingCost(TrackingCost):
 
         # Calculate the frame (position and orientation) error Jacobian.
         vec = osim.Vector(state.getNQ(), 0.0)
-        self.mc.matter.multiplyByFrameJacobianTranspose(
+        self.mc.model.multiplyByFrameJacobianTranspose(
             state, self.mobod_indexes, self.stations, spatialError, vec)
         J = vec.to_numpy()
 
@@ -173,7 +173,7 @@ class MarkerTrackingCost(TrackingCost):
     def __init__(self, mc: ModelCache):
         self.mc = mc
         self.markers = []
-        self.mobod_indexes = osim.SimTKArrayMobilizedBodyIndex()
+        self.mobod_indexes = osim.SimTKArrayInt()
         self.stations = osim.SimTKArrayVec3()
         self.num_tasks: int = 0
         self.positions = []
@@ -233,7 +233,7 @@ class MarkerTrackingCost(TrackingCost):
 
         # Calculate the position error Jacobian.
         vec = osim.Vector(state.getNQ(), 0.0)
-        self.mc.matter.multiplyByStationJacobianTranspose(
+        self.mc.model.multiplyByStationJacobianTranspose(
             state, self.mobod_indexes, self.stations, f_GP, vec)
 
         return [np.expand_dims(vec.to_numpy()[self.mc.q_indexes], axis=0)]
@@ -261,9 +261,10 @@ class MarkerBilevelCost(TrackingCost):
     def __init__(self, mc: ModelCache, body_scale_groups: list[BodyScaleGroup],
                  translation_scale_groups: list[TranslationScaleGroup] = []):
         self.mc = mc
+        self.markers = []
         self.body_scale_groups = body_scale_groups
         self.translation_scale_groups = translation_scale_groups
-        self.mobod_indexes = osim.SimTKArrayMobilizedBodyIndex()
+        self.mobod_indexes = osim.SimTKArrayInt()
         self.stations = osim.SimTKArrayVec3()
         self.num_tasks: int = 0
         self.positions = []
@@ -309,6 +310,8 @@ class MarkerBilevelCost(TrackingCost):
 
         marker = osim.Marker.safeDownCast(self.mc.model.getComponent(marker_path))
         frame = osim.PhysicalFrame.safeDownCast(marker.getParentFrame().findBaseFrame())
+        self.mc.model.realizePosition(self.mc.state)
+        self.markers.append(marker)
         self.mobod_indexes.push_back(frame.getMobilizedBodyIndex())
         self.stations.push_back(marker.findLocationInFrame(self.mc.state, frame))
         self.num_tasks = self.mobod_indexes.size()
@@ -347,13 +350,9 @@ class MarkerBilevelCost(TrackingCost):
             return 0.0
 
         error = 0.0
-        for i in range(self.num_tasks):
-            k = int(self.mobod_indexes.getElt(i))
-            station = self.stations.getElt(i)
-            p_GS = self.mc.matter.getMobilizedBody(k).getBodyTransform(state) \
-                                 .shiftFrameStationToBase(station)
-            p = p_GS.to_numpy()
-            error += self.weights[i] * np.square(np.linalg.norm(p - self.positions[i]))
+        for marker, position, weight in zip(self.markers, self.positions, self.weights):
+            p_model = marker.getLocationInGround(state).to_numpy()
+            error += weight * np.square(np.linalg.norm(p_model - position))
         return error
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
@@ -366,20 +365,17 @@ class MarkerBilevelCost(TrackingCost):
         # Calculate the per-marker error gradient in Ground. This is a force-like term
         # will be multiplied with (the transpose of) each position Jacobian below.
         dp_GS = osim.VectorVec3(self.num_tasks, osim.Vec3(0))
-        for i in range(self.num_tasks):
-            k = int(self.mobod_indexes.getElt(i))
-            station = self.stations.getElt(i)
-            p_GS = self.mc.matter.getMobilizedBody(k).getBodyTransform(state) \
-                                 .shiftFrameStationToBase(station).to_numpy()
-            dp_GS.set(i, osim.Vec3(
-                2.0 * self.weights[i] * (p_GS[0] - self.positions[i][0]),
-                2.0 * self.weights[i] * (p_GS[1] - self.positions[i][1]),
-                2.0 * self.weights[i] * (p_GS[2] - self.positions[i][2])))
+        for i, (marker, position, weight) in enumerate(
+                zip(self.markers, self.positions, self.weights)):
+            p_GS = marker.getLocationInGround(state)
+            dp_GS.set(i, osim.Vec3(2.0 * weight * (p_GS[0] - position[0]),
+                                   2.0 * weight * (p_GS[1] - position[1]),
+                                   2.0 * weight * (p_GS[2] - position[2])))
 
         # Calculate the Jacobian of the position error with respect to the coordinates.
         vec = osim.Vector(state.getNQ(), 0.0)
-        self.mc.matter.multiplyByStationJacobianTranspose(state, self.mobod_indexes,
-                                                          self.stations, dp_GS, vec)
+        self.mc.model.multiplyByStationJacobianTranspose(
+            state, self.mobod_indexes, self.stations, dp_GS, vec)
         Jq[0, :] = vec.to_numpy()[self.mc.q_indexes]
 
         # Scatter per-station gradients for each task into a vector respresenting the
