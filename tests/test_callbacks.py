@@ -244,8 +244,8 @@ def test_bilevel_cost_function_add_marker_registers_in_marker_cost():
 
 
 # A helper function for retrieving the outboard frame, `X_BM` of a mobilzed body.
-def get_X_BM(matter, idx, state):
-    return matter.getMobilizedBody(idx).getOutboardFrame(state).p().to_numpy()
+def getX_BM(model, idx, state):
+    return model.getJointSet().get(idx).getOutboardFrame(state).p().to_numpy()
 
 # Check that BilevelCostFunction routes scale-group values through the per-mobod
 # X_PF / X_BM overrides on the State.
@@ -262,11 +262,10 @@ def test_bilevel_apply_scales_writes_xbm_on_target_mobod():
         'cost', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])])
 
-    matter = model.getMatterSubsystem()
     state = cost.state
     cost.marker_cost.apply_scales(
         np.array([2.0, 3.0, 4.0]), np.zeros(0), state)
-    np.testing.assert_allclose(get_X_BM(matter, 1, state),
+    np.testing.assert_allclose(getX_BM(model, 0, state),
                                np.array([0.4 * 2.0, 0.0, 0.0]))
 
 
@@ -282,12 +281,11 @@ def test_bilevel_apply_scales_shared_group_broadcasts_across_members():
         body_scale_groups=[BodyScaleGroup(
             ['/bodyset/body_0', '/bodyset/body_1'], [1, 2])])
 
-    matter = model.getMatterSubsystem()
     state = cost.state
     cost.marker_cost.apply_scales(
         np.array([2.0, 3.0, 4.0]), np.zeros(0), state)
-    for k in (1, 2):
-        np.testing.assert_allclose(get_X_BM(matter, k, state),
+    for k in (0, 1):
+        np.testing.assert_allclose(getX_BM(model, k, state),
                                    np.array([0.4 * 2.0, 0.0, 0.0]))
 
 
@@ -305,14 +303,13 @@ def test_bilevel_apply_scales_mixed_groups_apply_independent_vectors():
             BodyScaleGroup(['/bodyset/body_2'], [3]),
         ])
 
-    matter = model.getMatterSubsystem()
     state = cost.state
     cost.marker_cost.apply_scales(
         np.array([2.0, 3.0, 4.0, 5.0, 5.0, 5.0]), np.zeros(0), state)
-    for k in (1, 2):
-        np.testing.assert_allclose(get_X_BM(matter, k, state),
+    for k in (0, 1):
+        np.testing.assert_allclose(getX_BM(model, k, state),
                                    np.array([0.4 * 2.0, 0.0, 0.0]))
-    np.testing.assert_allclose(get_X_BM(matter, 3, state),
+    np.testing.assert_allclose(getX_BM(model, 2, state),
                                np.array([0.4 * 5.0, 0.0, 0.0]))
 
 
