@@ -315,6 +315,53 @@ class ModelCache:
             st.scale(osim.Vec3(float(tscale_np[0]), float(tscale_np[1]),
                                float(tscale_np[2])))
 
+    @staticmethod
+    def get_marker_offsets(model: osim.Model) -> dict[str, np.ndarray]:
+        """
+        Return a dictionary mapping marker paths to their body-offset locations as a
+        length-3 array.
+
+        Parameters
+        ----------
+        model: osim.Model
+            The model to read from.
+
+        Returns
+        -------
+        dict[str, np.ndarray]
+            A dictionary mapping marker paths to marker offset locations.
+        """
+
+        markerset = model.getMarkerSet()
+        marker_offsets: dict[str, np.ndarray] = {}
+        for i in range(markerset.getSize()):
+            marker = markerset.get(i)
+            marker_path = marker.getAbsolutePathString()
+            location = marker.get_location()
+            marker_offsets[marker_path] = location.to_numpy()
+        return marker_offsets
+
+    @staticmethod
+    def apply_marker_offsets(model: osim.Model, marker_offsets: dict[str, np.ndarray]):
+        for path, offset in marker_offsets.items():
+            location = osim.Vec3(offset[0], offset[1], offset[2])
+            osim.Marker.safeDownCast(model.getComponent(path)).set_location(location)
+
+    @staticmethod
+    def get_frame_offsets(model: osim.Model,
+                          frame_paths: list[str]) -> dict[str, np.ndarray]:
+        frame_offsets: dict[str, np.ndarray] = {}
+        for path in frame_paths:
+            frame = osim.PhysicalOffsetFrame.safeDownCast( model.getComponent(path))
+            frame_offsets[path] = osim.Vec3(frame.get_translation())
+        return frame_offsets
+
+    @staticmethod
+    def apply_frame_offsets(model: osim.Model, frame_offsets: dict[str, np.ndarray]):
+        for path, translation in frame_offsets.items():
+            osim.PhysicalOffsetFrame.safeDownCast(
+                model.getComponent(path)).set_translation(translation)
+
     def calc_position_jacobian_wrt_body_scales(self, state: osim.State,
                 dp_GB: osim.VectorVec3,
                 body_scale_groups: list[BodyScaleGroup]) -> np.ndarray:
