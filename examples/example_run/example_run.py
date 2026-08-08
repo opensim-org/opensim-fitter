@@ -119,7 +119,6 @@ for s in [('L', '_l'), ('R', '_r')]:
 markers_to_remove = ['IMUBACK', 'IMULFOOT', 'IMULSHA', 'IMULTHI', 'IMUPELVIS',
                      'IMURFOOT', 'IMURSHA', 'IMURTHI']
 time_range = (28.885, 30.700)
-# time_range = (28.885, 29.1)
 marker_source = MarkerSource(markers_fpath,
                              labels_to_remove=markers_to_remove,
                              trim_to_range=time_range)
@@ -300,8 +299,8 @@ plot_marker_errors(errors, 'run_ik_solution_marker_errors.pdf')
 solver = SplineBasedBilevelSolver(unscaled_model,
                                   convergence_tolerance=1e-3,
                                   knot_interval=0.05,
-                                  position_weight=1.0,
-                                  body_scale_regularization_weight=1e-2,
+                                  position_weight=10.0,
+                                  body_scale_regularization_weight=1e-1,
                                   offset_regularization_weight=1e-3)
 solver.add_marker_reference_data(marker_source)
 # Add body scales for each body in the model. Apply the same scales to groups of bodies,
