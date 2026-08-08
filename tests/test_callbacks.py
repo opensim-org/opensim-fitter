@@ -304,11 +304,12 @@ def test_bilevel_cost_function_empty_eval_is_zero():
 
 def test_bilevel_cost_function_scaling_changes_marker_world_position():
     """
-    With a non-zero outboard offset, scaling the body X by 2.0 shifts the body
-    in Ground (and the markers fixed to it). Specifically, for a SliderJoint
-    whose X_BM = Tx(offset_x), body B's origin in Ground at q=0 is
-    -offset_x * sx. Marker m1 at body-frame (0.5, 0, 0) is then at world
-    (-offset_x * sx + 0.5, 0, 0).
+    Scaling the body X by sx does two things: it shifts the body origin in Ground
+    (segment-length scaling of the mobilizer frame) and it scales the marker's in-body
+    location (geometric scaling). For a SliderJoint whose X_BM = Tx(offset_x), body B's
+    origin in Ground at q=0 is -offset_x * sx, and marker m1 at body-frame (0.5, 0, 0)
+    scales to (0.5 * sx, 0, 0), so its world position is (-offset_x * sx + 0.5 * sx, 0,
+    0) = (0.1 * sx, 0, 0) for offset_x = 0.4.
     """
     model = create_sliding_mass_model(offset_x=0.4)
     model.initSystem()
@@ -324,9 +325,9 @@ def test_bilevel_cost_function_scaling_changes_marker_world_position():
     # At s_unit: m1 world = (-0.4 + 0.5) = 0.1. Error = (0.1 - 0.5)^2 = 0.16.
     assert float(cost(q, s_unit, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1))) == \
         pytest.approx(0.16, abs=1e-9)
-    # At s_scaled X=2: m1 world = (-0.8 + 0.5) = -0.3. Error = (-0.3 - 0.5)^2 = 0.64.
+    # At s_scaled X=2: m1 world = (-0.8 + 1.0) = 0.2. Error = (0.2 - 0.5)^2 = 0.09.
     assert float(cost(q, s_scaled, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1))) == \
-        pytest.approx(0.64, abs=1e-9)
+        pytest.approx(0.09, abs=1e-9)
 
 
 def test_bilevel_cost_function_frame_at_reference_yields_zero():
@@ -546,8 +547,9 @@ def test_bilevel_cost_function_grouped_jacobian_sums_solo_and_matches_fd():
 
 def test_bilevel_apply_offsets_shifts_station():
     """
-    apply_offsets sets each offset task's cached station to baseline + offset
-    (absolute, not compounding), leaving non-offset tasks untouched.
+    apply_station_transforms sets each offset task's cached station to baseline + offset
+    (absolute, not compounding) at identity body scale, leaving non-offset tasks
+    untouched.
     """
     model = create_sliding_mass_model()
     model.initSystem()
@@ -565,13 +567,13 @@ def test_bilevel_apply_offsets_shifts_station():
     baseline_m0 = mc.base_stations[1].copy()
 
     offset = np.array([0.1, -0.2, 0.3])
-    mc.apply_offsets(offset)
+    mc.apply_station_transforms(np.ones(3), offset)
     np.testing.assert_allclose(mc.stations.getElt(0).to_numpy(),
                                baseline_m1 + offset)
     np.testing.assert_allclose(mc.stations.getElt(1).to_numpy(), baseline_m0)
 
     # Absolute (not compounding): applying again with the same offset is idempotent.
-    mc.apply_offsets(offset)
+    mc.apply_station_transforms(np.ones(3), offset)
     np.testing.assert_allclose(mc.stations.getElt(0).to_numpy(),
                                baseline_m1 + offset)
 

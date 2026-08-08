@@ -603,7 +603,7 @@ class SplineBasedInverseKinematicsSolver(SplineBasedSolverMixin, TrackingSolver)
             self._validate_guess(guess)
 
         # Define the knot vector.
-        num_knots = int(times[-1] / self.knot_interval)
+        num_knots = int((times[-1] - times[0]) / self.knot_interval)
         knots = self.build_knots_vector(times, num_knots)
 
         # Pre-compute the spline basis matrix, which is independent of the optimization
@@ -830,13 +830,11 @@ class BilevelSolver(TrackingSolver):
 
     def update_model(self, model: osim.Model, solution: BilevelSolution) -> osim.Model:
         """
-        Apply the solution's optimized parameters to `model` (e.g., body scales) and
-        return it.
+        Apply the solution's optimized parameters to `model` and return it.
         """
         model.initSystem()
 
-        # Capture the translation scales currently on every CustomJoint, before
-        # Model::scale() incidentally modifies them, so they can be restored afterward.
+        # Get pre-`Model::scale()` quanities.
         translation_scales = ModelCache.get_custom_joint_translation_scales(model)
 
         # Construct a scaler using the optimized body scales as manual scale factors.
@@ -855,12 +853,11 @@ class BilevelSolver(TrackingSolver):
                         body_name, axis, float(parameter.value[ax_idx])))
         model = scaler.scale()
 
-        # Revert the incidental changes Model::scale() makes to CustomJoint translation
-        # functions, since these are not part of the bilevel optimization.
+        # Apply pre-`Model::scale()` quanities./
         ModelCache.apply_custom_joint_translation_scales(model, translation_scales)
 
-        # Apply the remaining optimized parameters (e.g., marker and frame offsets) to
-        # the scaled model. Body scales are handled above via the Scaler.
+        # Apply the remaining optimized parameters (e.g., marker and frame offsets) on
+        # top of the restored placements. Body scales are handled above via the Scaler.
         for parameter in solution.parameters:
             if not isinstance(parameter, BodyScale):
                 parameter.apply_to_model(model)
@@ -958,7 +955,7 @@ class SplineBasedBilevelSolver(SplineBasedSolverMixin, BilevelSolver):
             self._validate_guess(guess)
 
         # Define the knot vector.
-        num_knots = int(times[-1] / self.knot_interval)
+        num_knots = int((times[-1] - times[0]) / self.knot_interval)
         knots = self.build_knots_vector(times, num_knots)
 
         # Pre-compute the spline basis matrix and its derivative.
