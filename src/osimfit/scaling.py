@@ -1,12 +1,10 @@
-import os
 import numpy as np
-import pandas as pd
 import opensim as osim
 from enum import Enum
 import collections
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from .utilities import MultivariateNormal
+from .anthropometrics import build_ansur_distribution
 from .data_sources import DataSource
 
 class Axis(Enum):
@@ -312,8 +310,9 @@ class PositionBasedScaler(Scaler):
 
 class AnthropometricMeasurement(ABC):
     """
-    Computes the distance between two named stations in the model, in millimeters, for
-    comparison against entries in the ANSUR II anthropometric dataset.
+    Computes the distance between two named stations in the model, in meters, for
+    comparison against entries in the ANSUR II anthropometric dataset (whose
+    millimeter values are converted to meters on load).
 
     Parameters
     ----------
@@ -342,12 +341,11 @@ class AnthropometricMeasurement(ABC):
         difference = station2_position - station1_position
 
         # If an axis is specified, return the absolute value of the difference along
-        # that axis. Otherwise, return the magnitude of the difference vector. In both
-        # cases, convert from meters to millimeters to match the ANSUR II dataset.
+        # that axis. Otherwise, return the magnitude of the difference vector.
         if self.axis is not None:
-            return 1000.0 * np.abs(difference[self.axis.value])
+            return np.abs(difference[self.axis.value])
         else:
-            return 1000.0 * np.linalg.norm(difference)
+            return np.linalg.norm(difference)
 
 
 @dataclass
@@ -483,15 +481,7 @@ class AnthropometricScaler(Scaler):
         self.measurements: dict[str, AnthropometricMeasurement] = {}
         self.conditional_measurements: list[str] = []
         self.context = AnthropometricContext()
-
-        sex_tag = 'BOTH'
-        if sex and sex.lower() == 'male':
-            sex_tag = 'MALE'
-        elif sex and sex.lower() == 'female':
-            sex_tag = 'FEMALE'
-        self.anthropometrics_fpath = os.path.join(os.path.dirname(__file__),
-                                                  'anthropometrics',
-                                                  f'ANSUR_II_{sex_tag}_Public.csv')
+        self.sex = sex
 
     def add_measurement(self, ansur_label: str,
                         measurement: AnthropometricMeasurement) -> None:
@@ -555,19 +545,9 @@ class AnthropometricScaler(Scaler):
             self.context))
 
     def scale(self):
-        # Load anthropometric measurements from the ANSUR II dataset.
-        df = pd.read_csv(self.anthropometrics_fpath, encoding_errors='replace')
-        ansur_labels = list(self.measurements.keys())
-        for label in ansur_labels:
-            if label not in df.columns:
-                raise ValueError(f"The anthropometric measurement '{label}' was "
-                                 f"provided, but it is not present in the ANSUR II "
-                                 f"dataset.")
-
-        # Construct a multivariate normal distribution over the anthropometric
-        # measurements.
-        df = df[self.measurements.keys()]
-        mvn = MultivariateNormal.from_data(df.columns.tolist(), df.values)
+        # Fit a multivariate normal distribution over the registered anthropometric
+        # measurements from the ANSUR II dataset (in meters).
+        mvn = build_ansur_distribution(list(self.measurements.keys()), self.sex)
 
         # Compute the values of the model measurements corresponding to the provided
         # anthropometric measurements.

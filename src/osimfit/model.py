@@ -391,6 +391,63 @@ class ModelCache:
 
         return Js
 
+    def calc_station_position_jacobian_wrt_body_scales(
+            self, state: osim.State, mobod_index: int,
+            base_frame: osim.PhysicalFrame, base_station: np.ndarray) -> np.ndarray:
+        """
+        Return the Jacobian of a station's ground position with respect to the flat
+        body-scale variables, with shape (3, 3 * num_body_scale_groups).
+
+        The sensitivity chains two contributions: (a) the scaled mobilizer-frame
+        translations along the station's kinematic chain (via
+        `calc_position_jacobian_wrt_body_scales`, seeded per ground axis), and (b) the
+        scaling of the station's own location within its base frame. Because body
+        scaling multiplies translations and the pose is fixed, the station's ground
+        position is affine in the scales, so this Jacobian is exact at any `state`.
+
+        Parameters
+        ----------
+        state: osim.State
+            State realized to the position stage. As the map is affine, evaluating at
+            unit scale (no scaling applied) yields the exact Jacobian.
+        mobod_index: int
+            `MobilizedBodyIndex` of the station's base frame.
+        base_frame: osim.PhysicalFrame
+            The station's base frame; its rotation in ground sets the offset
+            sensitivity in (b).
+        base_station: np.ndarray, shape (3,)
+            The station's location in its base frame, in meters, at unit scale.
+        """
+        mobod_index = int(mobod_index)
+        rotation = base_frame.getRotationInGround(state)
+        R_GB = np.array([[rotation.get(r, c) for c in range(3)] for r in range(3)])
+
+        # The body-scale group scaling the station's own base-frame location, if any.
+        scale_group = next(
+            (g for g, group in enumerate(self.body_scale_groups)
+             if mobod_index in [int(k) for k in group.mobod_indexes]), None)
+
+        jacobian = np.zeros((3, 3 * len(self.body_scale_groups)))
+        for axis in range(3):
+            # Seed the per-body ground-position gradient with a unit vector along this
+            # ground axis at the station's mobilized body. A translational frame shift
+            # moves the whole body (and the station) rigidly, so the station shares the
+            # body origin's sensitivity to the mobilizer-frame scaling.
+            dp_GB = osim.VectorVec3(self.num_mobod, osim.Vec3(0))
+            unit = [0.0, 0.0, 0.0]
+            unit[axis] = 1.0
+            dp_GB.set(mobod_index, osim.Vec3(unit[0], unit[1], unit[2]))
+            row = self.calc_position_jacobian_wrt_body_scales(state, dp_GB)[0, :].copy()
+
+            # Add the contribution from scaling the station's base-frame location.
+            if scale_group is not None:
+                doffset = np.asarray(unit) @ R_GB
+                row[3*scale_group:3*scale_group+3] += base_station * doffset
+
+            jacobian[axis, :] = row
+
+        return jacobian
+
     def get_tracking_marker_paths(self):
         """
         Get a list of all markers in the model whose '<fixed>' property is ``False``.

@@ -144,21 +144,20 @@ def test_marker_measurement_returns_offset_distance():
 # ANTHROPOMETRIC MEASUREMENT #
 ##############################
 
-def test_anthropometric_no_axis_returns_mm_magnitude():
+def test_anthropometric_no_axis_returns_meter_magnitude():
     model = create_one_body_test_model()
     state = model.initSystem()
     measurement = AnthropometricMeasurement('/s0', '/s1')
-    # 0.5 m * 1000 = 500 mm.
     assert measurement.compute_measurement(model, state) == pytest.approx(
-        500.0, abs=1e-9)
+        0.5, abs=1e-9)
 
 
-def test_anthropometric_x_axis_returns_mm_along_x():
+def test_anthropometric_x_axis_returns_meters_along_x():
     model = create_one_body_test_model()
     state = model.initSystem()
     measurement = AnthropometricMeasurement('/s0', '/s1', axis=Axis.XAxis)
     assert measurement.compute_measurement(model, state) == pytest.approx(
-        500.0, abs=1e-9)
+        0.5, abs=1e-9)
 
 
 def test_anthropometric_y_axis_returns_zero_for_pure_x_offset():

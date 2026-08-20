@@ -218,6 +218,15 @@ class Solver(ABC):
                 f'not provide (supported: {sorted(self.SUPPORTED_INPUTS)}).')
         self.costs.append(cost)
 
+    def _initialize_costs(self):
+        """
+        Give every registered cost a chance to precompute model-derived data from this
+        solver's `ModelCache`. Called at the start of solve(), after all parameters are
+        registered, so costs need not be constructed with the model or parameters.
+        """
+        for cost in self.costs:
+            cost.initialize(self.mc)
+
     def get_ipopt_options(self, print_level=0):
         """
         Get a dictionary of common IPOPT options for use with CasADi's nlpsolver.
@@ -449,6 +458,7 @@ class InverseKinematicsSolver(TrackingSolver):
     def solve(self, guess: InverseKinematicsSolution = None
               ) -> InverseKinematicsSolution:
 
+        self._initialize_costs()
         times = self.get_times_from_reference_data()
         num_times = len(times)
 
@@ -799,6 +809,7 @@ class SplinedKinematicsSolver(TrackingSolver):
     def solve(self, guess: SplinedKinematicsSolution = None
               ) -> SplinedKinematicsSolution:
 
+        self._initialize_costs()
         times = self.get_times_from_reference_data()
         num_times = len(times)
 
@@ -957,6 +968,7 @@ class MarkerPlacer(Solver):
 
     def solve(self, guess: MarkerPlacerSolution = None) -> MarkerPlacerSolution:
 
+        self._initialize_costs()
         # Validate the marker source and extract the marker paths to track.
         self.marker_source.validate_marker_paths(self.mc.model)
         positions = self.marker_source.get_positions_table()
