@@ -10,7 +10,7 @@ from osimfit.solvers import (InverseKinematicsSolver, MarkerPlacer,
                              SplinedKinematicsSolver, SplinedKinematicsSolution)
 from osimfit.model import BodyScale, MarkerOffset
 from osimfit.costs import (AnthropometricRegularizationCost, OffsetRegularizationCost,
-                           BodyScaleRegularizationCost)
+                           BodyScaleIsotropyCost)
 from osimfit.bounds import Bounds
 from osimfit.utilities import (compute_marker_errors, plot_marker_errors,
                                plot_coordinates)
@@ -197,8 +197,8 @@ solver = SplinedKinematicsSolver(unscaled_model,
                                  position_weight=5.0)
 solver.add_marker_reference_data(marker_source)
 solver.add_cost(AnthropometricRegularizationCost(
-    ansur_measurement_map, sex='female', weight=1e-2))
-solver.add_cost(BodyScaleRegularizationCost(weight=1e-3))
+    ansur_measurement_map, sex='female', weight=1e-3))
+solver.add_cost(BodyScaleIsotropyCost(weight=1e-1))
 solver.add_cost(OffsetRegularizationCost(weight=1e-3))
 # Add body scales for each body in the model. Apply the same scales to groups of bodies,
 # including those that should share left-right symmetry.

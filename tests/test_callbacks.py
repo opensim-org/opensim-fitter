@@ -7,11 +7,9 @@ import numpy as np
 import casadi as ca
 import opensim as osim
 from pathlib import Path
-from osimfit.callbacks import (BilevelCostFunction, BodyScaleGroup,
-                               MarkerOffsetGroup, FrameOffsetGroup,
-                               TrackingCostFunction)
-from osimfit.costs import CostInput
-from osimfit.model import ModelCache
+from osimfit.costs import (CostInput, BilevelCostFunction, TrackingCostFunction)
+from osimfit.model import (ModelCache, BodyScaleGroup, MarkerOffsetGroup,
+                           FrameOffsetGroup)
 
 # Define the test model path.
 MODEL_FPATH = str(Path(__file__).parent / 'subject_scale_walk.osim')
@@ -76,7 +74,7 @@ def getP_BM(model: osim.Model, joint_index: int, state: osim.State):
 
 
 def build_bilevel_cost(name, mc, body_scale_groups=[], marker_offset_groups=[],
-                       frame_offset_groups=[], opts={}):
+                       frame_offset_groups=[], enable_fd=False):
     """
     Register the given parameter groups on `mc` and build a BilevelCostFunction, which
     reads its groups from the ModelCache.
@@ -84,7 +82,7 @@ def build_bilevel_cost(name, mc, body_scale_groups=[], marker_offset_groups=[],
     mc.body_scale_groups = list(body_scale_groups)
     mc.marker_offset_groups = list(marker_offset_groups)
     mc.frame_offset_groups = list(frame_offset_groups)
-    return BilevelCostFunction(name, mc, opts=opts)
+    return BilevelCostFunction(name, mc, enable_fd=enable_fd)
 
 
 ##########################
@@ -154,7 +152,7 @@ def test_tracking_cost_function_jacobian_sliding_mass():
     model.initSystem()
     cost_jac = TrackingCostFunction('cost_jac', ModelCache(model))
     cost_fd = TrackingCostFunction('cost_fd', ModelCache(model),
-                                   opts={'enable_fd': True})
+                                   enable_fd=True)
 
     for cost in (cost_jac, cost_fd):
         cost.add_marker_tracking_cost_term(
@@ -174,7 +172,7 @@ def test_tracking_cost_function_jacobian_full_body():
     model.initSystem()
     cost_jac = TrackingCostFunction('cost_jac', ModelCache(model))
     cost_fd = TrackingCostFunction('cost_fd', ModelCache(model),
-                                   opts={'enable_fd': True})
+                                   enable_fd=True)
 
     for cost in (cost_jac, cost_fd):
         cost.add_marker_tracking_cost_term(
@@ -380,7 +378,7 @@ def test_bilevel_cost_function_jacobians_sliding_mass():
         'cost_fd', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[],
-        opts={'enable_fd': True})
+        enable_fd=True)
 
     for cost in (cost_jac, cost_fd):
         cost.add_marker_bilevel_cost_term(
@@ -425,7 +423,7 @@ def test_bilevel_cost_function_jacobians_full_body():
         marker_offset_groups=[], frame_offset_groups=[])
     cost_fd = build_bilevel_cost(
         'cost_fd', ModelCache(model), body_scale_groups=body_scale_groups,
-        marker_offset_groups=[], frame_offset_groups=[], opts={'enable_fd': True})
+        marker_offset_groups=[], frame_offset_groups=[], enable_fd=True)
 
     for cost in (cost_jac, cost_fd):
         cost.add_marker_bilevel_cost_term(
@@ -480,7 +478,7 @@ def test_bilevel_cost_function_grouped_jacobian_sums_solo_and_matches_fd():
         marker_offset_groups=[], frame_offset_groups=[])
     cost_fd = build_bilevel_cost(
         'cost_fd', ModelCache(model), body_scale_groups=shared_groups,
-        marker_offset_groups=[], frame_offset_groups=[], opts={'enable_fd': True})
+        marker_offset_groups=[], frame_offset_groups=[], enable_fd=True)
 
     for cost in (cost_solo, cost_shared, cost_fd):
         cost.add_marker_bilevel_cost_term(
@@ -634,7 +632,7 @@ def test_bilevel_cost_function_offset_jacobians_full_body():
     cost_fd = build_bilevel_cost(
         'cost_fd', ModelCache(model), body_scale_groups=body_scale_groups,
         marker_offset_groups=marker_offset_groups,
-        frame_offset_groups=frame_offset_groups, opts={'enable_fd': True})
+        frame_offset_groups=frame_offset_groups, enable_fd=True)
 
     for cost in (cost_jac, cost_fd):
         cost.add_marker_bilevel_cost_term(
