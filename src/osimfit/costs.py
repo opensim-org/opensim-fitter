@@ -1087,7 +1087,7 @@ class AnthropometricRegularizationCost(CallbackCost):
     distribution fit to the ANSUR II dataset. Since it is a multivariate normal
     distribution, we use the Mahalanobis distance to define the cost:
 
-        cost = weight * 0.5 (m(s) - mu)^T Σ^-1 (m(s) - mu)
+        cost = weight * 0.5 (m(s) - μ)^T Σ^-1 (m(s) - μ)
 
     which equates to minimizing the negative log-likelihood of the probability density
     function.
@@ -1233,12 +1233,14 @@ class AnthropometricRegularizationCost(CallbackCost):
     def _eval(self, arg):
         body_scales = np.atleast_1d(np.squeeze(arg[0].full())).astype(float)
         self._apply_body_scales(body_scales)
+
         residual = self._measurements(body_scales) - self.mean
         return [float(self.weight * 0.5 * residual @ self.precision @ residual)]
 
     def _jac_eval(self, arg):
         body_scales = np.atleast_1d(np.squeeze(arg[0].full())).astype(float)
         self._apply_body_scales(body_scales)
+
         num_scales = 3 * len(self.mc.body_scale_groups)
         m = np.empty(len(self.station_specs))
         jacobian = np.zeros((len(self.station_specs), num_scales))
