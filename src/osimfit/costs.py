@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 from .model import ModelCache
+from .scaling import AnthropometricMeasurement
 from .anthropometrics import build_ansur_distribution
 
 
@@ -1086,19 +1087,19 @@ class AnthropometricRegularizationCost(CallbackCost):
     distribution fit to the ANSUR II dataset. Since it is a multivariate normal
     distribution, we use the Mahalanobis distance to define the cost:
 
-        cost = weight * 0.5 (m(s) - mu)^T Sigma^-1 (m(s) - mu)
+        cost = weight * 0.5 (m(s) - mu)^T Σ^-1 (m(s) - mu)
 
     which equates to minimizing the negative log-likelihood of the probability density
     function.
 
-    The measurements are evaluated through OpenSim at a fixed pose so they reflect the
-    model's true kinematics. `initialize` stores the model's default pose; each
-    evaluation applies the body scales to that pose (scaling both the mobilizer frames
-    along each station's kinematic chain and each station's own location within its body)
-    before reading station positions in ground. The analytic Jacobian reuses
-    `ModelCache.calc_station_position_jacobian_wrt_body_scales`; set `enable_fd` to
-    finite-difference the cost through OpenSim instead (e.g., to verify the analytic
-    gradient).
+    Users must define the set of measurements, ``m(s)``, via the parameter
+    `measurements`, a dictionary that maps names of measurments from the ANSUR II
+    dataset and their corresponding `AnthropometricMeasurement`. Each
+    `AnthropometricMeasurement` defines the two `Station`s on the `Model` (and
+    optionally an axis) from which to compute the simulated measurement. The `sex`
+    parameter can be used to specify that the distribution should be fit to either
+    male or female participants only; using the default value (`None`) fits across all
+    participants from the ANSUR report.
 
     All quantities are in meters (ANSUR II millimeters are converted on load).
 
@@ -1106,16 +1107,16 @@ class AnthropometricRegularizationCost(CallbackCost):
     ----------
     measurements: dict[str, AnthropometricMeasurement]
         Maps each ANSUR II measurement name to the measurement (a station pair and
-        optional axis) that computes it from the model. The names (keys) select the
-        distribution's columns and must be present in the ANSUR II dataset.
+        optional axis) that computes it from the model. The names (keys) must
+        match measurements from ANSUR II dataset.
     sex: str, optional
         Subject sex ('male' or 'female') selecting the ANSUR II subset. Defaults to None
         (the combined male-and-female dataset).
     weight: float, optional
         Non-negative scalar applied to the penalty. Default is 1.0.
     enable_fd: bool, optional
-        If ``True``, CasADi finite-differences the cost through OpenSim rather than using
-        the analytic Jacobian. Default is ``False``.
+        If ``True``, CasADi finite-differences the cost through OpenSim rather than
+        using the analytic Jacobian. Default is ``False``.
 
     Raises
     ------
@@ -1126,8 +1127,8 @@ class AnthropometricRegularizationCost(CallbackCost):
     """
     required_inputs = frozenset({'body_scales'})
 
-    def __init__(self, measurements: dict, sex: str = None, weight: float = 1.0,
-                 enable_fd: bool = False):
+    def __init__(self, measurements: dict[str, AnthropometricMeasurement],
+                 sex: str = None, weight: float = 1.0, enable_fd: bool = False):
         if weight < 0:
             raise ValueError(
                 f'Expected weight to be non-negative, but got {weight}.')
@@ -1197,7 +1198,9 @@ class AnthropometricRegularizationCost(CallbackCost):
         raise IndexError(f'Invalid input index {i} for {type(self).__name__}.')
 
     def _apply_body_scales(self, body_scales: np.ndarray) -> None:
-        """Apply the body scales to the stored default pose and realize to Position."""
+        """
+        Apply the body scales to the stored default pose and realize to Position.
+        """
         self.mc.set_scaled_mobilizer_frame_positions(self.state, body_scales)
         self.state.setQ(osim.Vector.createFromMat(self.default_q))
         self.mc.model.realizePosition(self.state)
@@ -1216,7 +1219,9 @@ class AnthropometricRegularizationCost(CallbackCost):
         return spec.base_frame.findStationLocationInGround(self.state, vec).to_numpy()
 
     def _measurements(self, body_scales: np.ndarray) -> np.ndarray:
-        """Evaluate the anthropometric measurements at the given body scales, in meters."""
+        """
+        Evaluate the anthropometric measurements at the given body scales, in meters.
+        """
         m = np.empty(len(self.station_specs))
         for i, (spec1, spec2, axis) in enumerate(self.station_specs):
             displacement = (self._station_position(spec2, body_scales) -
