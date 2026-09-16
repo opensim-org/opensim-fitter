@@ -772,11 +772,6 @@ class SplinedKinematicsSolver(TrackingSolver):
         for trial in self.trials:
             times = trial.times
             duration = times[-1] - times[0]
-
-            # Divide the trial into equally-wide knot intervals as close as possible to
-            # the requested width. The clamped knot vector repeats the end knots
-            # 'degree' times, which adds 'degree' control points beyond the
-            # 'num_intervals + 1' breakpoints.
             num_intervals = int(round(duration / self.knot_interval))
             if num_intervals < 1:
                 raise ValueError(
