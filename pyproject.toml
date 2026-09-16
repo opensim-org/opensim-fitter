@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "osimfit"
-version = "0.1.0"
+version = "0.0.1"
 
 [project.optional-dependencies]
 test = ["pytest"]

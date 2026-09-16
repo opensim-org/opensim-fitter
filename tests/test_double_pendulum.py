@@ -113,7 +113,7 @@ def test_pendulum_bilevel_recovers_ground_truth_lengths(tmp_path):
     solver = SplinedKinematicsSolver(
         unscaled_model,
         convergence_tolerance=1e-5,
-        knot_interval=0.05,
+        knot_interval=0.07,
         position_weight=5.0,
     )
     solver.add_trial(Trial('pendulum', [marker_source]))
@@ -223,7 +223,7 @@ def test_pendulum_update_model_applies_recovered_body_scales(tmp_path):
     solver = SplinedKinematicsSolver(
         unscaled_model,
         convergence_tolerance=1e-5,
-        knot_interval=0.05,
+        knot_interval=0.07,
         position_weight=5.0,
     )
     solver.add_trial(Trial('pendulum', [marker_source]))
@@ -306,8 +306,8 @@ def test_bilevel_over_two_trials_shares_body_scales(tmp_path):
     assert solution.states_tables['trial_b'].getNumRows() == 151
     nodes_a = solution.outputs['spline_nodes']['trial_a']
     nodes_b = solution.outputs['spline_nodes']['trial_b']
-    assert nodes_a.shape == (20, 2)
-    assert nodes_b.shape == (30, 2)
+    assert nodes_a.shape == (20 + solver.degree, 2)
+    assert nodes_b.shape == (30 + solver.degree, 2)
 
     # The body scales are shared across both trials, so there is still one XYZ value per
     # body, and it must recover the ground truth both trials were generated from.
@@ -375,9 +375,9 @@ def test_add_trial_rejects_duplicate_names_and_empty_trials(tmp_path):
 
 def test_solve_raises_when_a_trial_is_too_short_for_the_spline(tmp_path):
     """
-    A degree-p spline needs at least p+1 control points, so a trial spanning fewer than
-    p+1 knot intervals cannot be splined. The error must name the offending trial, since
-    with several trials registered only one of them may be too short.
+    A trial must span at least one knot interval to be splined. The error must name the
+    offending trial, since with several trials registered only one of them may be too
+    short.
     """
     trc_long = str(tmp_path / 'markers_long.trc')
     trc_short = str(tmp_path / 'markers_short.trc')
@@ -387,21 +387,44 @@ def test_solve_raises_when_a_trial_is_too_short_for_the_spline(tmp_path):
     model = create_double_pendulum(1.0, 1.0)
     model.initSystem()
 
-    # At a 0.05 s knot interval, a cubic spline needs a trial spanning at least 0.2 s.
-    solver = SplinedKinematicsSolver(model, knot_interval=0.05, degree=3)
+    # At a 0.5 s knot interval, the 0.1 s trial rounds to zero knot intervals.
+    solver = SplinedKinematicsSolver(model, knot_interval=0.5, degree=3)
     solver.add_trial(Trial('long', [
         MarkerSource('markers_long', trc_long, label_map=_pendulum_label_map(trc_long))]))
     solver.add_trial(Trial('short', [
         MarkerSource('markers_short', trc_short,
                      label_map=_pendulum_label_map(trc_short))]))
 
-    with pytest.raises(ValueError, match="Trial 'short'.*degree-3 spline requires"):
+    with pytest.raises(ValueError, match="Trial 'short'.*one knot interval"):
         solver.solve()
 
-    # The same short trial is fine once the knot interval is small enough to yield at
-    # least four control points.
+    # The same short trial is fine once the knot interval fits within its duration.
     solver.knot_interval = 0.02
     solver.solve()
+
+
+def test_knot_interval_matches_requested_spacing():
+    """
+    The realized spacing between consecutive interior knots must equal the requested
+    knot interval, and the number of control points must account for the repeated knots
+    clamping each end of the spline.
+    """
+    model = create_double_pendulum(1.0, 1.0)
+    model.initSystem()
+    solver = SplinedKinematicsSolver(model, knot_interval=0.05, degree=3)
+
+    times = np.linspace(0.0, 1.0, 101)
+    knots = solver.build_knots_vector(times, num_intervals=20)
+
+    # Interior (non-repeated) knots are spaced exactly one knot interval apart.
+    interior = knots[solver.degree:len(knots) - solver.degree]
+    assert len(interior) == 21
+    np.testing.assert_allclose(np.diff(interior), 0.05)
+
+    # n + p + 1 knots for n control points of degree p.
+    assert len(knots) == 20 + 3 + 1 + 3
+    B, _ = solver.build_spline_basis_matrix(times, knots)
+    assert B.shape == (101, 23)
 
 
 def test_solve_without_trials_raises():

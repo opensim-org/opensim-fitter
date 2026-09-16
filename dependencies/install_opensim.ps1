@@ -13,6 +13,7 @@ foreach ($Name in 'OPENSIM_CORE_SOURCE_DIR', 'SIMBODY_SOURCE_DIR') {
 $DebugType = 'Release'
 $NumJobs = if ($env:OPENSIM_BUILD_JOBS) { $env:OPENSIM_BUILD_JOBS } else { 24 }
 $Moco = 'off'
+$Wheels = if ($env:OPENSIM_BUILD_WHEELS) { $env:OPENSIM_BUILD_WHEELS } else { 'off' }
 $Generator = 'Ninja'
 $PythonRootDir = $args[0]
 $WorkingDir = Join-Path $PWD 'opensim'
@@ -67,6 +68,7 @@ cmake $env:OPENSIM_CORE_SOURCE_DIR `
     '-DOPENSIM_INSTALL_UNIX_FHS=off' `
     "-DOPENSIM_WITH_CASADI=$Moco" `
     '-DBUILD_PYTHON_WRAPPING=on' `
+    "-DBUILD_PYTHON_WHEELS=$Wheels" `
     "-DPython3_ROOT_DIR=$PythonRootDir"
 cmake --build . --config $DebugType -j $NumJobs
 cmake --install .
