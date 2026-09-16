@@ -101,9 +101,12 @@ marker_source = MarkerSource('markers', 'markers.trc', label_map=label_map)
 
 # Construct a SplinedKinematicsSolver to solve for the model kinematics and body
 # lengths that best match the marker data.
+# A 0.07 s knot interval keeps this 2.0 s trial at 32 spline control points. Above
+# ~42 control points, this bilevel problem converges to a local minimum with a much
+# worse objective when solved without an initial guess.
 solver = SplinedKinematicsSolver(model,
                                  convergence_tolerance=1e-5,
-                                 knot_interval=0.05,
+                                 knot_interval=0.07,
                                  position_weight=5.0)
 solver.add_trial(Trial('pendulum', [marker_source]))
 solver.add_cost(BodyScaleRegularizationCost(1e-2))

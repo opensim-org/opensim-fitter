@@ -529,8 +529,10 @@ class SplinedKinematicsSolver(TrackingSolver):
     degree: int, optional
         The degree of the B-spline basis functions. Default is 3 (i.e., cubic splines).
     knot_interval: float, optional
-        The interval between knots in the B-spline basis. Default is 0.05 seconds. Every
-        registered trial must span at least ``degree + 1`` knot intervals.
+        The spacing between consecutive knots in the B-spline basis, in seconds. Default
+        is 0.05. Each trial is divided into ``round(duration / knot_interval)`` knot
+        intervals of equal width, so the realized spacing matches ``knot_interval`` up
+        to that rounding. Every registered trial must span at least one knot interval.
     """
     SUPPORTED_INPUTS = frozenset({'body_scales', 'marker_offsets', 'frame_offsets'})
 
@@ -543,16 +545,17 @@ class SplinedKinematicsSolver(TrackingSolver):
         self.degree = degree
         self.knot_interval = knot_interval
 
-    def build_knots_vector(self, times, num_knots):
+    def build_knots_vector(self, times, num_intervals):
         """
-        Create a clamped knot vector. For n control points and degree p, there are
-        n+p+1 knots. The first and last p+1 knots are clamped to the first and last time,
-        respectively, and the interior knots are uniformly spaced between the first
-        and last time.
+        Create a clamped knot vector spanning `times` with `num_intervals` equally-wide
+        knot intervals. The first and last knots are repeated `degree` times so that the
+        spline is clamped to the first and last time, giving
+        ``num_intervals + 1 + 2*degree`` knots and therefore
+        ``num_intervals + degree`` control points.
         """
         knots = np.concatenate([
             np.repeat(times[0], self.degree),
-            np.linspace(times[0], times[-1], num_knots - self.degree + 1),
+            np.linspace(times[0], times[-1], num_intervals + 1),
             np.repeat(times[-1], self.degree),
         ])
         return knots
@@ -565,10 +568,10 @@ class SplinedKinematicsSolver(TrackingSolver):
 
         # Build basis matrix B[i,j] = N_j(t_i) numerically.
         t = ca.MX.sym("t")
-        num_knots = len(knots) - self.degree - 1
+        num_control_points = len(knots) - self.degree - 1
 
         # Scalar spline function for building B matrix.
-        c_temp = ca.MX.sym("c_temp", num_knots, 1)
+        c_temp = ca.MX.sym("c_temp", num_control_points, 1)
         spline = ca.bspline(t, c_temp, [knots], [self.degree], 1)
         spline_fn = ca.Function("spline", [t, c_temp], [spline])
 
@@ -578,10 +581,10 @@ class SplinedKinematicsSolver(TrackingSolver):
 
         # Build basis matrix B[i,j] = N_j(t_i) by evaluating with unit coefficient
         # vectors.
-        B = np.zeros((len(times), num_knots))
-        dB = np.zeros((len(times), num_knots))
-        for j in range(num_knots):
-            e_j = np.zeros(num_knots)
+        B = np.zeros((len(times), num_control_points))
+        dB = np.zeros((len(times), num_control_points))
+        for j in range(num_control_points):
+            e_j = np.zeros(num_control_points)
             e_j[j] = 1.0
             B[:, j] = [float(spline_fn(ti, e_j)) for ti in times]
             dB[:, j] = [float(spline_fn_dt(ti, e_j)) for ti in times]
@@ -763,28 +766,31 @@ class SplinedKinematicsSolver(TrackingSolver):
 
         # Build a spline basis per trial.
         trial_times: list[list[float]] = []
-        trial_num_knots: list[int] = []
+        trial_num_control_points: list[int] = []
         trial_B: list[ca.DM] = []
         trial_dB: list[ca.DM] = []
         for trial in self.trials:
             times = trial.times
             duration = times[-1] - times[0]
 
-            num_knots = int(round(duration / self.knot_interval))
-            if num_knots < self.degree + 1:
-                minimum_duration = (self.degree + 1) * self.knot_interval
+            # Divide the trial into equally-wide knot intervals as close as possible to
+            # the requested width. The clamped knot vector repeats the end knots
+            # 'degree' times, which adds 'degree' control points beyond the
+            # 'num_intervals + 1' breakpoints.
+            num_intervals = int(round(duration / self.knot_interval))
+            if num_intervals < 1:
                 raise ValueError(
-                    f"Trial '{trial.name}' spans {duration:.4g} s, which yields only "
-                    f"{num_knots} B-spline control point(s) at a knot interval of "
-                    f"{self.knot_interval:.4g} s; a degree-{self.degree} spline "
-                    f"requires at least {self.degree + 1}. Either provide a trial "
-                    f"spanning at least {minimum_duration:.4g} s, or reduce "
-                    f"knot_interval or degree.")
+                    f"Trial '{trial.name}' spans {duration:.4g} s, which is shorter "
+                    f"than half the requested knot interval of "
+                    f"{self.knot_interval:.4g} s, so the trial cannot be divided into "
+                    f"even one knot interval. Either provide a longer trial, or reduce "
+                    f"knot_interval.")
+            num_control_points = num_intervals + self.degree
 
-            knots = self.build_knots_vector(times, num_knots)
+            knots = self.build_knots_vector(times, num_intervals)
             B, dB = self.build_spline_basis_matrix(times, knots)
             trial_times.append(times)
-            trial_num_knots.append(num_knots)
+            trial_num_control_points.append(num_control_points)
             trial_B.append(B)
             trial_dB.append(dB)
 
@@ -805,8 +811,9 @@ class SplinedKinematicsSolver(TrackingSolver):
 
         # Define the optimization variables: one block of control points per trial,
         # followed by the parameter blocks shared across all trials.
-        coeffs = [ca.MX.sym(f'coeffs_{itrial}', num_knots, num_coords)
-                  for itrial, num_knots in enumerate(trial_num_knots)]
+        coeffs = [ca.MX.sym(f'coeffs_{itrial}', num_control_points, num_coords)
+                  for itrial, num_control_points in
+                  enumerate(trial_num_control_points)]
         s = ca.MX.sym('body_scales', num_scales)
         mo = ca.MX.sym('marker_offsets', num_markers)
         fo = ca.MX.sym('frame_offsets', num_frames)
@@ -814,16 +821,17 @@ class SplinedKinematicsSolver(TrackingSolver):
         lbx = []
         ubx = []
         for itrial, trial in enumerate(self.trials):
-            num_knots = trial_num_knots[itrial]
+            num_control_points = trial_num_control_points[itrial]
             guess_table = (None if guess is None else guess.states_tables[trial.name])
             for coord_path in self.coordinate_map:
                 coord = osim.Coordinate.safeDownCast(
                     self.mc.model.getComponent(coord_path))
-                x0 += ([coord.getDefaultValue()] * num_knots if guess_table is None
+                x0 += ([coord.getDefaultValue()] * num_control_points
+                       if guess_table is None
                        else self.extract_coordinate_initial_guess(
                            guess_table, trial_B[itrial], coord_path))
-                lbx += [coord.getRangeMin()] * num_knots
-                ubx += [coord.getRangeMax()] * num_knots
+                lbx += [coord.getRangeMin()] * num_control_points
+                ubx += [coord.getRangeMax()] * num_control_points
 
         # Append each parameter's initial guess and bounds, in type order, matching the
         # [coeffs_0, ..., coeffs_J, s, mo, fo] layout of the optimization vector below.
@@ -884,9 +892,9 @@ class SplinedKinematicsSolver(TrackingSolver):
         spline_nodes: dict[str, np.ndarray] = {}
         i = 0
         for itrial, trial in enumerate(self.trials):
-            num_coeff_vars = trial_num_knots[itrial] * num_coords
+            num_coeff_vars = trial_num_control_points[itrial] * num_coords
             coeffs_opt = ca.reshape(sol['x'][i : i + num_coeff_vars],
-                                    trial_num_knots[itrial], num_coords)
+                                    trial_num_control_points[itrial], num_coords)
             q_opt = np.array(trial_B[itrial] @ coeffs_opt)
             qdot_opt = np.array(trial_dB[itrial] @ coeffs_opt)
             states_tables[trial.name] = Solution.create_states_table(
