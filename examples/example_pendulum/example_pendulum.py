@@ -103,7 +103,7 @@ marker_source = MarkerSource('markers', 'markers.trc', label_map=label_map)
 # lengths that best match the marker data.
 solver = SplinedKinematicsSolver(model,
                                  convergence_tolerance=1e-5,
-                                 knot_interval=0.05,
+                                 knot_interval=0.07,
                                  position_weight=5.0)
 solver.add_trial(Trial('pendulum', [marker_source]))
 solver.add_cost(BodyScaleRegularizationCost(1e-2))
