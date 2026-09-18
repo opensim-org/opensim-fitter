@@ -6,3 +6,4 @@ casadi==3.7.2
 matplotlib
 pandas
 scipy
+packaging
