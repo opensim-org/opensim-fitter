@@ -61,7 +61,7 @@ jobs:
       working-directory: dependencies
       run: |
         python -c "import sys, yaml; yaml.safe_dump({'python_root_dir': sys.prefix}, open('config.yaml','w'))"
-        python install_opensim.py
+        python install_opensim.py --from-source
 
     - name: Build wheel
       run: |
@@ -140,7 +140,7 @@ jobs:
       working-directory: dependencies
       run: |
         python -c "import sys, yaml; yaml.safe_dump({'python_root_dir': sys.prefix}, open('config.yaml','w'))"
-        python install_opensim.py
+        python install_opensim.py --from-source
 
     - name: Build wheel
       run: |
@@ -249,7 +249,7 @@ jobs:
       working-directory: dependencies
       run: |
         $PY -c "import sys, yaml; yaml.safe_dump({'python_root_dir': sys.prefix}, open('config.yaml','w'))"
-        $PY install_opensim.py
+        $PY install_opensim.py --from-source
 
     - name: Build wheel
       run: |
@@ -332,11 +332,9 @@ jobs:
         <!-- Describe the changes to osimfit in this release above the line below. -->
 
         ---
-
-        The OpenSim Python wheels attached to this release are built from
-        opensim-core ${OSIM_SHA} and simbody ${SIMBODY_SHA}, the commits pinned by
-        opensim-fitter ${GITHUB_SHA}. Download the wheel matching your platform and
-        Python version.
+        The OpenSim Python wheels attached to this release are built from the following commits:
+        - opensim-org/opensim-core@${OSIM_SHA}
+        - simbody/simbody@${SIMBODY_SHA}
         EOF
 
         ls -la dist
