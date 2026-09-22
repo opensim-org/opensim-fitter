@@ -13,7 +13,7 @@ from osimfit.costs import (AnthropometricRegularizationCost, OffsetRegularizatio
                            BodyScaleIsotropyCost)
 from osimfit.bounds import Bounds
 from osimfit.utilities import (compute_marker_errors, plot_marker_errors,
-                               plot_coordinates)
+                               plot_coordinates, compute_knot_interval)
 
 # EXAMPLE WALK
 # ------------
@@ -193,16 +193,22 @@ sto.write(ik_solution.states_tables['walk'], 'walk_ik_solution.sto')
 # Spline-based inverse kinematics
 # -------------------------------
 # Construct a SplinedKinematicsSolver to solve for the model kinematics and body
-# lengths that best match the marker data.
+# lengths that best match the marker data. Use a knot interval that matches a 10 Hz
+# lowpass cutoff filter frequency of the inverse kinematics coordinates data.
+cutoff_frequency = 10
+degree = 3
+knot_interval = compute_knot_interval(ik_solution.get_coordinates('walk'),
+                                      cutoff_frequency, degree)
 solver = SplinedKinematicsSolver(unscaled_model,
                                  convergence_tolerance=1e-2,
-                                 knot_interval=0.05,
+                                 knot_interval=knot_interval,
+                                 degree=degree,
                                  position_weight=5.0)
 solver.add_trial(trial)
 
 # Add additional cost terms to the solver.
 #
-# A regularization penalty on body-scale factors that maximizes the log-likelihood that
+# A regularization penalty on body-scale factors that    maximizes the log-likelihood that
 # a set of anthropometric measurements (that are function of body scales) fall within a
 # distribution fit to the ANSUR II dataset.
 solver.add_cost(AnthropometricRegularizationCost(

@@ -14,7 +14,7 @@ from osimfit.costs import (AnthropometricRegularizationCost, OffsetRegularizatio
                            BodyScaleIsotropyCost)
 from osimfit.bounds import Bounds
 from osimfit.utilities import (compute_marker_errors, plot_marker_errors,
-                               plot_coordinates)
+                               plot_coordinates, compute_knot_interval)
 
 # EXAMPLE MULTIPLE TRIALS
 # -----------------------
@@ -232,10 +232,16 @@ for trial in trials:
 # Spline-based inverse kinematics
 # -------------------------------
 # Construct a SplinedKinematicsSolver to solve for the model kinematics and body
-# lengths that best match the marker data.
+# lengths that best match the marker data. Use a knot interval that matches a 10 Hz
+# lowpass cutoff filter frequency of the inverse kinematics coordinates data.
+cutoff_frequency = 10
+degree = 3
+knot_interval = compute_knot_interval(ik_solution.get_coordinates('DJ1'),
+                                      cutoff_frequency, degree)
 solver = SplinedKinematicsSolver(unscaled_model,
                                  convergence_tolerance=1e-2,
-                                 knot_interval=0.05,
+                                 knot_interval=knot_interval,
+                                 degree=degree,
                                  position_weight=5.0)
 for trial in trials:
     solver.add_trial(trial)

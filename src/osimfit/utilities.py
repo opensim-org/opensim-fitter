@@ -4,6 +4,7 @@ import numpy as np
 import opensim as osim
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
+from scipy.interpolate import BSpline
 from .data_sources import MarkerSource
 
 
@@ -263,3 +264,115 @@ def plot_marker_errors(errors: osim.TimeSeriesTableVec3, pdf_fpath: str):
             plt.close(fig)
 
     return mean_errors, max_errors
+
+
+def compute_knot_interval(coordinates: osim.TimeSeriesTable, cutoff_frequency: float,
+                          degree: int = 3, allowed_error: float = 10.0) -> float:
+    """
+    Compute the largest B-spline knot interval that still reproduces the frequency
+    content of `table` up to `cutoff_frequency`. Based on the method publication "A
+    frequency criterion for optimal node selection in smoothing with cubic splines" by
+    Schleicher and Biloti (2008).
+
+    Each column is fitted with a linear polynomial plus a Fourier series carrying every
+    harmonic up to `cutoff_frequency`, giving a set of reference coefficients. The
+    column is then fitted with a B-spline, that spline fit is itself Fourier-fitted,
+    and the two coefficient sets are compared. The number of knot intervals is
+    increased by one until every coefficient of every column agrees to within
+    `allowed_error` percent, following Schleicher and Biloti (2008).
+
+    Parameters
+    ----------
+    coordinates: osim.TimeSeriesTable
+        A table containing coordinate values, e.g., from inverse kinematics.
+    cutoff_frequency: float
+        The frequency, in Hz, up to which the spline fit must reproduce the data.
+    degree: int, optional
+        The degree of the B-spline basis functions. Default is 3 (i.e., cubic splines).
+        Must match the degree used by the solver that consumes the returned interval.
+    allowed_error: float, optional
+        The largest permitted error in any Fourier coefficient, in percent of the
+        largest reference coefficient for that column. Default is 10.0, the value used
+        by Schleicher and Biloti (2008).
+
+    Returns
+    -------
+    float
+        The knot interval, in seconds.
+    """
+
+    def _poly_fourier_coefs(times: np.ndarray, curve: np.ndarray, fundamental: float,
+                            num_harmonics: int) -> np.ndarray:
+        omega = 2.0 * np.pi * fundamental
+        columns = [np.ones_like(times), times]
+        for i in range(1, num_harmonics + 1):
+            columns.append(np.cos(i * omega * times))
+            columns.append(np.sin(i * omega * times))
+        return np.linalg.lstsq(np.column_stack(columns), curve, rcond=None)[0]
+
+    times = np.asarray(coordinates.getIndependentColumn(), dtype=float)
+    num_times = len(times)
+    duration = times[-1] - times[0]
+    labels = coordinates.getColumnLabels()
+    for label in labels:
+        if '/value' not in label:
+            raise ValueError(f"Expected all columns of 'coordinates' to contain "
+                             f"coordinate value data (e.g., joint angles) but found "
+                             f"column with label '{label}'.")
+
+    curves = np.column_stack(
+        [coordinates.getDependentColumn(label).to_numpy() for label in labels])
+
+    # The trial is treated as one cycle of a periodic signal, so the lowest frequency
+    # the Fourier fit can represent is one cycle over the whole trial.
+    fundamental = 1.0 / duration
+    num_harmonics = int(round(cutoff_frequency / fundamental))
+    if num_harmonics < 1:
+        raise ValueError(
+            f'A cutoff frequency of {cutoff_frequency:.4g} Hz is below the '
+            f'fundamental frequency of {fundamental:.4g} Hz set by the '
+            f'{duration:.4g} s duration of the table, so the fit would carry no '
+            f'harmonics. Either raise cutoff_frequency or provide a longer trial.')
+
+    num_coefs = 2 * num_harmonics + 2
+    if num_times < num_coefs:
+        raise ValueError(
+            f'Fitting {num_harmonics} harmonics requires at least {num_coefs} time '
+            f'points, but the table has {num_times}. Either lower cutoff_frequency or '
+            f'provide more densely sampled data.')
+
+    coefs_reference = np.column_stack(
+        [_poly_fourier_coefs(times, curves[:, i], fundamental, num_harmonics)
+         for i in range(curves.shape[1])])
+
+    # Omit the first two coefficients, which define the linear term rather than the
+    # frequency content, and guard against a flat curve giving a zero denominator.
+    reference = coefs_reference[2:, :]
+    denominator = np.maximum(np.abs(reference).max(axis=0), 1e-8)
+
+    # A spline needs at least as many time points as control points to be fitted, and
+    # the solver uses num_intervals + degree control points.
+    max_intervals = num_times - degree
+    for num_intervals in range(1, max_intervals + 1):
+        # Create clamped knots vector.
+        knots =  np.concatenate([np.repeat(times[0], degree),
+                                 np.linspace(times[0], times[-1], num_intervals + 1),
+                                 np.repeat(times[-1], degree)])
+        B = BSpline.design_matrix(times, knots, degree, extrapolate=False).toarray()
+        nodes = np.linalg.lstsq(B, curves, rcond=None)[0]
+        fitted = B @ nodes
+
+        coefs_spline = np.column_stack(
+            [_poly_fourier_coefs(times, fitted[:, i], fundamental, num_harmonics)
+             for i in range(curves.shape[1])])
+
+        errors = np.abs(coefs_spline[2:, :] - reference) / denominator * 100.0
+        if errors.max() <= allowed_error:
+            return duration / num_intervals
+
+    raise ValueError(
+        f'No knot interval reproduced the data to within {allowed_error:.4g} percent '
+        f'at a cutoff frequency of {cutoff_frequency:.4g} Hz, even with the '
+        f'{max_intervals} intervals supported by {num_times} time points. Either '
+        f'lower cutoff_frequency, raise allowed_error, or provide more densely '
+        f'sampled data.')
