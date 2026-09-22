@@ -7,8 +7,7 @@ from osimfit.data_sources import TheiaFrameSource, Trial
 from osimfit.scaling import PositionBasedScaler, FrameMeasurement, Axis, \
                             AnthropometricScaler, AnthropometricMeasurement
 from osimfit.solvers import InverseKinematicsSolver, SplinedKinematicsSolver
-from osimfit.model import BodyScale
-from osimfit.bounds import Bounds
+from osimfit.utilities import compute_knot_interval
 
 # EXAMPLE JUMP
 # ------------
@@ -188,9 +187,16 @@ sto.write(ik_solution.states_tables['jump_1'], 'jump_1_ik_solution.sto')
 # ----------------------------------
 # Construct a SplinedKinematicsSolver to solve for the model kinematics and body
 # scales that best match the Theia frame data, initialized from the unscaled model.
+# Use a knot interval that matches a 10 Hz lowpass cutoff filter frequency of the
+# inverse kinematics coordinates data.
+cutoff_frequency = 10
+degree = 3
+knot_interval = compute_knot_interval(ik_solution.get_coordinates('jump_1'),
+                                      cutoff_frequency, degree)
 solver = SplinedKinematicsSolver(unscaled_model,
                                  convergence_tolerance=1e-3,
-                                 knot_interval=0.05,
+                                 knot_interval=knot_interval,
+                                 degree=degree,
                                  position_weight=2.0,
                                  orientation_weight=5.0)
 solver.add_trial(Trial('jump_1', [theia_frame_source]))

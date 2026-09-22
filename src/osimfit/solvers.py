@@ -46,6 +46,34 @@ class Solution:
     parameters: list[Parameter] = None
     outputs: dict[str, Any] = field(default_factory=dict)
 
+    def get_coordinates(self, trial_name: str) -> osim.TimeSeriesTable:
+        """
+        Return an `osim.TimeSeriesTable` containing the coordinate values (e.g., joint
+        angles) for a particular trial.
+
+        Parameters
+        ----------
+        trial_name: str
+            The name of the trial.
+
+        Raises
+        ------
+        ValueError
+            If a Trial with 'trial_name' does not exist in this Solution.
+        """
+
+        if trial_name not in self.states_tables:
+            raise ValueError(f"Trial with name '{trial_name}' not found in solution.")
+
+        states = self.states_tables[trial_name]
+        coordinates = osim.TimeSeriesTable(states.getIndependentColumn())
+        coordinate_labels = [label for label in states.getColumnLabels()
+                             if '/value' in label]
+        for label in coordinate_labels:
+            coordinates.appendColumn(label, states.getDependentColumn(label))
+
+        return coordinates
+
     def get_parameter(self, path: str, cls: type = Parameter) -> Parameter:
         """
         Return the optimized parameter of type `cls` whose group contains `path`.
