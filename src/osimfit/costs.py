@@ -107,88 +107,100 @@ class CostInput:
         return ca.reshape(value, 3, num_entries // 3).T
 
 
-class CostRep(ABC):
-    """
-    A cost's per-solve representation that a solver evaluates.
-
-    A `CostRep` is constructed via a cost's `create_rep` from the solver's `ModelCache`
-    and lives only for the duration of one solve.
-    """
-
-    @abstractmethod
-    def __call__(self, input: CostInput) -> ca.MX:
-        pass
-
-
 class CostBase(ABC):
     """
     A model-independent description of a cost term: the weights, targets, and reference
     data the user (or a solver) supplies, with no OpenSim state of its own. A cost is
-    inert and reusable. All model-bound work happens in the `CostRep` it creates.
+    inert, stateless, and reusable across solves. All model-bound work is resolved by
+    the `SolveCache` a solver passes to the cost when it is evaluated.
 
     Attributes
     ----------
     required_inputs: frozenset[str]
         The `CostInput` field names this cost reads and therefore requires the solver to
         provide (e.g., ``{'body_scales'}``). A solver validates that it provides every
-        required input before accepting the cost; see `Solver.add_cost`.
+        required input before accepting the cost; see `Solver.add_cost`. The set also
+        determines the inputs a `CostCallback` declares to CasADi, ordered by
+        `CostInput.INPUT_ORDER`.
     """
     required_inputs: frozenset[str] = frozenset()
+
+    def input_names(self) -> tuple[str, ...]:
+        """
+        Return this cost's `required_inputs` in canonical `CostInput.INPUT_ORDER`.
+        """
+        return tuple(name for name in CostInput.INPUT_ORDER
+                     if name in self.required_inputs)
 
 
 class Cost(CostBase):
     """
-    A cost whose rep is built from the `ModelCache` alone, and so the kind of cost a
-    user can register on a solver via `Solver.add_cost`.
+    A cost evaluated from the model and the optimization variables alone, and so the
+    kind of cost a user can register on a solver via `Solver.add_cost`.
+
+    A cost is called with the solver's `SolveCache` and a `CostInput`, and returns the
+    CasADi expression contributing to the objective.
     """
 
     @abstractmethod
-    def create_rep(self, mc: ModelCache) -> CostRep:
+    def __call__(self, cache: 'SolveCache', input: CostInput) -> ca.MX:
         """
-        Build one of this cost's representations against `mc`. Solvers call this once
-        for every rep the problem needs, after all parameter groups are registered, and
-        hold the returned reps for the lifetime of the solve.
+        Return this cost's contribution to the objective.
 
         Parameters
         ----------
-        mc: ModelCache
-            The solver's `ModelCache`, from which the rep initializes any model-derived
-            quantities.
+        cache: SolveCache
+            The solver's cache, from which the cost resolves any model-bound
+            quantities it needs.
+        input: CostInput
+            The optimization variables.
         """
 
 
 class TrackingCostBase(CostBase):
     """
-    A cost evaluated at a single time sample of a single trial, whose rep therefore
-    needs that trial and sample index at construction.
+    A cost evaluated at a single time sample of a single trial. It is called with the
+    trial and sample index in addition to the cache and inputs; the sample index is
+    passed through to the callback as a constant, so one callback serves every sample
+    of a trial.
     """
 
     @abstractmethod
-    def create_rep(self, name: str, mc: ModelCache, trial: Trial,
-                   itime: int) -> CostRep:
+    def __call__(self, cache: 'SolveCache', trial: Trial, itime: int,
+                 input: CostInput, num_times: int = None) -> ca.MX:
         """
-        Build this cost's representation of one time sample of one trial. Solvers call
-        this once for every sample the problem tracks, after all parameter groups are
-        registered, and hold the returned reps for the lifetime of the solve.
+        Return this cost's contribution to the objective at one sample of one trial.
 
         Parameters
         ----------
-        name: str
-            The name of the rep's callback function.
-        mc: ModelCache
-            The solver's `ModelCache`, from which the rep initializes any model-derived
-            quantities.
+        cache: SolveCache
+            The solver's cache, which supplies the trial's memoized `TaskSet`.
         trial: Trial
             The trial supplying the reference data.
         itime: int
-            Index of the time sample within `trial` that the rep tracks.
+            Index of the time sample within `trial` to evaluate.
+        input: CostInput
+            The optimization variables.
+        num_times: int, optional
+            Passed through to `SolveCache.task_set` to bound how many samples of the
+            trial's reference data are loaded. Default is ``None``, meaning all of
+            them.
         """
+
+    @property
+    def is_bilevel(self) -> bool:
+        """
+        Whether this cost evaluates against body scales and placement offsets, and so
+        requires the bilevel flavor of a trial's `TaskSet`.
+        """
+        return 'body_scales' in self.required_inputs
 
 
 class SymbolicCost(Cost):
     """
-    A `Cost` whose rep is a plain CasADi expression, requiring no OpenSim evaluation.
-    It is differentiated symbolically by CasADi and incurs no callback overhead.
+    A `Cost` that is a plain CasADi expression, requiring no OpenSim evaluation. It is
+    differentiated symbolically by CasADi and incurs no callback overhead, so it needs
+    nothing from the cache.
     """
 
     @abstractmethod
@@ -197,27 +209,43 @@ class SymbolicCost(Cost):
         Return this cost's CasADi expression for `input`.
         """
 
-    def create_rep(self, mc: ModelCache) -> 'SymbolicCostRep':
-        return SymbolicCostRep(self)
+    def __call__(self, cache: 'SolveCache', input: CostInput) -> ca.MX:
+        return self.evaluate(input)
 
 
-class SymbolicCostRep(CostRep):
+class CallbackCost(Cost):
     """
-    The rep of a `SymbolicCost`. It holds no model-derived state, since the cost is a
-    pure expression over the optimization variables, and simply defers to
-    `SymbolicCost.evaluate`.
-
-    Parameters
-    ----------
-    cost: SymbolicCost
-        The cost this rep represents.
+    A `Cost` evaluated through OpenSim via a CasADi callback. Subclasses implement
+    `evaluate` and `jacobian`, which the cost's `CostCallback` invokes; the callback
+    itself is memoized on the cache, so repeated calls within one solve reuse it.
     """
 
-    def __init__(self, cost: SymbolicCost):
-        self.cost = cost
+    def __call__(self, cache: 'SolveCache', input: CostInput) -> ca.MX:
+        callback = cache.callback(
+            (type(self).__name__, id(self)),
+            lambda name: CostCallback(name, self, cache))
+        return callback(input)
 
-    def __call__(self, input: CostInput) -> ca.MX:
-        return self.cost.evaluate(input)
+    @abstractmethod
+    def evaluate(self, cache: 'SolveCache', values: dict[str, np.ndarray]) -> float:
+        """
+        Return this cost's scalar value.
+
+        Parameters
+        ----------
+        cache: SolveCache
+            The solver's cache.
+        values: dict[str, np.ndarray]
+            The cost's `input_names`, mapped to their numeric values.
+        """
+
+    @abstractmethod
+    def jacobian(self, cache: 'SolveCache',
+                 values: dict[str, np.ndarray]) -> list[np.ndarray]:
+        """
+        Return this cost's Jacobian as one ``(1, n)`` block per entry of
+        `input_names`, in that order.
+        """
 
 
 class Function(ca.Callback, ABC):
@@ -231,17 +259,18 @@ class Function(ca.Callback, ABC):
     ----------
     name: str
         The name of the callback function.
-    mc: ModelCache
-        The `ModelCache` wrapping the OpenSim model used for evaluating the function
-        and its Jacobian and caching model information.
+    cache: SolveCache
+        The solver's cache, supplying the OpenSim model and state used for evaluating
+        the function and its Jacobian.
     enable_fd: bool, optional
         If ``True``, CasADi finite-differences the callback instead of using its analytic
         Jacobian (`get_jacobian`). Default is ``False``.
     """
-    def __init__(self, name: str, mc: ModelCache, enable_fd: bool = False):
+    def __init__(self, name: str, cache: 'SolveCache', enable_fd: bool = False):
         ca.Callback.__init__(self)
-        self.mc = mc
-        self.state = self.mc.state
+        self.cache = cache
+        self.mc = cache.mc
+        self.state = cache.state
         self.enable_fd = enable_fd
         self.construct(name, {'enable_fd': True} if enable_fd else {})
 
@@ -259,6 +288,14 @@ class Function(ca.Callback, ABC):
 
     def get_sparsity_out(self, i):
         return ca.Sparsity.dense(self.get_output_size(i), 1)
+
+    def get_jacobian_sparsity(self, iout: int, iin: int) -> ca.Sparsity:
+        """
+        Return the sparsity of the Jacobian block of output `iout` with respect to
+        input `iin`. Defaults to dense; override to declare a block structurally zero
+        so CasADi omits it from the sparsity pattern.
+        """
+        return ca.Sparsity.dense(self.get_output_size(iout), self.get_input_size(iin))
 
     def eval(self, arg):
         return self._eval(arg)
@@ -289,8 +326,7 @@ class Function(ca.Callback, ABC):
             def get_sparsity_out(self,i):
                 iin = i % self.callback.get_n_in()
                 iout = i // self.callback.get_n_in()
-                return ca.Sparsity.dense(self.callback.get_output_size(iout),
-                                         self.callback.get_input_size(iin))
+                return self.callback.get_jacobian_sparsity(iout, iin)
 
             def eval(self, arg):
                 return self.callback._jac_eval(arg)
@@ -323,39 +359,119 @@ class Function(ca.Callback, ABC):
         pass
 
 
-class CallbackCostRep(CostRep, Function):
+class CostCallback(Function):
     """
-    A `CostRep` backed by a CasADi callback function that evaluates the cost and its
-    Jacobian through OpenSim. Constructed with a fully-populated `ModelCache`, so the
-    input sizes it declares to CasADi match the solver's registered parameter groups.
+    The single CasADi callback that evaluates any OpenSim-backed cost. It declares one
+    input per entry of the cost's `input_names`, sized from the solver's registered
+    parameter groups, and delegates evaluation to the cost itself.
+
+    For a `TrackingCostBase` it additionally declares a trailing scalar sample-index
+    input. Reference data never crosses the CasADi boundary: it lives as dense arrays
+    in the trial's `TaskSet` and is addressed by that index inside `eval`. The Jacobian
+    block for the index is therefore structurally zero, and one callback serves every
+    sample of a trial.
+
+    Parameters
+    ----------
+    name: str
+        The name of the callback function.
+    cache: SolveCache
+        The solver's cache, which supplies the model, state, and task sets.
+    cost: CostBase
+        The cost this callback evaluates.
+    task_set: TaskSet, optional
+        The trial's resolved geometry and reference data, for a `TrackingCostBase`.
+        Default is ``None``, for a cost that tracks no reference data and therefore
+        declares no sample-index input.
+    enable_fd: bool, optional
+        If ``True``, CasADi finite-differences the callback instead of using its
+        analytic Jacobian. Default is ``False``.
     """
 
-    def __call__(self, input: CostInput) -> ca.MX:
-        return ca.Function.__call__(
-            self, *(getattr(input, name) for name in CostInput.INPUT_ORDER))
+    def __init__(self, name: str, cost: CostBase, cache: 'SolveCache',
+                 task_set: 'TaskSet' = None, enable_fd: bool = False):
+        self.cost = cost
+        self.task_set = task_set
+        self.names = cost.input_names()
+        Function.__init__(self, name, cache, enable_fd=enable_fd)
 
-    def _get_num_inputs(self):
-        return len(CostInput.INPUT_ORDER)
+    @property
+    def tracks_samples(self) -> bool:
+        """
+        Whether this callback declares a trailing sample-index input.
+        """
+        return self.task_set is not None
 
-    def _get_num_outputs(self):
-        return 1
+    def __call__(self, input: CostInput, itime: int = None) -> ca.MX:
+        args = [getattr(input, name) for name in self.names]
+        if self.tracks_samples:
+            args.append(itime)
+        return ca.Function.__call__(self, *args)
 
-    def _get_input_size(self, i):
-        sizes = {
+    def _input_sizes(self) -> dict[str, int]:
+        return {
             'coordinates': len(self.mc.coordinate_indexes),
             'body_scales': 3 * len(self.mc.body_scale_groups),
             'marker_offsets': 3 * len(self.mc.marker_offset_groups),
             'frame_offsets': 3 * len(self.mc.frame_offset_groups),
         }
-        order = CostInput.INPUT_ORDER
-        if not 0 <= i < len(order):
+
+    def _get_num_inputs(self):
+        return len(self.names) + (1 if self.tracks_samples else 0)
+
+    def _get_num_outputs(self):
+        return 1
+
+    def _get_input_size(self, i):
+        if i == len(self.names) and self.tracks_samples:
+            return 1
+        if not 0 <= i < len(self.names):
             raise IndexError(f'Invalid input index {i} for {type(self).__name__}.')
-        return sizes[order[i]]
+        return self._input_sizes()[self.names[i]]
 
     def _get_output_size(self, i):
         if i == 0:
             return 1
         raise IndexError(f'Invalid output index {i} for {type(self).__name__}.')
+
+    def get_jacobian_sparsity(self, iout, iin):
+        # The cost value does not vary smoothly with the sample index; it selects which
+        # reference sample to read. Declaring the block structurally zero keeps the
+        # index out of the NLP's sparsity pattern entirely.
+        if iin == len(self.names) and self.tracks_samples:
+            return ca.Sparsity(self.get_output_size(iout), 1)
+        return super().get_jacobian_sparsity(iout, iin)
+
+    def _unpack(self, arg) -> tuple[dict[str, np.ndarray], int]:
+        """
+        Convert the callback's positional arguments into a mapping from input name to
+        a 1-D float array, plus the sample index (``None`` when not tracking samples).
+        """
+        values = {name: np.atleast_1d(np.squeeze(arg[i].full())).astype(float)
+                  for i, name in enumerate(self.names)}
+        itime = (int(round(float(arg[len(self.names)])))
+                 if self.tracks_samples else None)
+        return values, itime
+
+    def _eval(self, arg):
+        values, itime = self._unpack(arg)
+        if self.tracks_samples:
+            return [self.cost.evaluate(self.cache, self.task_set, itime, values)]
+        return [self.cost.evaluate(self.cache, values)]
+
+    def _jac_eval(self, arg):
+        values, itime = self._unpack(arg)
+        if self.tracks_samples:
+            blocks = self.cost.jacobian(self.cache, self.task_set, itime, values)
+        else:
+            blocks = self.cost.jacobian(self.cache, values)
+        if len(blocks) != len(self.names):
+            raise ValueError(
+                f'{type(self.cost).__name__}.jacobian returned {len(blocks)} blocks, '
+                f'but {type(self).__name__} declares {len(self.names)} inputs '
+                f'{self.names}.')
+        # The trailing block is the structurally-empty sample-index derivative.
+        return blocks + ([ca.DM(1, 1)] if self.tracks_samples else [])
 
 
 class BodyScaleRegularizationCost(SymbolicCost):
@@ -467,13 +583,76 @@ def _calc_quaternion_jacobian(eps):
 # TASKS #
 #########
 
+def _as_reference_array(value, width: int) -> np.ndarray:
+    """
+    Normalize a task's reference data to a dense ``(num_times, width)`` array.
+
+    Accepts a single sample (an `osim.Vec3`, an `osim.Quaternion`, or a length-`width`
+    sequence), which becomes a one-row array, or an already-stacked
+    ``(num_times, width)`` array.
+
+    Parameters
+    ----------
+    value: osim.Vec3 | osim.Quaternion | array-like
+        The reference data for one task, for one or many time samples.
+    width: int
+        The expected number of components per sample: 3 for a position, 4 for an
+        orientation quaternion.
+
+    Returns
+    -------
+    np.ndarray
+        The reference data, shape ``(num_times, width)``.
+
+    Raises
+    ------
+    ValueError
+        If `value` cannot be interpreted as one or more `width`-component samples.
+    """
+    if hasattr(value, 'to_numpy'):
+        value = value.to_numpy()
+    elif isinstance(value, osim.Quaternion):
+        value = np.array([value.get(i) for i in range(4)])
+    array = np.atleast_2d(np.asarray(value, dtype=float))
+    if array.shape[-1] != width:
+        raise ValueError(
+            f'Expected reference data with {width} components per sample, but got '
+            f'an array of shape {array.shape}.')
+    return array
+
+
 class Tasks(ABC):
     """
     A base class for task-specific storage and registration.
+
+    Task storage is per-trial, not per-sample: geometry (station caches, mobilized-body
+    indexes, base frames) is resolved once, and each task's reference data is stored as
+    a dense ``(num_times, ...)`` array that cost evaluation indexes by sample.
     """
     @abstractmethod
     def initialize_tasks(self, state: osim.State, **kwargs) -> float:
         pass
+
+    @property
+    def num_times(self) -> int:
+        """
+        The number of reference samples held per task, or 0 if no tasks are registered.
+        """
+        return 0 if not self.positions else self.positions[0].shape[0]
+
+    def assert_sample_in_range(self, itime: int) -> None:
+        """
+        Verify that `itime` addresses a sample this task set holds.
+
+        Raises
+        ------
+        IndexError
+            If `itime` is out of range for the stored reference data.
+        """
+        if not 0 <= itime < self.num_times:
+            raise IndexError(
+                f'Sample index {itime} is out of range for {type(self).__name__} '
+                f'holding {self.num_times} sample(s).')
 
 
 class MarkerTasks(Tasks):
@@ -492,7 +671,7 @@ class MarkerTasks(Tasks):
         self.base_stations = []
         self.offset_group_indexes: list[int] = []
 
-    def add_marker(self, marker_path: str, position: osim.Vec3, weight: float = 1.0,
+    def add_marker(self, marker_path: str, positions, weight: float = 1.0,
                    offset_group_index: int | None = None):
         """
         Register a marker to track.
@@ -501,8 +680,10 @@ class MarkerTasks(Tasks):
         ----------
         marker_path: str
             The OpenSim Model path to the tracking marker.
-        position: osim.Vec3
-            The reference position data tracked by the model marker.
+        positions: osim.Vec3 | array-like, shape (num_times, 3)
+            The reference position data tracked by the model marker, either a single
+            sample or one row per time sample. Every marker registered on the same task
+            set must supply the same number of samples.
         weight: float, optional
             The cost weight for the position error. Default: 1.0.
         offset_group_index: int | None, optional
@@ -514,6 +695,12 @@ class MarkerTasks(Tasks):
         if weight < 0:
             raise ValueError(f'Expected weight to be non-negative, but got {weight}.')
 
+        positions = _as_reference_array(positions, 3)
+        if self.num_tasks and positions.shape[0] != self.num_times:
+            raise ValueError(
+                f"Marker '{marker_path}' supplies {positions.shape[0]} reference "
+                f'sample(s), but this task set already holds {self.num_times}.')
+
         self.mc.model.realizePosition(self.mc.state)
         marker = osim.Marker.safeDownCast(self.mc.model.getComponent(marker_path))
         cache = StationCache.from_station(self.mc, marker)
@@ -522,7 +709,7 @@ class MarkerTasks(Tasks):
         self.mobod_indexes.push_back(cache.base_frame.getMobilizedBodyIndex())
         self.stations.push_back(osim.Vec3(*[float(v) for v in cache.base_station]))
         self.num_tasks = self.mobod_indexes.size()
-        self.positions.append(position.to_numpy())
+        self.positions.append(positions)
         self.weights.append(weight)
         self.base_frames.append(cache.base_frame)
         self.base_stations.append(cache.base_station)
@@ -547,8 +734,8 @@ class FrameTasks(Tasks):
         self.base_stations = []
         self.offset_group_indexes: list[int] = []
 
-    def add_frame(self, frame_path: str, position: osim.Vec3,
-                  orientation: osim.Quaternion, position_weight: float = 1.0,
+    def add_frame(self, frame_path: str, positions,
+                  orientations, position_weight: float = 1.0,
                   orientation_weight: float = 1.0,
                   offset_group_index: int | None = None):
         """
@@ -558,11 +745,12 @@ class FrameTasks(Tasks):
         ----------
         frame_path: str
             The OpenSim Model path to the tracking frame.
-        position: osim.Vec3
-            The reference position data tracked by the model frame.
-        orientation: osim.Quaternion
-            The reference orientation, expressed as a quaternion, tracked by the model
-            frame.
+        positions: osim.Vec3 | array-like, shape (num_times, 3)
+            The reference position data tracked by the model frame, either a single
+            sample or one row per time sample.
+        orientations: osim.Quaternion | array-like, shape (num_times, 4)
+            The reference orientation data, expressed as quaternions, tracked by the
+            model frame, either a single sample or one row per time sample.
         position_weight: float, optional
             The cost weight for the position error. Default: 1.0.
         orientation_weight: float, optional
@@ -580,6 +768,17 @@ class FrameTasks(Tasks):
             raise ValueError(f'Expected orientation_weight to be non-negative, but got '
                              f'{orientation_weight}.')
 
+        positions = _as_reference_array(positions, 3)
+        orientations = _as_reference_array(orientations, 4)
+        if positions.shape[0] != orientations.shape[0]:
+            raise ValueError(
+                f"Frame '{frame_path}' supplies {positions.shape[0]} position "
+                f'sample(s) but {orientations.shape[0]} orientation sample(s).')
+        if self.num_tasks and positions.shape[0] != self.num_times:
+            raise ValueError(
+                f"Frame '{frame_path}' supplies {positions.shape[0]} reference "
+                f'sample(s), but this task set already holds {self.num_times}.')
+
         frame = osim.PhysicalFrame.safeDownCast(self.mc.model.getComponent(frame_path))
         cache = StationCache.from_frame(self.mc, frame)
         self.station_caches.append(cache)
@@ -587,8 +786,8 @@ class FrameTasks(Tasks):
         self.mobod_indexes.push_back(cache.base_frame.getMobilizedBodyIndex())
         self.stations.push_back(osim.Vec3(*[float(v) for v in cache.base_station]))
         self.num_tasks = self.mobod_indexes.size()
-        self.positions.append(position.to_numpy())
-        self.orientations.append(np.array([orientation.get(i) for i in range(4)]))
+        self.positions.append(positions)
+        self.orientations.append(orientations)
         self.position_weights.append(position_weight)
         self.orientation_weights.append(orientation_weight)
         self.base_frames.append(cache.base_frame)
@@ -612,11 +811,12 @@ class TrackingTerm(ABC):
         super().__init__()
 
     @abstractmethod
-    def calc_error(self, state: osim.State, **kwargs) -> float:
+    def calc_error(self, state: osim.State, itime: int = 0, **kwargs) -> float:
         pass
 
     @abstractmethod
-    def calc_jacobian(self, state: osim.State, **kwargs) -> list[np.ndarray]:
+    def calc_jacobian(self, state: osim.State, itime: int = 0,
+                      **kwargs) -> list[np.ndarray]:
         pass
 
 
@@ -636,43 +836,53 @@ class FrameTrackingTerm(FrameTasks, TrackingTerm):
         self.mc = mc
         self.initialize_tasks()
 
-    def calc_error(self, state, **kwargs) -> float:
+    def calc_error(self, state, itime=0, position_weight=1.0,
+                   orientation_weight=1.0) -> float:
+        if self.num_tasks:
+            self.assert_sample_in_range(itime)
         error = 0.0
         for i, frame in enumerate(self.frames):
+            reference = self.positions[i][itime]
+            orientation = self.orientations[i][itime]
             p_model = frame.getPositionInGround(state).to_numpy()
-            position_error = self.position_weights[i] * np.square(
-                np.linalg.norm(p_model - self.positions[i]))
+            position_error = self.position_weights[i] * position_weight * np.square(
+                np.linalg.norm(p_model - reference))
 
             eps = _calc_quaternion(state, frame)
-            orientation_error = self.orientation_weights[i] * (
-                1.0 - np.square(np.dot(eps, self.orientations[i])))
+            orientation_error = (
+                self.orientation_weights[i] * orientation_weight
+                * (1.0 - np.square(np.dot(eps, orientation))))
 
             error += position_error + orientation_error
         return error
 
-    def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
+    def calc_jacobian(self, state, itime=0, position_weight=1.0,
+                      orientation_weight=1.0) -> list[np.ndarray]:
         if self.num_tasks == 0:
             return [np.zeros((1, len(self.mc.coordinate_indexes)))]
+        self.assert_sample_in_range(itime)
 
         # Loop over all frames and compute the "spatial error" (i.e., the combined
         # position and orientation error) for each.
         spatialError = osim.VectorOfSpatialVec(self.num_tasks, osim.SpatialVec(0))
         for i, frame in enumerate(self.frames):
-            wp = self.position_weights[i]
-            wo = self.orientation_weights[i]
+            wp = self.position_weights[i] * position_weight
+            wo = self.orientation_weights[i] * orientation_weight
+            reference = self.positions[i][itime]
+            orientation = self.orientations[i][itime]
 
             # Position error.
             p_model = frame.getPositionInGround(state)
             p_error = osim.Vec3(
-                2.0 * wp * (p_model[0] - self.positions[i][0]),
-                2.0 * wp * (p_model[1] - self.positions[i][1]),
-                2.0 * wp * (p_model[2] - self.positions[i][2]))
+                2.0 * wp * (p_model[0] - reference[0]),
+                2.0 * wp * (p_model[1] - reference[1]),
+                2.0 * wp * (p_model[2] - reference[2]))
 
             # Orientation error.
             eps = _calc_quaternion(state, frame)
             jac_eps = _calc_quaternion_jacobian(eps)
-            omega = jac_eps.T @ self.orientations[i]
-            scale = wo * -2.0 * np.dot(eps, self.orientations[i])
+            omega = jac_eps.T @ orientation
+            scale = wo * -2.0 * np.dot(eps, orientation)
             w_error = osim.Vec3(scale * omega[0], scale * omega[1], scale * omega[2])
 
             # Combine the position and orientation into a SpatialVec to pass to the
@@ -704,28 +914,34 @@ class MarkerTrackingTerm(MarkerTasks, TrackingTerm):
         self.mc = mc
         self.initialize_tasks()
 
-    def calc_error(self, state, **kwargs) -> float:
+    def calc_error(self, state, itime=0, weight=1.0) -> float:
+        if self.num_tasks:
+            self.assert_sample_in_range(itime)
         error = 0.0
-        for marker, position, weight in zip(
+        for marker, positions, task_weight in zip(
                 self.markers, self.positions, self.weights):
             p_model = marker.getLocationInGround(state).to_numpy()
-            error += weight * np.square(np.linalg.norm(p_model - position))
+            error += task_weight * weight * np.square(
+                np.linalg.norm(p_model - positions[itime]))
         return error
 
-    def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
+    def calc_jacobian(self, state, itime=0, weight=1.0) -> list[np.ndarray]:
         if self.num_tasks == 0:
             return [np.zeros((1, len(self.mc.coordinate_indexes)))]
+        self.assert_sample_in_range(itime)
 
         # Inialize the array used to calculate the position error Jacobian via the
         # grouped Simbody operator.
         f_GP = osim.VectorVec3(self.num_tasks, osim.Vec3(0))
-        for i, (marker, position, weight) in enumerate(
+        for i, (marker, positions, task_weight) in enumerate(
                 zip(self.markers, self.positions, self.weights)):
+            position = positions[itime]
+            w = task_weight * weight
             p_model = marker.getLocationInGround(state)
             f_GP.set(i, osim.Vec3(
-                2.0 * weight * (p_model[0] - position[0]),
-                2.0 * weight * (p_model[1] - position[1]),
-                2.0 * weight * (p_model[2] - position[2])))
+                2.0 * w * (p_model[0] - position[0]),
+                2.0 * w * (p_model[1] - position[1]),
+                2.0 * w * (p_model[2] - position[2])))
 
         # Calculate the position error Jacobian.
         vec = osim.Vector(state.getNQ(), 0.0)
@@ -785,21 +1001,25 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
         self.mc = mc
         self.initialize_tasks()
 
-    def calc_error(self, state, **kwargs) -> float:
+    def calc_error(self, state, itime=0, weight=1.0) -> float:
+        if self.num_tasks:
+            self.assert_sample_in_range(itime)
         error = 0.0
-        for i, (frame, position, weight) in enumerate(
+        for i, (frame, positions, task_weight) in enumerate(
                 zip(self.base_frames, self.positions, self.weights)):
             p_model = frame.findStationLocationInGround(
                 state, self.stations.getElt(i)).to_numpy()
-            error += weight * np.square(np.linalg.norm(p_model - position))
+            error += task_weight * weight * np.square(
+                np.linalg.norm(p_model - positions[itime]))
         return error
 
-    def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
+    def calc_jacobian(self, state, itime=0, weight=1.0) -> list[np.ndarray]:
         Jq = np.zeros((1, len(self.mc.coordinate_indexes)))
         Js = np.zeros((1, 3 * len(self.mc.body_scale_groups)))
         Jo = np.zeros((1, 3 * len(self.mc.marker_offset_groups)))
         if self.num_tasks == 0:
             return [Jq, Js, Jo]
+        self.assert_sample_in_range(itime)
 
         # Calculate the per-marker error gradient in Ground. This is a force-like term
         # will be multiplied with (the transpose of) each position Jacobian below. Also,
@@ -807,12 +1027,14 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
         # an offset variable.
         dp_GS = osim.VectorVec3(self.num_tasks, osim.Vec3(0))
         doffset = np.zeros((self.num_tasks, 3))
-        for i, (frame, position, weight) in enumerate(
+        for i, (frame, positions, task_weight) in enumerate(
                 zip(self.base_frames, self.positions, self.weights)):
+            position = positions[itime]
+            w = task_weight * weight
             p_GS = frame.findStationLocationInGround(state, self.stations.getElt(i))
-            dp_GS.set(i, osim.Vec3(2.0 * weight * (p_GS[0] - position[0]),
-                                   2.0 * weight * (p_GS[1] - position[1]),
-                                   2.0 * weight * (p_GS[2] - position[2])))
+            dp_GS.set(i, osim.Vec3(2.0 * w * (p_GS[0] - position[0]),
+                                   2.0 * w * (p_GS[1] - position[1]),
+                                   2.0 * w * (p_GS[2] - position[2])))
             rotation = frame.getRotationInGround(state)
             R_GB = np.array([[rotation.get(r, c) for c in range(3)] for r in range(3)])
             doffset[i] = dp_GS.get(i).to_numpy() @ R_GB
@@ -872,27 +1094,35 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
         self.mc = mc
         self.initialize_tasks()
 
-    def calc_error(self, state, **kwargs) -> float:
+    def calc_error(self, state, itime=0, position_weight=1.0,
+                   orientation_weight=1.0) -> float:
+        if self.num_tasks:
+            self.assert_sample_in_range(itime)
         error = 0.0
         for i, (frame, base_frame) in enumerate(zip(self.frames, self.base_frames)):
+            reference = self.positions[i][itime]
+            orientation = self.orientations[i][itime]
             p_model = base_frame.findStationLocationInGround(
                 state, self.stations.getElt(i)).to_numpy()
-            position_error = self.position_weights[i] * np.square(
-                np.linalg.norm(p_model - self.positions[i]))
+            position_error = self.position_weights[i] * position_weight * np.square(
+                np.linalg.norm(p_model - reference))
 
             eps = _calc_quaternion(state, frame)
-            orientation_error = self.orientation_weights[i] * (
-                1.0 - np.square(np.dot(eps, self.orientations[i])))
+            orientation_error = (
+                self.orientation_weights[i] * orientation_weight
+                * (1.0 - np.square(np.dot(eps, orientation))))
 
             error += position_error + orientation_error
         return error
 
-    def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
+    def calc_jacobian(self, state, itime=0, position_weight=1.0,
+                      orientation_weight=1.0) -> list[np.ndarray]:
         Jq = np.zeros((1, len(self.mc.coordinate_indexes)))
         Js = np.zeros((1, 3 * len(self.mc.body_scale_groups)))
         Jo = np.zeros((1, 3 * len(self.mc.frame_offset_groups)))
         if self.num_tasks == 0:
             return [Jq, Js, Jo]
+        self.assert_sample_in_range(itime)
 
         # Loop over all frames and compute the "spatial error" (i.e., the combined
         # position and orientation error) for each.
@@ -903,9 +1133,10 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
         dp_GF = osim.VectorVec3(self.num_tasks, osim.Vec3(0))
         doffset = np.zeros((self.num_tasks, 3))
         for i, (frame, base_frame) in enumerate(zip(self.frames, self.base_frames)):
-            wp = self.position_weights[i]
-            wo = self.orientation_weights[i]
-            position = self.positions[i]
+            wp = self.position_weights[i] * position_weight
+            wo = self.orientation_weights[i] * orientation_weight
+            position = self.positions[i][itime]
+            orientation = self.orientations[i][itime]
 
             # The frame's ground position is computed from its (possibly offset) cached
             # station so that the gradient is consistent with any applied offsets.
@@ -918,8 +1149,8 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
             # Calculate the per-frame orientation error in Ground.
             eps = _calc_quaternion(state, frame)
             jac_eps = _calc_quaternion_jacobian(eps)
-            omega = jac_eps.T @ self.orientations[i]
-            scale = wo * -2.0 * np.dot(eps, self.orientations[i])
+            omega = jac_eps.T @ orientation
+            scale = wo * -2.0 * np.dot(eps, orientation)
             dw_GF = osim.Vec3(scale * omega[0], scale * omega[1], scale * omega[2])
 
             # Combine the position and orientation into a SpatialVec to pass to the
@@ -979,6 +1210,10 @@ class TrackingCost(TrackingCostBase):
     The weighted, squared error between the model's markers and frames and a trial's
     reference data, as a function of the model's generalized coordinates.
 
+    The cost is stateless: the trial's geometry and reference data live in a `TaskSet`
+    memoized on the solver's `SolveCache`, and the cost's weights are applied to that
+    task set's per-task weights at evaluation time.
+
     Parameters
     ----------
     position_weight: float, optional
@@ -993,86 +1228,43 @@ class TrackingCost(TrackingCostBase):
         self.position_weight = position_weight
         self.orientation_weight = orientation_weight
 
-    def create_rep(self, name: str, mc: ModelCache, trial: Trial,
-                   itime: int) -> 'TrackingCostRep':
-        rep = TrackingCostRep(name, mc)
+    def __call__(self, cache: 'SolveCache', trial: Trial, itime: int,
+                 input: CostInput, num_times: int = None) -> ca.MX:
+        task_set = cache.task_set(trial, self.is_bilevel, num_times)
+        callback = cache.callback(
+            (type(self).__name__, id(self), trial.name),
+            lambda name: CostCallback(name, self, cache, task_set=task_set))
+        return callback(input, itime)
 
-        for data in trial.frame_data:
-            for iframe, frame_path in enumerate(data.labels):
-                rep.add_frame_tracking_cost_term(
-                    frame_path,
-                    data.positions.getRowAtIndex(itime).getElt(0, iframe),
-                    data.orientations.getRowAtIndex(itime).getElt(0, iframe),
-                    position_weight=self.position_weight,
-                    orientation_weight=self.orientation_weight)
-
-        for data in trial.marker_data:
-            for imarker, marker_path in enumerate(data.labels):
-                rep.add_marker_tracking_cost_term(
-                    marker_path,
-                    data.positions.getRowAtIndex(itime).getElt(0, imarker),
-                    weight=self.position_weight)
-
-        return rep
-
-
-class TrackingCostRep(CallbackCostRep):
-    """
-    The rep of a `TrackingCost`: a callback that evaluates the sum of tracking cost
-    terms over a set of model frames and markers with respect to the model's
-    generalized coordinates.
-
-    Parameters
-    ----------
-    name: str
-        The name of the callback function.
-    mc: ModelCache
-        The `ModelCache` wrapping the OpenSim model used for evaluating the function and
-        its Jacobian and caching model information.
-    enable_fd: bool, optional
-        If ``True``, CasADi finite-differences the callback instead of using its analytic
-        Jacobian. Default is ``False``.
-    """
-    def __init__(self, name: str, mc: ModelCache, enable_fd: bool = False):
-        Function.__init__(self, name, mc, enable_fd=enable_fd)
-        self.marker_term = MarkerTrackingTerm(mc)
-        self.frame_term = FrameTrackingTerm(mc)
-
-    def apply_state(self, arg):
+    def apply_state(self, cache: 'SolveCache', values: dict[str, np.ndarray]) -> None:
         """
-        Apply the input coordinates to the model state and realize the system to the
+        Apply the input coordinates to the cache's state and realize the system to the
         position stage.
         """
-        q = np.zeros(self.state.getNQ())
-        q[self.mc.coordinate_indexes] = np.squeeze(arg[0].full())
-        self.state.setQ(osim.Vector.createFromMat(q))
-        self.mc.model.realizePosition(self.state)
+        state = cache.state
+        q = np.zeros(state.getNQ())
+        q[cache.mc.coordinate_indexes] = values['coordinates']
+        state.setQ(osim.Vector.createFromMat(q))
+        cache.model.realizePosition(state)
 
-    def add_marker_tracking_cost_term(self, marker_path: str, position: osim.Vec3,
-                                      weight: float = 1.0):
-        self.marker_term.add_marker(marker_path, position, weight=weight)
+    def evaluate(self, cache: 'SolveCache', task_set: 'TaskSet', itime: int,
+                 values: dict[str, np.ndarray]) -> float:
+        self.apply_state(cache, values)
+        return (task_set.marker_term.calc_error(
+                    cache.state, itime, weight=self.position_weight)
+                + task_set.frame_term.calc_error(
+                    cache.state, itime, position_weight=self.position_weight,
+                    orientation_weight=self.orientation_weight))
 
-    def add_frame_tracking_cost_term(self, frame_path: str,
-                                     position: osim.Vec3,
-                                     orientation: osim.Quaternion,
-                                     position_weight: float = 1.0,
-                                     orientation_weight: float = 1.0):
-        self.frame_term.add_frame(frame_path, position, orientation,
-                                  position_weight=position_weight,
-                                  orientation_weight=orientation_weight)
-
-    def _eval(self, arg):
-        self.apply_state(arg)
-        error = (self.marker_term.calc_error(self.state) +
-                 self.frame_term.calc_error(self.state))
-        return [error]
-
-    def _jac_eval(self, arg):
-        self.apply_state(arg)
-        J = (self.marker_term.calc_jacobian(self.state)[0] +
-             self.frame_term.calc_jacobian(self.state)[0])
-        empty = np.zeros((1, 0))
-        return [J, empty, empty, empty]
+    def jacobian(self, cache: 'SolveCache', task_set: 'TaskSet', itime: int,
+                 values: dict[str, np.ndarray]) -> list[np.ndarray]:
+        self.apply_state(cache, values)
+        Jq = (task_set.marker_term.calc_jacobian(
+                  cache.state, itime, weight=self.position_weight)[0]
+              + task_set.frame_term.calc_jacobian(
+                  cache.state, itime, position_weight=self.position_weight,
+                  orientation_weight=self.orientation_weight)[0])
+        return [Jq]
 
 
 class BilevelCost(TrackingCostBase):
@@ -1095,113 +1287,52 @@ class BilevelCost(TrackingCostBase):
         self.position_weight = position_weight
         self.orientation_weight = orientation_weight
 
-    def create_rep(self, name: str, mc: ModelCache, trial: Trial,
-                   itime: int) -> 'BilevelCostRep':
-        rep = BilevelCostRep(name, mc)
-        # Map each offset target path to the index of the offset group that applies to
-        # it; paths absent from a mapping are not offset.
-        marker_index_of = {path: i for i, grp in enumerate(mc.marker_offset_groups)
-                           for path in grp.component_paths}
-        frame_index_of = {path: i for i, grp in enumerate(mc.frame_offset_groups)
-                          for path in grp.component_paths}
+    def __call__(self, cache: 'SolveCache', trial: Trial, itime: int,
+                 input: CostInput, num_times: int = None) -> ca.MX:
+        task_set = cache.task_set(trial, self.is_bilevel, num_times)
+        callback = cache.callback(
+            (type(self).__name__, id(self), trial.name),
+            lambda name: CostCallback(name, self, cache, task_set=task_set))
+        return callback(input, itime)
 
-        for data in trial.frame_data:
-            for iframe, frame_path in enumerate(data.labels):
-                rep.add_frame_bilevel_cost_term(
-                    frame_path,
-                    data.positions.getRowAtIndex(itime).getElt(0, iframe),
-                    data.orientations.getRowAtIndex(itime).getElt(0, iframe),
-                    position_weight=self.position_weight,
-                    orientation_weight=self.orientation_weight,
-                    offset_group_index=frame_index_of.get(frame_path))
-
-        for data in trial.marker_data:
-            for imarker, marker_path in enumerate(data.labels):
-                rep.add_marker_bilevel_cost_term(
-                    marker_path,
-                    data.positions.getRowAtIndex(itime).getElt(0, imarker),
-                    weight=self.position_weight,
-                    offset_group_index=marker_index_of.get(marker_path))
-
-        return rep
-
-
-class BilevelCostRep(CallbackCostRep):
-    """
-    The rep of a `BilevelCost`: a callback that evaluates the sum of tracking cost
-    terms over a set of model markers and frames with respect to the model's generalized
-    coordinates, a set of body scales, and a set of per-marker/frame XYZ placement
-    offsets.
-
-    Parameters
-    ----------
-    name: str
-        The name of the callback function.
-    mc: ModelCache
-        The `ModelCache` wrapping the OpenSim model used for evaluating the function and
-        its Jacobian and caching model information. Contains parameter information
-        (e.g., body scale groups) for relevant optimization parameters.
-    enable_fd: bool, optional
-        If ``True``, CasADi finite-differences the callback instead of using its analytic
-        Jacobian. Default is ``False``.
-    """
-
-    def __init__(self, name: str, mc: ModelCache, enable_fd: bool = False):
-        Function.__init__(self, name, mc, enable_fd=enable_fd)
-        self.marker_term = MarkerBilevelTerm(mc)
-        self.frame_term = FrameBilevelTerm(mc)
-        self.mc.cache_body_scale_group_joints()
-
-    def apply_state(self, arg):
+    def apply_state(self, cache: 'SolveCache', task_set: 'TaskSet',
+                    values: dict[str, np.ndarray]) -> None:
         """
         Apply input coordinates, body-scale variables, and offset variables to the
-        model State, then realize to Position.
+        cache's state and the task set's cached stations, then realize to Position.
         """
-        body_scales = np.squeeze(arg[1].full())
-        body_scales = np.atleast_1d(body_scales).astype(float)
-        self.mc.set_scaled_mobilizer_frame_positions(self.state, body_scales)
+        state = cache.state
+        body_scales = values['body_scales']
+        cache.mc.set_scaled_mobilizer_frame_positions(state, body_scales)
+        task_set.marker_term.apply_state(body_scales, values['marker_offsets'])
+        task_set.frame_term.apply_state(body_scales, values['frame_offsets'])
 
-        marker_offsets = np.atleast_1d(np.squeeze(arg[2].full())).astype(float)
-        self.marker_term.apply_state(body_scales, marker_offsets)
+        q = np.zeros(state.getNQ())
+        q[cache.mc.coordinate_indexes] = values['coordinates']
+        state.setQ(osim.Vector.createFromMat(q))
+        cache.model.realizePosition(state)
 
-        frame_offsets = np.atleast_1d(np.squeeze(arg[3].full())).astype(float)
-        self.frame_term.apply_state(body_scales, frame_offsets)
+    def evaluate(self, cache: 'SolveCache', task_set: 'TaskSet', itime: int,
+                 values: dict[str, np.ndarray]) -> float:
+        self.apply_state(cache, task_set, values)
+        return (task_set.marker_term.calc_error(
+                    cache.state, itime, weight=self.position_weight)
+                + task_set.frame_term.calc_error(
+                    cache.state, itime, position_weight=self.position_weight,
+                    orientation_weight=self.orientation_weight))
 
-        q = np.zeros(self.state.getNQ())
-        q[self.mc.coordinate_indexes] = np.squeeze(arg[0].full())
-        self.state.setQ(osim.Vector.createFromMat(q))
-        self.mc.model.realizePosition(self.state)
-
-    def add_marker_bilevel_cost_term(self, marker_path: str, position: osim.Vec3,
-                                     weight: float = 1.0,
-                                     offset_group_index: int | None = None):
-        self.marker_term.add_marker(marker_path, position, weight=weight,
-                                    offset_group_index=offset_group_index)
-
-    def add_frame_bilevel_cost_term(self, frame_path: str, position: osim.Vec3,
-                                    orientation: osim.Quaternion,
-                                    position_weight: float = 1.0,
-                                    orientation_weight: float = 1.0,
-                                    offset_group_index: int | None = None):
-        self.frame_term.add_frame(frame_path, position, orientation, position_weight,
-                                  orientation_weight,
-                                  offset_group_index=offset_group_index)
-
-    def _eval(self, arg):
-        self.apply_state(arg)
-        error = 0
-        error += self.marker_term.calc_error(self.state)
-        error += self.frame_term.calc_error(self.state)
-        return [error]
-
-    def _jac_eval(self, arg):
-        self.apply_state(arg)
-        Jq_m, Js_m, Jmo = self.marker_term.calc_jacobian(self.state)
-        Jq_f, Js_f, Jfo = self.frame_term.calc_jacobian(self.state)
+    def jacobian(self, cache: 'SolveCache', task_set: 'TaskSet', itime: int,
+                 values: dict[str, np.ndarray]) -> list[np.ndarray]:
+        self.apply_state(cache, task_set, values)
+        Jq_m, Js_m, Jmo = task_set.marker_term.calc_jacobian(
+            cache.state, itime, weight=self.position_weight)
+        Jq_f, Js_f, Jfo = task_set.frame_term.calc_jacobian(
+            cache.state, itime, position_weight=self.position_weight,
+            orientation_weight=self.orientation_weight)
         return [Jq_m + Jq_f, Js_m + Js_f, Jmo, Jfo]
 
 
-class AnthropometricRegularizationCost(Cost):
+class AnthropometricRegularizationCost(CallbackCost):
     """
     A regularization penalty on body-scale factors, ``s``, that maximizes the
     log-likelihood that a set of anthropometric measurements, ``m(s)``, fall within a
@@ -1240,8 +1371,8 @@ class AnthropometricRegularizationCost(Cost):
     ------
     ValueError
         If `weight` is negative or a measurement name is not present in the ANSUR II
-        dataset. `AnthropometricRegularizationCostRep` additionally validates that the
-        referenced components are stations.
+        dataset. Evaluation additionally validates, via `SolveCache.station_cache`,
+        that the referenced components are stations.
     """
     required_inputs = frozenset({'body_scales'})
 
@@ -1260,96 +1391,61 @@ class AnthropometricRegularizationCost(Cost):
         self.precision = np.linalg.inv(
             np.asarray(distribution.get_covariance(), dtype=float))
 
-    def create_rep(self, mc: ModelCache) -> 'AnthropometricRegularizationCostRep':
-        return AnthropometricRegularizationCostRep(self, mc)
+    def station_caches(self, cache: 'SolveCache') -> list[tuple]:
+        """
+        Return this cost's ``(station_cache, station_cache, axis)`` triplets, resolved
+        through the solve cache so that a station referenced by several measurements
+        (or by another cost) is resolved only once.
+        """
+        return [(cache.station_cache(m.station1_path),
+                 cache.station_cache(m.station2_path),
+                 m.axis.value if m.axis is not None else None)
+                for m in self.measurements]
 
+    def apply_body_scales(self, cache: 'SolveCache',
+                          body_scales: np.ndarray) -> None:
+        """
+        Apply `body_scales` to the cache's state, restore the model's default pose, and
+        realize to Position. The measurements are defined at the default pose, so the
+        coordinates are reset rather than taken from the optimizer.
+        """
+        cache.mc.set_scaled_mobilizer_frame_positions(cache.state, body_scales)
+        cache.state.setQ(osim.Vector.createFromMat(cache.default_q))
+        cache.model.realizePosition(cache.state)
 
-class AnthropometricRegularizationCostRep(CallbackCostRep):
-    """
-    The rep of an `AnthropometricRegularizationCost`. It caches the model's default
-    pose and a `StationCache` pair per measurement, then evaluates the Mahalanobis
-    penalty and its gradient through OpenSim.
+    def evaluate(self, cache: 'SolveCache',
+                 values: dict[str, np.ndarray]) -> float:
+        body_scales = values['body_scales']
+        self.apply_body_scales(cache, body_scales)
 
-    Parameters
-    ----------
-    cost: AnthropometricRegularizationCost
-        The cost this rep represents.
-    mc: ModelCache
-        The solver's `ModelCache`, whose registered body scale groups set this
-        callback's input size.
-    enable_fd: bool, optional
-        If ``True``, CasADi finite-differences the callback rather than using its
-        analytic Jacobian. Default is ``False``.
-
-    Raises
-    ------
-    ValueError
-        If a measurement references a component that is not an `osim.Station`.
-    """
-
-    def __init__(self, cost: AnthropometricRegularizationCost, mc: ModelCache,
-                 enable_fd: bool = False):
-        self.cost = cost
-        mc.model.realizePosition(mc.state)
-        self.default_q = mc.state.getQ().to_numpy().copy()
-        mc.cache_body_scale_group_joints()
-        self.station_caches = []
-        for measurement in cost.measurements:
-            sc1 = StationCache.from_station(
-                mc, mc.model.getComponent(measurement.station1_path))
-            sc2 = StationCache.from_station(
-                mc, mc.model.getComponent(measurement.station2_path))
-            axis = measurement.axis.value if measurement.axis is not None else None
-            self.station_caches.append((sc1, sc2, axis))
-        Function.__init__(self, 'anthropometric_regularization_cost', mc,
-                          enable_fd=enable_fd)
-
-    def __call__(self, input: CostInput) -> ca.MX:
-        return ca.Function.__call__(self, input.body_scales)
-
-    def _get_num_inputs(self):
-        return 1
-
-    def _get_input_size(self, i):
-        if i == 0:
-            return 3 * len(self.mc.body_scale_groups)
-        raise IndexError(f'Invalid input index {i} for {type(self).__name__}.')
-
-    def _apply_body_scales(self, body_scales: np.ndarray) -> None:
-        self.mc.set_scaled_mobilizer_frame_positions(self.state, body_scales)
-        self.state.setQ(osim.Vector.createFromMat(self.default_q))
-        self.mc.model.realizePosition(self.state)
-
-    def _eval(self, arg):
-        body_scales = np.atleast_1d(np.squeeze(arg[0].full())).astype(float)
-        self._apply_body_scales(body_scales)
-
-        measurements = np.empty(len(self.station_caches))
-        for i, (sc1, sc2, axis) in enumerate(self.station_caches):
-            pos1 = sc1.calc_position(self.state, body_scales).to_numpy()
-            pos2 = sc2.calc_position(self.state, body_scales).to_numpy()
+        station_caches = self.station_caches(cache)
+        measurements = np.empty(len(station_caches))
+        for i, (sc1, sc2, axis) in enumerate(station_caches):
+            pos1 = sc1.calc_position(cache.state, body_scales).to_numpy()
+            pos2 = sc2.calc_position(cache.state, body_scales).to_numpy()
             displacement = pos2 - pos1
             measurements[i] = (np.linalg.norm(displacement) if axis is None
                                else abs(displacement[axis]))
 
-        residual = measurements - self.cost.mean
-        return [float(self.cost.weight * 0.5 * residual
-                      @ self.cost.precision @ residual)]
+        residual = measurements - self.mean
+        return float(self.weight * 0.5 * residual @ self.precision @ residual)
 
-    def _jac_eval(self, arg):
-        body_scales = np.atleast_1d(np.squeeze(arg[0].full())).astype(float)
-        self._apply_body_scales(body_scales)
+    def jacobian(self, cache: 'SolveCache',
+                 values: dict[str, np.ndarray]) -> list[np.ndarray]:
+        body_scales = values['body_scales']
+        self.apply_body_scales(cache, body_scales)
 
-        num_scales = 3 * len(self.mc.body_scale_groups)
-        m = np.empty(len(self.station_caches))
-        jacobian = np.zeros((len(self.station_caches), num_scales))
-        for i, (sc1, sc2, axis) in enumerate(self.station_caches):
-            pos1 = sc1.calc_position(self.state, body_scales).to_numpy()
-            pos2 = sc2.calc_position(self.state, body_scales).to_numpy()
+        station_caches = self.station_caches(cache)
+        num_scales = 3 * len(cache.mc.body_scale_groups)
+        m = np.empty(len(station_caches))
+        jacobian = np.zeros((len(station_caches), num_scales))
+        for i, (sc1, sc2, axis) in enumerate(station_caches):
+            pos1 = sc1.calc_position(cache.state, body_scales).to_numpy()
+            pos2 = sc2.calc_position(cache.state, body_scales).to_numpy()
             displacement = pos2 - pos1
 
-            jac1 = sc1.calc_position_jacobian_wrt_body_scales(self.state)
-            jac2 = sc2.calc_position_jacobian_wrt_body_scales(self.state)
+            jac1 = sc1.calc_position_jacobian_wrt_body_scales(cache.state)
+            jac2 = sc2.calc_position_jacobian_wrt_body_scales(cache.state)
             displacement_jacobian = jac2 - jac1
 
             if axis is None:
@@ -1361,6 +1457,248 @@ class AnthropometricRegularizationCostRep(CallbackCostRep):
                 value = displacement[axis]
                 m[i] = abs(value)
                 jacobian[i, :] = np.sign(value) * displacement_jacobian[axis, :]
-        residual = m - self.cost.mean
-        gradient = self.cost.weight * (self.cost.precision @ residual) @ jacobian
+        residual = m - self.mean
+        gradient = self.weight * (self.precision @ residual) @ jacobian
         return [gradient.reshape(1, num_scales)]
+
+
+##############
+# SOLVE CACHE #
+##############
+
+@dataclass
+class TaskSet:
+    """
+    One trial's tracking geometry and reference data, resolved once per solve.
+
+    Both terms hold their tasks' model-bound handles (station caches, mobilized-body
+    indexes, base frames) and their reference data as dense ``(num_times, ...)``
+    arrays, so a cost evaluates any sample of the trial by index without rebuilding
+    anything.
+
+    Attributes
+    ----------
+    marker_term: MarkerTrackingTerm | MarkerBilevelTerm
+        The trial's marker tasks and their evaluator.
+    frame_term: FrameTrackingTerm | FrameBilevelTerm
+        The trial's frame tasks and their evaluator.
+    """
+    marker_term: Tasks
+    frame_term: Tasks
+
+    @property
+    def num_times(self) -> int:
+        """
+        The number of reference samples held, taken from whichever term has tasks.
+        """
+        return max(self.marker_term.num_times, self.frame_term.num_times)
+
+    def offset_group_indexes(self) -> tuple[set[int], set[int]]:
+        """
+        Return the marker and frame offset group indexes tracked by this task set,
+        excluding tasks that are not offset.
+        """
+        markers = {g for g in self.marker_term.offset_group_indexes if g is not None}
+        frames = {g for g in self.frame_term.offset_group_indexes if g is not None}
+        return markers, frames
+
+
+class SolveCache:
+    """
+    Everything a solver resolves once per solve, memoized.
+
+    A `SolveCache` replaces the per-cost, per-sample representation objects that costs
+    previously built for themselves. Costs are stateless descriptions; every
+    model-bound quantity they need is requested from the cache, keyed by the thing it
+    actually varies over:
+
+    - a station's `StationCache`, keyed by component path;
+    - a trial's `TaskSet`, keyed by trial and whether the cost is bilevel;
+    - a cost's `CostCallback`, keyed by the cost and, for a tracking cost, the trial.
+
+    The cache also owns the callbacks for the lifetime of the solve, which is what
+    keeps CasADi's references to them valid; solvers no longer hold them in ad-hoc
+    lists.
+
+    Parameters
+    ----------
+    mc: ModelCache
+        The solver's `ModelCache`. All parameter groups must already be registered on
+        it, since they set the input sizes the callbacks declare to CasADi.
+
+    Attributes
+    ----------
+    mc: ModelCache
+        The wrapped model cache.
+    state: osim.State
+        The state every cost evaluation mutates and realizes.
+    default_q: np.ndarray
+        The model's default pose, captured at construction, before any evaluation can
+        perturb the state.
+    """
+
+    def __init__(self, mc: ModelCache):
+        self.mc = mc
+        self.state = mc.state
+
+        # Capture the default pose eagerly: costs that measure the model at its default
+        # configuration must not observe a pose left behind by an earlier evaluation.
+        mc.model.realizePosition(self.state)
+        self.default_q = self.state.getQ().to_numpy().copy()
+
+        # Body-scale group joints are needed by any cost that scales the model, and
+        # caching them is idempotent.
+        mc.cache_body_scale_group_joints()
+
+        self._station_caches: dict[str, StationCache] = {}
+        self._task_sets: dict[tuple, TaskSet] = {}
+        self._callbacks: dict[tuple, 'CostCallback'] = {}
+
+    @property
+    def model(self) -> osim.Model:
+        """
+        The OpenSim model being evaluated.
+        """
+        return self.mc.model
+
+    def station_cache(self, path: str) -> StationCache:
+        """
+        Return the memoized `StationCache` for the station at `path`.
+
+        Parameters
+        ----------
+        path: str
+            The model path to an `osim.Station`.
+
+        Returns
+        -------
+        StationCache
+            The cached station, resolved on first request.
+        """
+        if path not in self._station_caches:
+            self._station_caches[path] = StationCache.from_station(
+                self.mc, self.model.getComponent(path))
+        return self._station_caches[path]
+
+    def task_set(self, trial: Trial, bilevel: bool,
+                 num_times: int = None) -> TaskSet:
+        """
+        Return the memoized `TaskSet` for `trial`.
+
+        Parameters
+        ----------
+        trial: Trial
+            The trial supplying the task paths and reference data.
+        bilevel: bool
+            Whether to build terms that evaluate against body scales and placement
+            offsets (`MarkerBilevelTerm`/`FrameBilevelTerm`) rather than coordinates
+            alone (`MarkerTrackingTerm`/`FrameTrackingTerm`).
+        num_times: int, optional
+            Load reference data for only the first `num_times` samples of the trial.
+            Default is ``None``, meaning every sample. A solver that evaluates a single
+            pose per trial passes 1 to avoid loading data it will not read.
+
+        Returns
+        -------
+        TaskSet
+            The trial's task set, built on first request.
+        """
+        key = (trial.name, bool(bilevel), num_times)
+        if key not in self._task_sets:
+            self._task_sets[key] = self._build_task_set(trial, bilevel, num_times)
+        return self._task_sets[key]
+
+    def task_sets(self) -> list[TaskSet]:
+        """
+        Return every task set built so far. Solvers use this to validate coverage
+        across trials, e.g. that each registered offset group is tracked somewhere.
+        """
+        return list(self._task_sets.values())
+
+    def callback(self, key: tuple, factory) -> 'CostCallback':
+        """
+        Return the memoized callback for `key`, building it via `factory` on first
+        request and retaining it for the lifetime of this cache.
+
+        Parameters
+        ----------
+        key: tuple
+            The identity of the callback, e.g. ``(cost type, cost id, trial name)``.
+        factory: Callable[[str], CostCallback]
+            Builds the callback, given a generated CasADi function name.
+
+        Returns
+        -------
+        CostCallback
+            The cached callback.
+        """
+        if key not in self._callbacks:
+            name = f'cost_callback_{len(self._callbacks)}'
+            self._callbacks[key] = factory(name)
+        return self._callbacks[key]
+
+    def _build_task_set(self, trial: Trial, bilevel: bool,
+                        num_times: int) -> TaskSet:
+        """
+        Resolve `trial`'s markers and frames against the model once, and stack their
+        reference data into dense, time-indexed arrays.
+        """
+        marker_term = (MarkerBilevelTerm(self.mc) if bilevel
+                       else MarkerTrackingTerm(self.mc))
+        frame_term = (FrameBilevelTerm(self.mc) if bilevel
+                      else FrameTrackingTerm(self.mc))
+
+        # Map each offset target path to the index of the offset group that applies to
+        # it; paths absent from a mapping are not offset. Only a bilevel task set reads
+        # these, but they are cheap to resolve and harmless otherwise.
+        marker_index_of = {path: i
+                           for i, grp in enumerate(self.mc.marker_offset_groups)
+                           for path in grp.component_paths}
+        frame_index_of = {path: i
+                          for i, grp in enumerate(self.mc.frame_offset_groups)
+                          for path in grp.component_paths}
+
+        for data in trial.frame_data:
+            rows = _sample_count(data.positions, num_times)
+            for iframe, frame_path in enumerate(data.labels):
+                frame_term.add_frame(
+                    frame_path,
+                    _stack_vec3(data.positions, iframe, rows),
+                    _stack_quaternion(data.orientations, iframe, rows),
+                    offset_group_index=frame_index_of.get(frame_path))
+
+        for data in trial.marker_data:
+            rows = _sample_count(data.positions, num_times)
+            for imarker, marker_path in enumerate(data.labels):
+                marker_term.add_marker(
+                    marker_path,
+                    _stack_vec3(data.positions, imarker, rows),
+                    offset_group_index=marker_index_of.get(marker_path))
+
+        return TaskSet(marker_term=marker_term, frame_term=frame_term)
+
+
+def _sample_count(table, num_times: int | None) -> int:
+    """
+    Return the number of rows of `table` to load, capped by `num_times` when given.
+    """
+    rows = table.getNumRows()
+    return rows if num_times is None else min(rows, num_times)
+
+
+def _stack_vec3(table, icolumn: int, rows: int) -> np.ndarray:
+    """
+    Stack the first `rows` samples of a Vec3 table column into a ``(rows, 3)`` array.
+    """
+    return np.array([table.getRowAtIndex(itime).getElt(0, icolumn).to_numpy()
+                     for itime in range(rows)])
+
+
+def _stack_quaternion(table, icolumn: int, rows: int) -> np.ndarray:
+    """
+    Stack the first `rows` samples of a Quaternion table column into a ``(rows, 4)``
+    array.
+    """
+    return np.array(
+        [[table.getRowAtIndex(itime).getElt(0, icolumn).get(i) for i in range(4)]
+         for itime in range(rows)])

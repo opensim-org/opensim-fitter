@@ -12,17 +12,104 @@ from osimfit.model import (ModelCache, BodyScale, BodyScaleGroup, MarkerOffsetGr
                            FrameOffsetGroup, StationCache)
 from osimfit.bounds import Bounds
 from osimfit.solvers import InverseKinematicsSolver, SplinedKinematicsSolver
-from osimfit.costs import (AnthropometricRegularizationCostRep, CostInput,
-                           CostRep, SymbolicCost, SymbolicCostRep,
+from osimfit.costs import (BilevelCost, CallbackCost, Cost, CostCallback, CostInput,
+                           SolveCache, SymbolicCost, TaskSet,
                            BodyScaleRegularizationCost, BodyScaleIsotropyCost,
-                           OffsetRegularizationCost, BilevelCostRep,
-                           TrackingCost, TrackingCostRep,
+                           OffsetRegularizationCost, TrackingCost,
+                           MarkerTrackingTerm, FrameTrackingTerm,
+                           MarkerBilevelTerm, FrameBilevelTerm,
                            AnthropometricRegularizationCost)
 from osimfit.scaling import Axis, AnthropometricMeasurement
 from tests.test_double_pendulum import create_double_pendulum
 
 # Define the test model path.
 MODEL_FPATH = str(Path(__file__).parent / 'subject_scale_walk.osim')
+
+
+
+###########
+# HARNESS #
+###########
+
+class CostHarness:
+    """
+    Assemble by hand what a solver assembles from a `Trial`: a `SolveCache`, a
+    `TaskSet` whose tasks are registered directly rather than read from reference-data
+    tables, and the `CostCallback` that evaluates one cost against them.
+
+    This lets a test exercise a single cost at a single pose without building a trial.
+    The callback is created lazily so tasks may be registered after construction.
+
+    Parameters
+    ----------
+    cost: TrackingCostBase
+        The cost to evaluate. Its `is_bilevel` selects which flavor of term the task
+        set holds.
+    mc: ModelCache
+        The model cache, with any parameter groups already registered.
+    enable_fd: bool, optional
+        If ``True``, CasADi finite-differences the callback instead of using its
+        analytic Jacobian. Default is ``False``.
+    """
+    def __init__(self, cost, mc, enable_fd=False):
+        self.cost = cost
+        self.mc = mc
+        self.cache = SolveCache(mc)
+        self.enable_fd = enable_fd
+        marker_cls = MarkerBilevelTerm if cost.is_bilevel else MarkerTrackingTerm
+        frame_cls = FrameBilevelTerm if cost.is_bilevel else FrameTrackingTerm
+        self.marker_term = marker_cls(mc)
+        self.frame_term = frame_cls(mc)
+        self.task_set = TaskSet(self.marker_term, self.frame_term)
+        self._callback = None
+
+    @property
+    def state(self):
+        return self.cache.state
+
+    @property
+    def callback(self):
+        if self._callback is None:
+            self._callback = CostCallback(
+                'cost', self.cost, self.cache, task_set=self.task_set,
+                enable_fd=self.enable_fd)
+        return self._callback
+
+    def add_marker(self, marker_path, positions, weight=1.0,
+                   offset_group_index=None):
+        self.marker_term.add_marker(marker_path, positions, weight=weight,
+                                    offset_group_index=offset_group_index)
+
+    def add_frame(self, frame_path, positions, orientations, position_weight=1.0,
+                  orientation_weight=1.0, offset_group_index=None):
+        self.frame_term.add_frame(frame_path, positions, orientations,
+                                  position_weight=position_weight,
+                                  orientation_weight=orientation_weight,
+                                  offset_group_index=offset_group_index)
+
+    def __call__(self, input, itime=0):
+        return self.callback(input, itime)
+
+
+def build_tracking_harness(mc, enable_fd=False):
+    """
+    Build a harness around a default-weighted `TrackingCost`, so each task's own
+    weight is its effective weight.
+    """
+    return CostHarness(TrackingCost(), mc, enable_fd=enable_fd)
+
+
+def build_bilevel_harness(mc, body_scale_groups=[], marker_offset_groups=[],
+                          frame_offset_groups=[], enable_fd=False):
+    """
+    Register the given parameter groups on `mc` and build a harness around a
+    default-weighted `BilevelCost`, which reads its groups from the `ModelCache`.
+    Mirrors what a solver does, without needing a `Trial` to supply reference data.
+    """
+    mc.body_scale_groups = list(body_scale_groups)
+    mc.marker_offset_groups = list(marker_offset_groups)
+    mc.frame_offset_groups = list(frame_offset_groups)
+    return CostHarness(BilevelCost(), mc, enable_fd=enable_fd)
 
 
 ##############
@@ -70,12 +157,13 @@ def test_splined_rejects_coordinate_cost(double_pendulum_model):
     assert solver.costs == []
 
 
-def test_registered_cost_reps_size_themselves_from_the_solvers_parameters():
+def test_registered_cost_callbacks_size_themselves_from_the_solvers_parameters():
     """
-    A registered cost's rep is built from the solver's own ModelCache, so its declared
-    CasADi input size follows the parameters registered on that solver: an
-    AnthropometricRegularizationCostRep declares 3 * len(mc.body_scale_groups), which is
-    only final once add_parameter() has been called for every body scale.
+    A registered cost's callback is built from the solve cache's ModelCache, so its
+    declared CasADi input size follows the parameters registered on that solver: an
+    AnthropometricRegularizationCost declares 3 * len(mc.body_scale_groups), which is
+    only final once add_parameter() has been called for every body scale. Building the
+    cache is therefore what pins the sizes, not constructing the cost.
     """
     solver = SplinedKinematicsSolver(create_two_link_model())
     cost = AnthropometricRegularizationCost(
@@ -85,16 +173,43 @@ def test_registered_cost_reps_size_themselves_from_the_solvers_parameters():
     for body_path in ('/bodyset/b0', '/bodyset/b1'):
         solver.add_parameter(BodyScale(body_path, Bounds(0.5, 2.0), np.ones(3)))
 
-    rep = cost.create_rep(solver.mc)
-
-    assert isinstance(rep, AnthropometricRegularizationCostRep)
-    assert rep.mc is solver.mc
+    cache = SolveCache(solver.mc)
     num_scales = 3 * len(solver.mc.body_scale_groups)
     assert num_scales == 6
-    assert rep.size1_in(0) == num_scales
+    cost(cache, CostInput(body_scales=ca.MX.sym('s', num_scales)))
 
-    # Every solve builds a fresh rep rather than reusing the previous solve's.
-    assert cost.create_rep(solver.mc) is not rep
+    callback = cache._callbacks[(type(cost).__name__, id(cost))]
+    assert isinstance(callback, CostCallback)
+    assert callback.mc is solver.mc
+    assert callback.size1_in(0) == num_scales
+
+
+def test_a_cost_callback_is_memoized_per_cache():
+    """
+    Within one solve the same cost reuses one callback, however many times it is
+    called; a new solve (a new cache) builds its own, because a CasADi callback can
+    only be constructed once per proxy.
+    """
+    solver = SplinedKinematicsSolver(create_two_link_model())
+    cost = AnthropometricRegularizationCost(
+        [AnthropometricMeasurement('stature', '/S0', '/S1', Axis.YAxis)],
+        sex='female')
+    solver.add_cost(cost)
+    for body_path in ('/bodyset/b0', '/bodyset/b1'):
+        solver.add_parameter(BodyScale(body_path, Bounds(0.5, 2.0), np.ones(3)))
+
+    key = (type(cost).__name__, id(cost))
+    num_scales = 3 * len(solver.mc.body_scale_groups)
+    s = ca.MX.sym('s', num_scales)
+
+    cache = SolveCache(solver.mc)
+    cost(cache, CostInput(body_scales=s))
+    cost(cache, CostInput(body_scales=s))
+    assert len(cache._callbacks) == 1
+
+    other = SolveCache(solver.mc)
+    cost(other, CostInput(body_scales=s))
+    assert other._callbacks[key] is not cache._callbacks[key]
 
 
 def test_add_cost_rejects_a_tracking_cost(double_pendulum_model):
@@ -134,7 +249,7 @@ def create_sliding_mass_model(child_x_offset: float = 0.0):
 def test_tracking_cost_function_constructs_marker_and_frame_terms():
     model = osim.Model(MODEL_FPATH)
     model.initSystem()
-    cost = TrackingCostRep('cost', ModelCache(model))
+    cost = build_tracking_harness(ModelCache(model))
     assert cost.marker_term is not None
     assert cost.frame_term is not None
 
@@ -142,8 +257,8 @@ def test_tracking_cost_function_constructs_marker_and_frame_terms():
 def test_tracking_cost_function_add_marker_registers_in_marker_term():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = TrackingCostRep('cost', ModelCache(model))
-    cost.add_marker_tracking_cost_term('/markerset/m0', osim.Vec3(0))
+    cost = build_tracking_harness(ModelCache(model))
+    cost.add_marker('/markerset/m0', osim.Vec3(0))
     assert len(cost.marker_term.markers) == 1
     assert cost.marker_term.mobod_indexes.size() == 1
     assert len(cost.frame_term.frames) == 0
@@ -152,8 +267,8 @@ def test_tracking_cost_function_add_marker_registers_in_marker_term():
 def test_tracking_cost_function_add_frame_registers_in_frame_term():
     model = osim.Model(MODEL_FPATH)
     model.initSystem()
-    cost = TrackingCostRep('cost', ModelCache(model))
-    cost.add_frame_tracking_cost_term(
+    cost = build_tracking_harness(ModelCache(model))
+    cost.add_frame(
         '/bodyset/pelvis', osim.Vec3(0), osim.Quaternion())
     assert len(cost.frame_term.frames) == 1
     assert cost.frame_term.mobod_indexes.size() == 1
@@ -163,7 +278,7 @@ def test_tracking_cost_function_add_frame_registers_in_frame_term():
 def test_empty_tracking_cost_function():
     model = osim.Model(MODEL_FPATH)
     model.initSystem()
-    cost = TrackingCostRep('cost', ModelCache(model))
+    cost = build_tracking_harness(ModelCache(model))
     x = ca.DM.zeros(len(cost.mc.coordinate_indexes))
     assert float(cost(CostInput(coordinates=x))) == pytest.approx(0.0, abs=1e-12)
 
@@ -171,9 +286,9 @@ def test_empty_tracking_cost_function():
 def test_tracking_cost_function_marker_at_reference_yields_zero():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = TrackingCostRep('cost', ModelCache(model))
+    cost = build_tracking_harness(ModelCache(model))
     # At q=0, m0 sits at the world origin.
-    cost.add_marker_tracking_cost_term('/markerset/m0', osim.Vec3(0))
+    cost.add_marker('/markerset/m0', osim.Vec3(0))
     x = ca.DM.zeros(len(cost.mc.coordinate_indexes))
     assert float(cost(CostInput(coordinates=x))) == pytest.approx(0.0, abs=1e-12)
 
@@ -181,9 +296,9 @@ def test_tracking_cost_function_marker_at_reference_yields_zero():
 def test_tracking_cost_function_marker_off_reference_yields_squared_error():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = TrackingCostRep('cost', ModelCache(model))
+    cost = build_tracking_harness(ModelCache(model))
     # m0 at world (0.1, 0, 0) when q=0.1; reference at the origin.
-    cost.add_marker_tracking_cost_term(
+    cost.add_marker(
         '/markerset/m0', osim.Vec3(0.0, 0, 0), weight=1.0)
     x = ca.DM([0.1])
     assert float(cost(CostInput(coordinates=x))) == pytest.approx(0.01, abs=1e-9)
@@ -192,14 +307,13 @@ def test_tracking_cost_function_marker_off_reference_yields_squared_error():
 def test_tracking_cost_function_jacobian_sliding_mass():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost_jac = TrackingCostRep('cost_jac', ModelCache(model))
-    cost_fd = TrackingCostRep('cost_fd', ModelCache(model),
-                                   enable_fd=True)
+    cost_jac = build_tracking_harness(ModelCache(model))
+    cost_fd = build_tracking_harness(ModelCache(model), enable_fd=True)
 
     for cost in (cost_jac, cost_fd):
-        cost.add_marker_tracking_cost_term(
+        cost.add_marker(
             '/markerset/m0', osim.Vec3(0.3, 0, 0), weight=2.0)
-        cost.add_marker_tracking_cost_term(
+        cost.add_marker(
             '/markerset/m1', osim.Vec3(0.7, 0, 0), weight=1.5)
 
     x = ca.SX.sym('x', len(cost_jac.mc.coordinate_indexes))
@@ -212,14 +326,13 @@ def test_tracking_cost_function_jacobian_sliding_mass():
 def test_tracking_cost_function_jacobian_full_body():
     model = osim.Model(MODEL_FPATH)
     model.initSystem()
-    cost_jac = TrackingCostRep('cost_jac', ModelCache(model))
-    cost_fd = TrackingCostRep('cost_fd', ModelCache(model),
-                                   enable_fd=True)
+    cost_jac = build_tracking_harness(ModelCache(model))
+    cost_fd = build_tracking_harness(ModelCache(model), enable_fd=True)
 
     for cost in (cost_jac, cost_fd):
-        cost.add_marker_tracking_cost_term(
+        cost.add_marker(
             '/markerset/R.Shoulder', osim.Vec3(0.3, 0, 0), weight=2.0)
-        cost.add_marker_tracking_cost_term(
+        cost.add_marker(
             '/markerset/L.ASIS', osim.Vec3(0.7, 0, 0), weight=1.5)
 
     x = ca.SX.sym('x', len(cost_jac.mc.coordinate_indexes))
@@ -264,24 +377,10 @@ def getP_BM(model: osim.Model, joint_index: int, state: osim.State):
     return model.getJointSet().get(joint_index).getOutboardFrame(state).p().to_numpy()
 
 
-def build_bilevel_rep(name, mc, body_scale_groups=[], marker_offset_groups=[],
-                       frame_offset_groups=[], enable_fd=False):
-    """
-    Register the given parameter groups on `mc` and build a BilevelCostRep, which
-    reads its groups from the ModelCache. Mirrors what BilevelCost.create_rep does,
-    without needing a Trial to supply reference data.
-    """
-    mc.body_scale_groups = list(body_scale_groups)
-    mc.marker_offset_groups = list(marker_offset_groups)
-    mc.frame_offset_groups = list(frame_offset_groups)
-    return BilevelCostRep(name, mc, enable_fd=enable_fd)
-
-
 def test_bilevel_cost_function_constructs_marker_term():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
-        'cost', ModelCache(model),
+    cost = build_bilevel_harness(ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
     assert cost.marker_term is not None
@@ -291,11 +390,10 @@ def test_bilevel_cost_function_constructs_marker_term():
 def test_bilevel_cost_function_add_marker_registers_in_marker_term():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
-        'cost', ModelCache(model),
+    cost = build_bilevel_harness(ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
-    cost.add_marker_bilevel_cost_term('/markerset/m0', osim.Vec3(0))
+    cost.add_marker('/markerset/m0', osim.Vec3(0))
     assert cost.marker_term.mobod_indexes.size() == 1
     assert len(cost.frame_term.frames) == 0
 
@@ -303,11 +401,10 @@ def test_bilevel_cost_function_add_marker_registers_in_marker_term():
 def test_bilevel_cost_function_add_frame_registers_in_frame_term():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
-        'cost', ModelCache(model),
+    cost = build_bilevel_harness(ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
-    cost.add_frame_bilevel_cost_term(
+    cost.add_frame(
         '/bodyset/body', osim.Vec3(0), osim.Quaternion())
     assert cost.frame_term.mobod_indexes.size() == 1
     assert len(cost.marker_term.markers) == 0
@@ -320,8 +417,7 @@ def test_bilevel_apply_scales_shifts_child_frame_translation():
     """
     model = create_sliding_mass_model(child_x_offset=0.4)
     model.initSystem()
-    cost = build_bilevel_rep(
-        'cost', ModelCache(model),
+    cost = build_bilevel_harness(ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
 
@@ -338,8 +434,7 @@ def test_bilevel_apply_scales_shared_group_broadcasts_across_members():
     """
     model = create_n_sliding_body_model(2, child_x_offset=0.4)
     model.initSystem()
-    cost = build_bilevel_rep(
-        'cost', ModelCache(model),
+    cost = build_bilevel_harness(ModelCache(model),
         body_scale_groups=[BodyScaleGroup(
             ['/bodyset/body_0', '/bodyset/body_1'], [1, 2])],
         marker_offset_groups=[], frame_offset_groups=[])
@@ -357,8 +452,7 @@ def test_bilevel_apply_scales_mixed_groups_apply_independent_vectors():
     """
     model = create_n_sliding_body_model(3, child_x_offset=0.4)
     model.initSystem()
-    cost = build_bilevel_rep(
-        'cost', ModelCache(model),
+    cost = build_bilevel_harness(ModelCache(model),
         body_scale_groups=[
             BodyScaleGroup(['/bodyset/body_0', '/bodyset/body_1'], [1, 2]),
             BodyScaleGroup(['/bodyset/body_2'], [3]),
@@ -377,8 +471,7 @@ def test_bilevel_apply_scales_mixed_groups_apply_independent_vectors():
 def test_bilevel_cost_function_empty_eval_is_zero():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
-        'cost', ModelCache(model),
+    cost = build_bilevel_harness(ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
     q = ca.DM.zeros(len(cost.mc.coordinate_indexes))
@@ -394,11 +487,10 @@ def test_bilevel_cost_function_scaling_changes_marker_world_position():
     """
     model = create_sliding_mass_model(child_x_offset=0.4)
     model.initSystem()
-    cost = build_bilevel_rep(
-        'cost', ModelCache(model),
+    cost = build_bilevel_harness(ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
-    cost.add_marker_bilevel_cost_term('/markerset/m1', osim.Vec3(0.5, 0, 0))
+    cost.add_marker('/markerset/m1', osim.Vec3(0.5, 0, 0))
 
     q = ca.DM.zeros(len(cost.mc.coordinate_indexes))
     s_unit = ca.DM([1.0, 1.0, 1.0])
@@ -417,11 +509,10 @@ def test_bilevel_cost_function_frame_at_reference_yields_zero():
     """
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
-        'cost', ModelCache(model),
+    cost = build_bilevel_harness(ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
-    cost.add_frame_bilevel_cost_term('/bodyset/body', osim.Vec3(0), osim.Quaternion())
+    cost.add_frame('/bodyset/body', osim.Vec3(0), osim.Quaternion())
     q = ca.DM.zeros(len(cost.mc.coordinate_indexes))
     s = ca.DM([1.0, 1.0, 1.0])
     assert float(cost(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1)))) == \
@@ -435,11 +526,10 @@ def test_bilevel_cost_function_scaling_changes_frame_world_position():
     """
     model = create_sliding_mass_model(child_x_offset=0.4)
     model.initSystem()
-    cost = build_bilevel_rep(
-        'cost', ModelCache(model),
+    cost = build_bilevel_harness(ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
-    cost.add_frame_bilevel_cost_term(
+    cost.add_frame(
         '/bodyset/body', osim.Vec3(0), osim.Quaternion(), position_weight=2.0)
 
     q = ca.DM.zeros(len(cost.mc.coordinate_indexes))
@@ -456,22 +546,20 @@ def test_bilevel_cost_function_scaling_changes_frame_world_position():
 def test_bilevel_cost_function_jacobians_sliding_mass():
     model = create_sliding_mass_model(child_x_offset=0.4)
     model.initSystem()
-    cost_jac = build_bilevel_rep(
-        'cost_jac', ModelCache(model),
+    cost_jac = build_bilevel_harness(ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
-    cost_fd = build_bilevel_rep(
-        'cost_fd', ModelCache(model),
+    cost_fd = build_bilevel_harness(ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[],
         enable_fd=True)
 
     for cost in (cost_jac, cost_fd):
-        cost.add_marker_bilevel_cost_term(
+        cost.add_marker(
             '/markerset/m0', osim.Vec3(0.3, 0, 0), weight=2.0)
-        cost.add_marker_bilevel_cost_term(
+        cost.add_marker(
             '/markerset/m1', osim.Vec3(0.7, 0, 0), weight=1.5)
-        cost.add_frame_bilevel_cost_term(
+        cost.add_frame(
             '/bodyset/body', osim.Vec3(0.5, 0, 0), osim.Quaternion(),
             position_weight=1.5, orientation_weight=1.0)
 
@@ -504,19 +592,19 @@ def test_bilevel_cost_function_jacobians_full_body():
             body_paths=[body.getAbsolutePathString()],
             mobod_indexes=[int(body.getMobilizedBodyIndex())]))
 
-    cost_jac = build_bilevel_rep(
-        'cost_jac', ModelCache(model), body_scale_groups=body_scale_groups,
+    cost_jac = build_bilevel_harness(
+        ModelCache(model), body_scale_groups=body_scale_groups,
         marker_offset_groups=[], frame_offset_groups=[])
-    cost_fd = build_bilevel_rep(
-        'cost_fd', ModelCache(model), body_scale_groups=body_scale_groups,
+    cost_fd = build_bilevel_harness(
+        ModelCache(model), body_scale_groups=body_scale_groups,
         marker_offset_groups=[], frame_offset_groups=[], enable_fd=True)
 
     for cost in (cost_jac, cost_fd):
-        cost.add_marker_bilevel_cost_term(
+        cost.add_marker(
             '/markerset/R.Shoulder', osim.Vec3(0.3, 0, 0), weight=2.0)
-        cost.add_marker_bilevel_cost_term(
+        cost.add_marker(
             '/markerset/L.ASIS', osim.Vec3(0.7, 0, 0), weight=1.5)
-        cost.add_frame_bilevel_cost_term(
+        cost.add_frame(
             '/bodyset/pelvis', osim.Vec3(0.3, 0.1, -0.2),
             osim.Quaternion(0.9, 0.1, 0.2, 0.3),
             position_weight=2.0, orientation_weight=1.5)
@@ -556,25 +644,23 @@ def test_bilevel_cost_function_grouped_jacobian_sums_solo_and_matches_fd():
     shared_groups = [
         BodyScaleGroup(['/bodyset/body_0', '/bodyset/body_1'], [1, 2]),
     ]
-    cost_solo = build_bilevel_rep(
-        'cost_solo', ModelCache(model), body_scale_groups=solo_groups,
+    cost_solo = build_bilevel_harness(ModelCache(model), body_scale_groups=solo_groups,
         marker_offset_groups=[], frame_offset_groups=[])
-    cost_shared = build_bilevel_rep(
-        'cost_shared', ModelCache(model), body_scale_groups=shared_groups,
+    cost_shared = build_bilevel_harness(
+        ModelCache(model), body_scale_groups=shared_groups,
         marker_offset_groups=[], frame_offset_groups=[])
-    cost_fd = build_bilevel_rep(
-        'cost_fd', ModelCache(model), body_scale_groups=shared_groups,
+    cost_fd = build_bilevel_harness(ModelCache(model), body_scale_groups=shared_groups,
         marker_offset_groups=[], frame_offset_groups=[], enable_fd=True)
 
     for cost in (cost_solo, cost_shared, cost_fd):
-        cost.add_marker_bilevel_cost_term(
+        cost.add_marker(
             '/markerset/m0', osim.Vec3(0.4, 0, 0), weight=2.0)
-        cost.add_marker_bilevel_cost_term(
+        cost.add_marker(
             '/markerset/m1', osim.Vec3(0.7, 0, 0), weight=1.5)
-        cost.add_frame_bilevel_cost_term(
+        cost.add_frame(
             '/bodyset/body_0', osim.Vec3(0.2, 0, 0), osim.Quaternion(),
             position_weight=1.0)
-        cost.add_frame_bilevel_cost_term(
+        cost.add_frame(
             '/bodyset/body_1', osim.Vec3(0.5, 0, 0), osim.Quaternion(),
             position_weight=1.2)
 
@@ -623,14 +709,13 @@ def test_bilevel_apply_state_shifts_station():
     """
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
-        'cost', ModelCache(model),
+    cost = build_bilevel_harness(ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[MarkerOffsetGroup(['/markerset/m1'], [2])],
         frame_offset_groups=[])
-    cost.add_marker_bilevel_cost_term('/markerset/m1', osim.Vec3(0.5, 0, 0),
+    cost.add_marker('/markerset/m1', osim.Vec3(0.5, 0, 0),
                                  offset_group_index=0)
-    cost.add_marker_bilevel_cost_term('/markerset/m0', osim.Vec3(0, 0, 0))
+    cost.add_marker('/markerset/m0', osim.Vec3(0, 0, 0))
     term = cost.marker_term
     baseline_m1 = term.base_stations[0].copy()
     baseline_m0 = term.base_stations[1].copy()
@@ -655,12 +740,11 @@ def test_bilevel_offset_changes_marker_error():
     """
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
-        'cost', ModelCache(model),
+    cost = build_bilevel_harness(ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[MarkerOffsetGroup(['/markerset/m1'], [2])],
         frame_offset_groups=[])
-    cost.add_marker_bilevel_cost_term('/markerset/m1', osim.Vec3(0.5, 0, 0),
+    cost.add_marker('/markerset/m1', osim.Vec3(0.5, 0, 0),
                                  offset_group_index=0)
     q = ca.DM.zeros(len(cost.mc.coordinate_indexes))
     s = ca.DM.ones(3)
@@ -679,12 +763,11 @@ def test_bilevel_offset_frame_orientation_invariant():
     """
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
-        'cost', ModelCache(model),
+    cost = build_bilevel_harness(ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[],
         frame_offset_groups=[FrameOffsetGroup(['/bodyset/body'], [1])])
-    cost.add_frame_bilevel_cost_term(
+    cost.add_frame(
         '/bodyset/body', osim.Vec3(0), osim.Quaternion(0.9, 0.1, 0.2, 0.3),
         position_weight=0.0, orientation_weight=1.0, offset_group_index=0)
     q = ca.DM.zeros(len(cost.mc.coordinate_indexes))
@@ -711,20 +794,20 @@ def test_bilevel_cost_function_offset_jacobians_full_body():
 
     marker_offset_groups = [MarkerOffsetGroup(['/markerset/R.Shoulder'], [torso_mbx])]
     frame_offset_groups = [FrameOffsetGroup(['/bodyset/pelvis'], [pelvis_mbx])]
-    cost_jac = build_bilevel_rep(
-        'cost_jac', ModelCache(model), body_scale_groups=body_scale_groups,
+    cost_jac = build_bilevel_harness(
+        ModelCache(model), body_scale_groups=body_scale_groups,
         marker_offset_groups=marker_offset_groups,
         frame_offset_groups=frame_offset_groups)
-    cost_fd = build_bilevel_rep(
-        'cost_fd', ModelCache(model), body_scale_groups=body_scale_groups,
+    cost_fd = build_bilevel_harness(
+        ModelCache(model), body_scale_groups=body_scale_groups,
         marker_offset_groups=marker_offset_groups,
         frame_offset_groups=frame_offset_groups, enable_fd=True)
 
     for cost in (cost_jac, cost_fd):
-        cost.add_marker_bilevel_cost_term(
+        cost.add_marker(
             '/markerset/R.Shoulder', osim.Vec3(0.3, 0, 0), weight=2.0,
             offset_group_index=0)
-        cost.add_frame_bilevel_cost_term(
+        cost.add_frame(
             '/bodyset/pelvis', osim.Vec3(0.3, 0.1, -0.2),
             osim.Quaternion(0.9, 0.1, 0.2, 0.3),
             position_weight=2.0, orientation_weight=1.5,
@@ -902,7 +985,7 @@ def register_body_scales(mc, body_paths):
 
 
 def cache_group_joints(mc):
-    """Cache each group's mobilizer joints (as BilevelCostRep does)."""
+    """Cache each group's mobilizer joints (as SolveCache does)."""
     mc.cache_body_scale_group_joints()
 
 
@@ -933,30 +1016,29 @@ def station_ground_under_scale(mc, station_path, s):
 # The cost fits its distribution from the ANSUR II dataset, so measurement names must be
 # real ANSUR labels. The station pairs are the synthetic model's stations — anatomical
 # correctness is irrelevant here; we exercise the cost mechanics.
-def _build_rep(label='stature', axis=Axis.YAxis, sex='female', weight=1.0):
+def _build_anthro(label='stature', axis=Axis.YAxis, sex='female', weight=1.0):
     """
-    Build an AnthropometricRegularizationCost and its rep, as a solver does in solve().
+    Build an AnthropometricRegularizationCost and the SolveCache through which a
+    solver evaluates it.
     """
     model = create_two_link_model()
     mc = ModelCache(model)
     register_body_scales(mc, ['/bodyset/b0', '/bodyset/b1'])
     measurements = [AnthropometricMeasurement(label, '/S0', '/S1', axis)]
     cost = AnthropometricRegularizationCost(measurements, sex=sex, weight=weight)
-    rep = cost.create_rep(mc)
     n = 3 * len(mc.body_scale_groups)
-    return rep, n
+    return cost, SolveCache(mc), n
 
 
-def _manual_cost(rep, s):
+def _manual_cost(cost, cache, s):
     """
     Independent numpy evaluation of the Mahalanobis penalty: measurements are recomputed
-    from explicit station ground positions under the scaling model (bypassing the rep's
-    own callback), then combined with its cost's fitted mean and precision.
+    from explicit station ground positions under the scaling model (bypassing the
+    cost's own callback), then combined with its fitted mean and precision.
     """
     s = np.asarray(s, dtype=float)
-    cost = rep.cost
     measurements = []
-    for (sc1, sc2, axis), m in zip(rep.station_caches, cost.measurements):
+    for (sc1, sc2, axis), m in zip(cost.station_caches(cache), cost.measurements):
         d = (station_ground_under_scale(sc2.mc, m.station2_path, s) -
              station_ground_under_scale(sc1.mc, m.station1_path, s))
         measurements.append(np.abs(d[axis]) if axis is not None else np.linalg.norm(d))
@@ -995,21 +1077,22 @@ def test_station_position_jacobian_matches_finite_difference():
 
 def test_distribution_mean_is_in_meters():
     # A female stature is ~1.6 m; without the mm->m conversion it would be ~1600.
-    rep, n = _build_rep(label='stature')
-    assert 1.0 < rep.cost.mean[0] < 2.5
+    cost, cache, n = _build_anthro(label='stature')
+    assert 1.0 < cost.mean[0] < 2.5
 
 
 def test_cost_matches_manual_mahalanobis():
-    rep, n = _build_rep(label='stature', weight=2.0)
+    cost, cache, n = _build_anthro(label='stature', weight=2.0)
     for s in (np.ones(n), np.array([1.1, 1.0, 1.0, 0.9, 1.0, 1.0])):
-        value = float(rep(CostInput(body_scales=ca.DM(s))))
-        np.testing.assert_allclose(value, _manual_cost(rep, s), rtol=1e-9)
+        value = float(cost(cache, CostInput(body_scales=ca.DM(s))))
+        np.testing.assert_allclose(value, _manual_cost(cost, cache, s), rtol=1e-9)
 
 
 def test_cost_gradient_matches_finite_difference():
-    rep, n = _build_rep(label='stature')
+    cost, cache, n = _build_anthro(label='stature')
     s = ca.MX.sym('s', n)
-    grad = ca.Function('grad', [s], [ca.gradient(rep(CostInput(body_scales=s)), s)])
+    grad = ca.Function('grad', [s],
+                       [ca.gradient(cost(cache, CostInput(body_scales=s)), s)])
     s0 = np.ones(n)
     g = np.array(grad(s0)).flatten()
     eps = 1e-6
@@ -1018,74 +1101,82 @@ def test_cost_gradient_matches_finite_difference():
         sp, sm = s0.copy(), s0.copy()
         sp[k] += eps
         sm[k] -= eps
-        g_fd[k] = (float(rep(CostInput(body_scales=ca.DM(sp)))) -
-                   float(rep(CostInput(body_scales=ca.DM(sm))))) / (2 * eps)
+        g_fd[k] = (float(cost(cache, CostInput(body_scales=ca.DM(sp)))) -
+                   float(cost(cache, CostInput(body_scales=ca.DM(sm))))) / (2 * eps)
     np.testing.assert_allclose(g, g_fd, atol=1e-6)
 
 
 def test_euclidean_measurement_builds_and_evaluates():
-    rep, n = _build_rep(label='biacromialbreadth', axis=None)
-    value = float(rep(CostInput(body_scales=ca.DM(np.ones(n)))))
+    cost, cache, n = _build_anthro(label='biacromialbreadth', axis=None)
+    value = float(cost(cache, CostInput(body_scales=ca.DM(np.ones(n)))))
     assert np.isfinite(value)
 
 
-def test_cost_is_a_description_and_only_its_rep_is_callable():
+def test_cost_carries_no_model_state_and_is_evaluated_through_a_cache():
     """
-    A Cost carries no model state and is not evaluable; the rep it creates is.
+    A Cost is an inert description: it holds no model, state, or station caches of its
+    own, and evaluating it requires a SolveCache to resolve those. The cache, not the
+    cost, owns the callback.
     """
     measurements = [AnthropometricMeasurement('stature', '/S0', '/S1', Axis.YAxis)]
     cost = AnthropometricRegularizationCost(measurements, sex='female')
-    assert not isinstance(cost, CostRep)
-    assert not callable(cost)
+    assert isinstance(cost, CallbackCost)
+    for attribute in ('mc', 'state', 'model', 'default_q'):
+        assert not hasattr(cost, attribute)
 
     mc = ModelCache(create_two_link_model())
     register_body_scales(mc, ['/bodyset/b0', '/bodyset/b1'])
-    rep = cost.create_rep(mc)
-    assert isinstance(rep, CostRep)
-    assert rep.cost is cost
-    assert rep.mc is mc
+    cache = SolveCache(mc)
+    assert cache.mc is mc
+
+    n = 3 * len(mc.body_scale_groups)
+    value = float(cost(cache, CostInput(body_scales=ca.DM(np.ones(n)))))
+    assert np.isfinite(value)
+
+    # The cost resolves its stations through the cache, which memoizes them by path.
+    assert cache.station_cache('/S0') is cache.station_cache('/S0')
 
 
-def test_creating_a_rep_twice_yields_independent_reps():
+def test_one_cost_may_be_evaluated_through_several_caches():
     """
-    A solver builds a fresh rep on every solve, so a Cost must support create_rep more
-    than once. A CasADi callback can only be constructed once per proxy, so each rep
-    has to be a distinct object rather than the cost itself.
+    A Cost is stateless, so the same instance can serve several solves. Each solve's
+    cache binds it to that solve's model, and the two do not interfere.
     """
     measurements = [AnthropometricMeasurement('stature', '/S0', '/S1', Axis.YAxis)]
     cost = AnthropometricRegularizationCost(measurements, sex='female', weight=2.0)
 
-    caches, reps = [], []
+    caches = []
     for _ in range(2):
         mc = ModelCache(create_two_link_model())
         register_body_scales(mc, ['/bodyset/b0', '/bodyset/b1'])
-        caches.append(mc)
-        reps.append(cost.create_rep(mc))
+        caches.append(SolveCache(mc))
 
-    assert reps[0] is not reps[1]
-    assert [rep.mc for rep in reps] == caches
-    assert all(rep.cost is cost for rep in reps)
+    assert caches[0].mc is not caches[1].mc
+    assert caches[0].model is not caches[1].model
 
-    # The models are identical copies, so both reps evaluate to the same value, and
-    # each agrees with an independent numpy evaluation through its own caches.
+    # The models are identical copies, so both caches evaluate to the same value, and
+    # each agrees with an independent numpy evaluation through its own station caches.
     s = np.array([1.1, 1.0, 1.0, 0.9, 1.0, 1.0])
-    values = [float(rep(CostInput(body_scales=ca.DM(s)))) for rep in reps]
+    values = [float(cost(cache, CostInput(body_scales=ca.DM(s))))
+              for cache in caches]
     np.testing.assert_allclose(values[0], values[1], rtol=1e-9)
-    for rep, value in zip(reps, values):
-        np.testing.assert_allclose(value, _manual_cost(rep, s), rtol=1e-9)
+    for cache, value in zip(caches, values):
+        np.testing.assert_allclose(value, _manual_cost(cost, cache, s), rtol=1e-9)
 
 
-def test_symbolic_cost_rep_delegates_to_its_cost():
+def test_symbolic_cost_builds_no_callback():
+    """
+    A SymbolicCost is a plain CasADi expression, so calling it through a cache returns
+    that expression directly and registers no callback for CasADi to keep alive.
+    """
     cost = BodyScaleRegularizationCost(2.0, target=1.1)
     mc = ModelCache(create_two_link_model())
-    rep = cost.create_rep(mc)
-
-    assert isinstance(rep, SymbolicCostRep)
-    assert rep.cost is cost
+    cache = SolveCache(mc)
 
     s = ca.DM([1.2, 0.9, 1.0])
-    assert float(rep(CostInput(body_scales=s))) == pytest.approx(
+    assert float(cost(cache, CostInput(body_scales=s))) == pytest.approx(
         float(cost.evaluate(CostInput(body_scales=s))))
+    assert cache._callbacks == {}
 
 
 def test_body_scale_groups_may_be_shared_across_model_caches():

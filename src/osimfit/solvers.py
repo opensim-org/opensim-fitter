@@ -7,7 +7,7 @@ from typing import Any
 
 from .bounds import Bounds
 from .data_sources import Trial
-from .costs import (BilevelCost, BilevelCostRep, Cost, CostInput, CostRep,
+from .costs import (BilevelCost, Cost, CostInput, SolveCache, TaskSet,
                     TrackingCost)
 from .model import ModelCache, Parameter, BodyScale, MarkerOffset, FrameOffset
 from .scaling import Axis, Scaler, ManualBodyScale
@@ -428,34 +428,34 @@ class InverseKinematicsSolver(TrackingSolver):
         super().__init__(model, convergence_tolerance, position_weight,
                          orientation_weight)
 
-    def create_tracking_solver(self, trial: Trial, itime: int,
-                               tracking_cost: TrackingCost, cost_reps: list[CostRep]):
+    def create_tracking_solver(self, cache: SolveCache, trial: Trial, itime: int,
+                               tracking_cost: TrackingCost):
         """
         A helper function to create a CasADi solver for the tracking problem at a
         given time step of a given trial.
 
         Parameters
         ----------
+        cache: SolveCache
+            The solve cache, which memoizes the trial's task set and the callbacks
+            across every time step.
         trial: Trial
             The trial supplying the reference data.
         itime: int
             Index of the time sample within `trial` to track.
         tracking_cost: TrackingCost
             The tracking cost description, built once per solve.
-        cost_reps: list[CostRep]
-            Reps of the solver's registered costs, built once per solve.
         """
         x = ca.SX.sym('x', len(self.coordinate_indexes))
-        tracking_rep = tracking_cost.create_rep('tracking_cost', self.mc, trial, itime)
         cost_input = CostInput(coordinates=x)
-        f = tracking_rep(cost_input)
-        for cost_rep in cost_reps:
-            f += cost_rep(cost_input)
+        f = tracking_cost(cache, trial, itime, cost_input)
+        for cost in self.costs:
+            f += cost(cache, cost_input)
         nlp = {'x': x, 'f': f}
         opts = {}
         opts['ipopt'] = self.get_ipopt_options()
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
-        return tracking_rep, solver
+        return solver
 
     def solve(self, guess: Solution = None) -> Solution:
         self._assert_has_trials()
@@ -476,7 +476,7 @@ class InverseKinematicsSolver(TrackingSolver):
 
         # Solve each trial sequentially, restarting the warm start from the default
         # coordinate values (or that trial's guess) at each trial's first time step.
-        cost_reps = [cost.create_rep(self.mc) for cost in self.costs]
+        cache = SolveCache(self.mc)
         tracking_cost = TrackingCost(self.position_weight, self.orientation_weight)
         states_tables: dict[str, osim.TimeSeriesTable] = {}
         for trial in self.trials:
@@ -503,18 +503,18 @@ class InverseKinematicsSolver(TrackingSolver):
                 if guess_q is not None:
                     x0 = guess_q[itime, :].tolist()
 
-                tracking_rep, solver = self.create_tracking_solver(
-                    trial, itime, tracking_cost, cost_reps)
+                solver = self.create_tracking_solver(
+                    cache, trial, itime, tracking_cost)
                 sol = solver(x0=x0, lbx=lbx, ubx=ubx)
 
                 q_traj[itime, :] = np.squeeze(sol['x'].full())
 
-                # Write solution into the rep's state.
-                tracking_rep.state.setTime(time)
-                q = np.zeros(tracking_rep.state.getNQ())
+                # Write solution into the cache's state.
+                cache.state.setTime(time)
+                q = np.zeros(cache.state.getNQ())
                 q[self.coordinate_indexes] = q_traj[itime, :]
-                tracking_rep.state.setQ(osim.Vector.createFromMat(q))
-                statesTraj.append(tracking_rep.state)
+                cache.state.setQ(osim.Vector.createFromMat(q))
+                statesTraj.append(cache.state)
 
                 if guess_q is None:
                     x0 = sol['x']
@@ -683,11 +683,16 @@ class SplinedKinematicsSolver(TrackingSolver):
         self._parameters_by_input.setdefault(parameter.cost_input, []).append(parameter)
         self.mc.add_parameter_group(parameter.to_group())
 
-    def assert_offset_groups_used(self, reps: list[BilevelCostRep]):
+    def assert_offset_groups_used(self, task_sets: list[TaskSet]):
         """
         Verify that every registered offset group is tracked by at least one task in at
-        least one of `reps`, ensuring that the offset is properly constrained in
+        least one of `task_sets`, ensuring that the offset is properly constrained in
         the bilevel optimization problem.
+
+        Parameters
+        ----------
+        task_sets: list[TaskSet]
+            The task sets built for this solve, one per trial.
 
         Raises
         ------
@@ -702,12 +707,12 @@ class SplinedKinematicsSolver(TrackingSolver):
                         f'not tracked by any registered {label} in any trial; its '
                         f'offset would be unconstrained.')
 
-        used_markers = {g for rep in reps
-                        for g in rep.marker_term.offset_group_indexes
-                        if g is not None}
-        used_frames = {g for rep in reps
-                       for g in rep.frame_term.offset_group_indexes
-                       if g is not None}
+        used_markers = set()
+        used_frames = set()
+        for task_set in task_sets:
+            markers, frames = task_set.offset_group_indexes()
+            used_markers |= markers
+            used_frames |= frames
         assert_used(used_markers, self.mc.marker_offset_groups, 'marker')
         assert_used(used_frames, self.mc.frame_offset_groups, 'frame')
 
@@ -861,10 +866,11 @@ class SplinedKinematicsSolver(TrackingSolver):
         for p in self.parameters:
             p.append_guess_and_bounds(x0, lbx, ubx)
 
-        # Accumulate the tracking cost for each trial. Reps are held in a list for the
-        # lifetime of the solve so CasADi's references to them stay valid.
+        # Accumulate the tracking cost for each trial. The cache owns each trial's
+        # task set and its single callback for the lifetime of the solve, which is what
+        # keeps CasADi's references to them valid.
+        cache = SolveCache(self.mc)
         f = 0
-        tracking_reps = []
         cost_type = BilevelCost if num_params > 0 else TrackingCost
         tracking_cost = cost_type(self.position_weight, self.orientation_weight)
         for itrial, trial in enumerate(self.trials):
@@ -875,16 +881,14 @@ class SplinedKinematicsSolver(TrackingSolver):
             # spline basis matrix.
             q = trial_B[itrial] @ coeffs[itrial]
 
-            # Compute the tracking cost at each time step via a callback rep.
+            # Compute the tracking cost at each time step. Every sample goes through
+            # the same callback, which reads its reference data from the trial's task
+            # set by sample index.
             errors = ca.MX(num_times, 1)
             for itime in range(num_times):
-                tracking_rep = tracking_cost.create_rep(
-                    f'tracking_cost_trial_{itrial}_time_{itime}', self.mc, trial,
-                    itime)
-                tracking_reps.append(tracking_rep)
                 cost_input = CostInput(coordinates=q[itime, :].T, body_scales=s,
                                        marker_offsets=mo, frame_offsets=fo)
-                errors[itime] = tracking_rep(cost_input)
+                errors[itime] = tracking_cost(cache, trial, itime, cost_input)
 
             f += self.compute_average_trapezoidal_error(errors, times)
 
@@ -893,13 +897,12 @@ class SplinedKinematicsSolver(TrackingSolver):
 
         # Every offset group must be tracked in at least one trial.
         if num_params > 0:
-            self.assert_offset_groups_used(tracking_reps)
+            self.assert_offset_groups_used(cache.task_sets())
 
         # Add the cost terms on the parameters shared across all trials.
-        cost_reps = [cost.create_rep(self.mc) for cost in self.costs]
         parameter_input = CostInput(body_scales=s, marker_offsets=mo, frame_offsets=fo)
-        for cost_rep in cost_reps:
-            f += cost_rep(parameter_input)
+        for cost in self.costs:
+            f += cost(cache, parameter_input)
 
         # Solve.
         x = ca.vertcat(*[ca.vec(c) for c in coeffs], s, mo, fo)
@@ -1073,20 +1076,21 @@ class MarkerPlacer(Solver):
         for marker_offset in marker_offsets:
             marker_offset.append_guess_and_bounds(x0, lbx, ubx)
 
-        # Accumulate the placement error at each trial's first time point. Reps are held
-        # in a list for the lifetime of the solve so CasADi's references to them stay
-        # valid. _validate_trials rejects frame data, so a BilevelCost's frame terms are
-        # always empty here and each rep tracks markers only.
+        # Accumulate the placement error at each trial's first time point. The cache
+        # owns each trial's task set and callback for the lifetime of the solve, which
+        # is what keeps CasADi's references to them valid. Only the first sample is
+        # ever read, so each task set loads one row of reference data.
+        # _validate_trials rejects frame data, so a BilevelCost's frame terms are
+        # always empty here and each task set tracks markers only.
+        cache = SolveCache(self.mc)
         errors = ca.MX(len(self.trials), 1)
-        placement_reps = []
         placement_cost = BilevelCost(position_weight=1.0)
         for itrial, trial in enumerate(self.trials):
-            placement_rep = placement_cost.create_rep(
-                f'marker_placer_cost_trial_{itrial}', self.mc, trial, 0)
-            placement_reps.append(placement_rep)
-            errors[itrial] = placement_rep(
+            errors[itrial] = placement_cost(
+                cache, trial, 0,
                 CostInput(coordinates=poses[itrial], body_scales=s,
-                          marker_offsets=mo, frame_offsets=fo))
+                          marker_offsets=mo, frame_offsets=fo),
+                num_times=1)
 
         # Average over trials so the objective's magnitude is independent of the number
         # of trials.
