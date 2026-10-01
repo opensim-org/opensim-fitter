@@ -34,23 +34,23 @@ class CostInput:
         Flattened per-group XYZ marker offsets.
     frame_offsets: ca.MX, optional
         Flattened per-group XYZ frame offsets.
-    ellipsoid_radii: ca.MX, optional
-        Flattened per-group XYZ ellipsoid radii, in meters.
-    beam_lengths: ca.MX, optional
-        Per-group cantilever-free-beam lengths, in meters.
+    ellipsoid_radii_scales: ca.MX, optional
+        Flattened per-group XYZ factors on the baseline ellipsoid radii.
+    beam_length_scales: ca.MX, optional
+        Per-group factors on the baseline cantilever-free-beam lengths.
     """
     INPUT_ORDER: ClassVar[tuple[str, ...]] = (
         'coordinates', 'body_scales', 'marker_offsets', 'frame_offsets',
-        'ellipsoid_radii', 'beam_lengths')
+        'ellipsoid_radii_scales', 'beam_length_scales')
     TRIPLET_INPUTS: ClassVar[tuple[str, ...]] = (
-        'body_scales', 'marker_offsets', 'frame_offsets', 'ellipsoid_radii')
+        'body_scales', 'marker_offsets', 'frame_offsets', 'ellipsoid_radii_scales')
 
     coordinates: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
     body_scales: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
     marker_offsets: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
     frame_offsets: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
-    ellipsoid_radii: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
-    beam_lengths: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
+    ellipsoid_radii_scales: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
+    beam_length_scales: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
 
     @classmethod
     def field_index(cls, name: str) -> int:
@@ -90,7 +90,7 @@ class CostInput:
         ----------
         name: str
             The field to view. Must be one of `TRIPLET_INPUTS` (`body_scales`,
-            `marker_offsets`, `frame_offsets`, or `ellipsoid_radii`).
+            `marker_offsets`, `frame_offsets`, or `ellipsoid_radii_scales`).
 
         Returns
         -------
@@ -353,8 +353,8 @@ class CallbackCostRep(CostRep, Function):
             'body_scales': 3 * len(self.mc.body_scale_groups),
             'marker_offsets': 3 * len(self.mc.marker_offset_groups),
             'frame_offsets': 3 * len(self.mc.frame_offset_groups),
-            'ellipsoid_radii': 3 * len(self.mc.ellipsoid_radii_groups),
-            'beam_lengths': len(self.mc.beam_length_groups),
+            'ellipsoid_radii_scales': 3 * len(self.mc.ellipsoid_radii_scale_groups),
+            'beam_length_scales': len(self.mc.beam_length_scale_groups),
         }
         order = CostInput.INPUT_ORDER
         if not 0 <= i < len(order):
@@ -451,6 +451,160 @@ class OffsetRegularizationCost(SymbolicCost):
     def evaluate(self, input: CostInput) -> ca.MX:
         offsets = ca.vertcat(input.marker_offsets, input.frame_offsets)
         return self.weight * ca.sum(offsets**2)
+
+
+class EllipsoidRadiiScaleRegularizationCost(SymbolicCost):
+    """
+    A quadratic penalty on the ellipsoid radii factors that encourages each toward
+    `target`:
+
+        cost = weight * sum_i (f_i - target)^2
+
+    Parameters
+    ----------
+    weight: float
+        Non-negative scalar applied to the sum-of-squares.
+    target: float, optional
+        Per-factor target value. Default is 1.0.
+    """
+    required_inputs = frozenset({'ellipsoid_radii_scales'})
+
+    def __init__(self, weight: float, target: float = 1.0):
+        if weight < 0:
+            raise ValueError(
+                f'Expected weight to be non-negative, but got {weight}.')
+        self.weight = weight
+        self.target = target
+
+    def evaluate(self, input: CostInput) -> ca.MX:
+        return self.weight * ca.sum((input.ellipsoid_radii_scales - self.target)**2)
+
+
+class BeamLengthScaleRegularizationCost(SymbolicCost):
+    """
+    A quadratic penalty on the beam length factors that encourages each toward
+    `target`:
+
+        cost = weight * sum_i (f_i - target)^2
+
+    Parameters
+    ----------
+    weight: float
+        Non-negative scalar applied to the sum-of-squares.
+    target: float, optional
+        Per-factor target value. Default is 1.0.
+    """
+    required_inputs = frozenset({'beam_length_scales'})
+
+    def __init__(self, weight: float, target: float = 1.0):
+        if weight < 0:
+            raise ValueError(
+                f'Expected weight to be non-negative, but got {weight}.')
+        self.weight = weight
+        self.target = target
+
+    def evaluate(self, input: CostInput) -> ca.MX:
+        return self.weight * ca.sum((input.beam_length_scales - self.target)**2)
+
+
+class CoordinateStiffnessCost(Cost):
+    """
+    A quadratic penalty that acts like a spring on selected coordinates, holding each
+    near a target value:
+
+        cost = weight * sum_i k_i * (q_i - target_i)^2
+
+    Parameters
+    ----------
+    stiffnesses: dict[str, float]
+        Mapping from absolute coordinate path to that coordinate's non-negative
+        stiffness. Only the coordinates named here are penalized.
+    targets: dict[str, float], optional
+        Mapping from absolute coordinate path to the value that coordinate is pulled
+        toward. Any coordinate absent from this mapping is pulled toward its default
+        value in the model. Defaults to ``None`` (every target taken from the model).
+    weight: float, optional
+        Non-negative scalar applied to the whole sum. Default is 1.0.
+
+    Raises
+    ------
+    ValueError
+        If `weight` or any stiffness is negative, or `stiffnesses` is empty.
+        `CoordinateStiffnessCostRep` additionally validates the coordinate paths
+        against the model.
+    """
+    required_inputs = frozenset({'coordinates'})
+
+    def __init__(self, stiffnesses: dict[str, float],
+                 targets: dict[str, float] = None, weight: float = 1.0):
+        if weight < 0:
+            raise ValueError(
+                f'Expected weight to be non-negative, but got {weight}.')
+        if not stiffnesses:
+            raise ValueError(
+                'CoordinateStiffnessCost requires at least one coordinate stiffness.')
+        for path, stiffness in stiffnesses.items():
+            if stiffness < 0:
+                raise ValueError(
+                    f'Expected the stiffness for {path} to be non-negative, but got '
+                    f'{stiffness}.')
+        self.weight = weight
+        self.stiffnesses = dict(stiffnesses)
+        self.targets = dict(targets) if targets else {}
+
+    def create_rep(self, mc: ModelCache) -> 'CoordinateStiffnessCostRep':
+        return CoordinateStiffnessCostRep(self, mc)
+
+
+class CoordinateStiffnessCostRep(CostRep):
+    """
+    The rep of a `CoordinateStiffnessCost`.
+
+    Parameters
+    ----------
+    cost: CoordinateStiffnessCost
+        The cost this rep represents.
+    mc: ModelCache
+        The solver's `ModelCache`, supplying the coordinate ordering and the default
+        coordinate values.
+
+    Raises
+    ------
+    ValueError
+        If a coordinate path is not an independent coordinate of the model. Dependent
+        (e.g. constrained) coordinates are absent from `ModelCache.coordinate_q_map` and
+        so cannot be penalized directly.
+    """
+
+    def __init__(self, cost: CoordinateStiffnessCost, mc: ModelCache):
+        self.cost = cost
+        # Element j of the coordinates vector is the j-th entry of coordinate_q_map, so
+        # a coordinate's position in that ordering is its index into the input.
+        order = list(mc.coordinate_q_map)
+        self.indexes: list[int] = []
+        self.stiffnesses: list[float] = []
+        self.targets: list[float] = []
+        for path, stiffness in cost.stiffnesses.items():
+            if path not in mc.coordinate_q_map:
+                known = 'is a dependent coordinate' if mc.model.hasComponent(path) \
+                    else 'is not a coordinate in the model'
+                raise ValueError(
+                    f'Cannot apply a coordinate stiffness to {path}: it {known}. '
+                    f'Expected one of the model\'s independent coordinates.')
+            self.indexes.append(order.index(path))
+            self.stiffnesses.append(float(stiffness))
+            if path in cost.targets:
+                self.targets.append(float(cost.targets[path]))
+            else:
+                coordinate = osim.Coordinate.safeDownCast(mc.model.getComponent(path))
+                self.targets.append(float(coordinate.getDefaultValue()))
+
+    def __call__(self, input: CostInput) -> ca.MX:
+        penalty = 0
+        for index, stiffness, target in zip(
+                self.indexes, self.stiffnesses, self.targets):
+            penalty += stiffness * (input.coordinates[index] - target)**2
+        return self.cost.weight * penalty
 
 
 ###########
@@ -809,8 +963,8 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
         Jq = np.zeros((1, len(self.mc.coordinate_q_indexes)))
         Js = np.zeros((1, 3 * len(self.mc.body_scale_groups)))
         Jo = np.zeros((1, 3 * len(self.mc.marker_offset_groups)))
-        Jr = np.zeros((1, 3 * len(self.mc.ellipsoid_radii_groups)))
-        Jl = np.zeros((1, len(self.mc.beam_length_groups)))
+        Jr = np.zeros((1, 3 * len(self.mc.ellipsoid_radii_scale_groups)))
+        Jl = np.zeros((1, len(self.mc.beam_length_scale_groups)))
         if self.num_tasks == 0:
             return [Jq, Js, Jo, Jr, Jl]
 
@@ -856,8 +1010,8 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
 
         # Calculate the position-error Jacobians with respect to the joint-level
         # parameters.
-        Jr = self.mc.calc_position_jacobian_wrt_ellipsoid_radii(state, dp_GB)
-        Jl = self.mc.calc_position_jacobian_wrt_beam_lengths(state, dp_GB)
+        Jr = self.mc.calc_position_jacobian_wrt_ellipsoid_radii_scales(state, dp_GB)
+        Jl = self.mc.calc_position_jacobian_wrt_beam_length_scales(state, dp_GB)
 
         # Assemble the marker offset Jacobian based on the offset sensitivities. Also,
         # include the contributions from the marker offsets to the Jacobian with respect
@@ -911,8 +1065,8 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
         Jq = np.zeros((1, len(self.mc.coordinate_q_indexes)))
         Js = np.zeros((1, 3 * len(self.mc.body_scale_groups)))
         Jo = np.zeros((1, 3 * len(self.mc.frame_offset_groups)))
-        Jr = np.zeros((1, 3 * len(self.mc.ellipsoid_radii_groups)))
-        Jl = np.zeros((1, len(self.mc.beam_length_groups)))
+        Jr = np.zeros((1, 3 * len(self.mc.ellipsoid_radii_scale_groups)))
+        Jl = np.zeros((1, len(self.mc.beam_length_scale_groups)))
         if self.num_tasks == 0:
             return [Jq, Js, Jo, Jr, Jl]
 
@@ -980,8 +1134,8 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
 
         # Calculate the position-error Jacobians with respect to the joint-level
         # parameters.
-        Jr = self.mc.calc_position_jacobian_wrt_ellipsoid_radii(state, dp_GB)
-        Jl = self.mc.calc_position_jacobian_wrt_beam_lengths(state, dp_GB)
+        Jr = self.mc.calc_position_jacobian_wrt_ellipsoid_radii_scales(state, dp_GB)
+        Jl = self.mc.calc_position_jacobian_wrt_beam_length_scales(state, dp_GB)
 
         # Assemble the frame offset Jacobian based on the offset sensitivities. Also,
         # include the contributions from the frame offsets to the Jacobian with respect
@@ -1119,7 +1273,7 @@ class BilevelCost(TrackingCostBase):
     """
     required_inputs = frozenset(
         {'coordinates', 'body_scales', 'marker_offsets', 'frame_offsets',
-         'ellipsoid_radii', 'beam_lengths'})
+         'ellipsoid_radii_scales', 'beam_length_scales'})
 
     def __init__(self, position_weight: float = 1.0,
                  orientation_weight: float = 1.0):
@@ -1199,11 +1353,11 @@ class BilevelCostRep(CallbackCostRep):
         frame_offsets = np.atleast_1d(np.squeeze(arg[3].full())).astype(float)
         self.frame_term.apply_state(body_scales, frame_offsets)
 
-        ellipsoid_radii = np.atleast_1d(np.squeeze(arg[4].full())).astype(float)
-        self.mc.set_ellipsoid_radii(self.state, ellipsoid_radii)
+        ellipsoid_radii_scales = np.atleast_1d(np.squeeze(arg[4].full())).astype(float)
+        self.mc.set_ellipsoid_radii_from_scales(self.state, ellipsoid_radii_scales)
 
-        beam_lengths = np.atleast_1d(np.squeeze(arg[5].full())).astype(float)
-        self.mc.set_beam_lengths(self.state, beam_lengths)
+        beam_length_scales = np.atleast_1d(np.squeeze(arg[5].full())).astype(float)
+        self.mc.set_beam_length_from_scales(self.state, beam_length_scales)
 
         q = np.zeros(self.state.getNQ())
         q[self.mc.coordinate_q_indexes] = np.squeeze(arg[0].full())
