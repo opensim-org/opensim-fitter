@@ -844,7 +844,8 @@ class FrameTrackingTerm(FrameTasks, TrackingTerm):
 
         # Calculate the frame (position and orientation) error Jacobian.
         Ju = osim.Vector(state.getNU(), 0.0)
-        self.mc.model.multiplyByFrameJacobianTranspose(Ju)
+        self.mc.model.multiplyByFrameJacobianTranspose(
+            state, self.mobod_indexes, self.stations, spatialError, Ju)
         Jq = osim.Vector(state.getNQ(), 0.0)
         self.mc.model.multiplyByNInv(state, True, Ju, Jq)
 
