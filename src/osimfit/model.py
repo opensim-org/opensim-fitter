@@ -64,6 +64,40 @@ class FrameOffsetGroup(OffsetGroup):
 
 
 @dataclass
+class MobilizerFrameWrites:
+    """
+    Everything needed to rewrite one set of mobilizer frame translations when body
+    scales change, prepared once so that evaluation does no redundant work.
+
+    `set_scaled_mobilizer_frame_positions` runs on every callback evaluation and
+    rewrites every one of these frames. Everything that does not change between
+    evaluations -- the mobilized body indexes, the baseline rotations, the baseline
+    translations -- is resolved once here, so the hot path computes translations and
+    makes one call per frame set.
+
+    Attributes
+    ----------
+    mobod_indexes: osim.SimTKArrayInt
+        The mobilized bodies to write, ordered to match the arrays below. An int
+        array rather than a `SimTKArrayMobilizedBodyIndex`: the bindings typedef
+        `MobilizedBodyIndex` to int, and only the int array matches an
+        ``Array_<MobilizedBodyIndex>`` parameter.
+    rotations: osim.SimTKArrayRotation
+        Each frame's baseline rotation. The bulk setters take rotations rather than
+        reading them back from the State, so this is built once and passed on every
+        call; scaling only ever changes the translations.
+    baselines: np.ndarray, shape (num_writes, 3)
+        Each body's baseline frame translation.
+    group_rows: np.ndarray, shape (num_writes,)
+        Each body's `BodyScaleGroup` index, for gathering its scale.
+    """
+    mobod_indexes: object
+    rotations: object
+    baselines: np.ndarray
+    group_rows: np.ndarray
+
+
+@dataclass
 class JointParameterGroup:
     """
     A group of joints sharing one dimensionless factor on a joint-level parameter (e.g.
@@ -191,6 +225,10 @@ class ModelCache:
         self.ellipsoid_radii_scale_groups: list[EllipsoidRadiiScaleGroup] = []
         self.beam_length_scale_groups: list[BeamLengthScaleGroup] = []
         self.body_scale_group_inboard_joints: list[list[osim.Joint]] = []
+        self.outboard_frame_writes: MobilizerFrameWrites = None
+        self.inboard_frame_writes: MobilizerFrameWrites = None
+        self.scale_group_mobod_indexes = np.zeros(0, dtype=int)
+        self.scale_group_rows = np.zeros(0, dtype=int)
         self.body_scale_group_outboard_joints: list[list[osim.Joint]] = []
         self.ellipsoid_radii_scale_group_joints: list[list[osim.EllipsoidJoint]] = []
         self.ellipsoid_radii_scale_group_baselines: list[list[np.ndarray]] = []
@@ -237,6 +275,20 @@ class ModelCache:
             X_BM = joint.getOutboardFrame(self.state)
             self.baseline_p_BM[mbx] = X_BM.p().to_numpy()
             self.baseline_R_BM[mbx] = osim.Rotation(X_BM.R())
+
+        # The same baselines and tree structure as arrays, for the array-based
+        # Jacobian accumulation in `calc_position_jacobian_wrt_body_scales`. Row `r`
+        # of each corresponds to `child_mobod_indexes[r]`; Ground has no inboard or
+        # outboard mobilizer frame and so has no row.
+        self.child_mobod_indexes = np.arange(1, self.num_mobod)
+        self.parent_mobod_indexes = np.array(
+            [self.parent_of[cx] for cx in self.child_mobod_indexes], dtype=int)
+        self.baseline_p_PF_rows = np.array(
+            [self.baseline_p_PF[cx] for cx in self.child_mobod_indexes],
+            dtype=float).reshape(-1, 3)
+        self.baseline_p_BM_rows = np.array(
+            [self.baseline_p_BM[cx] for cx in self.child_mobod_indexes],
+            dtype=float).reshape(-1, 3)
 
     def add_parameter_group(self, group) -> None:
         """
@@ -406,6 +458,57 @@ class ModelCache:
              for c in self.children_of[int(k)]]
             for group in self.body_scale_groups]
 
+        # Flat pairing of every group member to its group, so the per-group column
+        # gather in `calc_position_jacobian_wrt_body_scales` is a single scatter.
+        self.scale_group_mobod_indexes = np.array(
+            [int(k) for group in self.body_scale_groups
+             for k in group.mobod_indexes], dtype=int)
+        self.scale_group_rows = np.array(
+            [i for i, group in enumerate(self.body_scale_groups)
+             for _ in group.mobod_indexes], dtype=int)
+
+        self.outboard_frame_writes = self._build_mobilizer_frame_writes(
+            self.body_scale_group_outboard_joints,
+            self.baseline_p_BM, self.baseline_R_BM)
+        self.inboard_frame_writes = self._build_mobilizer_frame_writes(
+            self.body_scale_group_inboard_joints,
+            self.baseline_p_PF, self.baseline_R_PF)
+
+
+    @staticmethod
+    def _build_mobilizer_frame_writes(joints_per_group: list, baseline_p: dict,
+                                      baseline_R: dict) -> MobilizerFrameWrites:
+        """
+        Flatten a per-group list of joints into a `MobilizerFrameWrites`, resolving
+        each joint's child mobod index and pre-allocating its reusable `Transform` and
+        `Vec3`.
+
+        Parameters
+        ----------
+        joints_per_group: list[list[osim.Joint]]
+            The joints to write for each `BodyScaleGroup`.
+        baseline_p: dict[int, np.ndarray]
+            Baseline frame translations, keyed by mobod index.
+        baseline_R: dict[int, osim.Rotation]
+            Baseline frame rotations, keyed by mobod index.
+        """
+        mobod_indexes = osim.SimTKArrayInt()
+        rotations = osim.SimTKArrayRotation()
+        baselines, group_rows = [], []
+        for igroup, group_joints in enumerate(joints_per_group):
+            for joint in group_joints:
+                index = int(joint.getChildFrame().getMobilizedBodyIndex())
+                mobod_indexes.push_back(index)
+                rotations.push_back(baseline_R[index])
+                baselines.append(baseline_p[index])
+                group_rows.append(igroup)
+
+        return MobilizerFrameWrites(
+            mobod_indexes=mobod_indexes, rotations=rotations,
+            baselines=(np.asarray(baselines, dtype=float).reshape(-1, 3)
+                       if baselines else np.zeros((0, 3))),
+            group_rows=np.asarray(group_rows, dtype=int))
+
     def set_scaled_mobilizer_frame_positions(self, state: osim.State,
                                              body_scales: np.ndarray) -> None:
         """
@@ -432,24 +535,19 @@ class ModelCache:
                 'cache_body_scale_group_joints() must be called after the last body '
                 'scale group is registered and before scaled mobilizer frames are set.')
 
-        for i in range(num_groups):
-            s = np.asarray(body_scales[3*i : 3*i+3], dtype=float)
+        scales = np.asarray(body_scales, dtype=float).reshape(-1, 3)
 
-            # Outboard frame (X_BM) attached to each group body.
-            for joint in self.body_scale_group_outboard_joints[i]:
-                k = int(joint.getChildFrame().getMobilizedBodyIndex())
-                p_BM = self.baseline_p_BM[k] * s
-                X_BM = osim.Transform(self.baseline_R_BM[k], osim.Vec3(
-                    float(p_BM[0]), float(p_BM[1]), float(p_BM[2])))
-                joint.setOutboardFrame(state, X_BM)
-
-            # Inboard frame (X_PF) of every joint driving a group body's child.
-            for joint in self.body_scale_group_inboard_joints[i]:
-                c = int(joint.getChildFrame().getMobilizedBodyIndex())
-                p_PF = self.baseline_p_PF[c] * s
-                X_PF = osim.Transform(self.baseline_R_PF[c], osim.Vec3(
-                    float(p_PF[0]), float(p_PF[1]), float(p_PF[2])))
-                joint.setInboardFrame(state, X_PF)
+        # Outboard frames (X_BM) attached to each group body, then the inboard
+        # frames (X_PF) of every joint driving a group body's child. Each set is
+        # written in a single call.
+        for writes, setter in (
+                (self.outboard_frame_writes, self.model.setOutboardFrames),
+                (self.inboard_frame_writes, self.model.setInboardFrames)):
+            if not len(writes.group_rows):
+                continue
+            translations = writes.baselines * scales[writes.group_rows]
+            setter(state, writes.mobod_indexes, writes.rotations,
+                   osim.Vector.createFromMat(translations.reshape(-1)))
 
     def set_ellipsoid_radii_from_scales(
             self, state: osim.State, ellipsoid_radii_scales: np.ndarray) -> None:
@@ -701,18 +799,23 @@ class ModelCache:
         self.model.multiplyByPositionJacobianWrtInboardFramePositionsTranspose(
             state, dp_GB, dp_PF)
 
+        # Read both gradients in one crossing each, then drop Ground's row.
+        children = self.child_mobod_indexes
+        gradient_PF = dp_PF.to_numpy()[children]
+        gradient_BM = dp_BM.to_numpy()[children]
+
+        # Each body's inboard-frame contribution lands on its parent, so that term is
+        # scattered; several children can share a parent. The outboard-frame term
+        # lands on the body itself, and those rows are distinct.
         ds_body = np.zeros((self.num_mobod, 3))
-        for cx in range(1, self.num_mobod):
-            px = self.parent_of[cx]
-            ds_body[px] += self.baseline_p_PF[cx] * dp_PF[cx].to_numpy()
-            ds_body[cx] += self.baseline_p_BM[cx] * dp_BM[cx].to_numpy()
+        np.add.at(ds_body, self.parent_mobod_indexes,
+                  self.baseline_p_PF_rows * gradient_PF)
+        ds_body[children] += self.baseline_p_BM_rows * gradient_BM
 
         Js = np.zeros((1, 3 * len(self.body_scale_groups)))
-        for i, group in enumerate(self.body_scale_groups):
-            col = np.zeros(3)
-            for k in group.mobod_indexes:
-                col += ds_body[k,:]
-            Js[0, 3*i:3*(i+1)] = col
+        if len(self.scale_group_mobod_indexes):
+            np.add.at(Js.reshape(-1, 3), self.scale_group_rows,
+                      ds_body[self.scale_group_mobod_indexes])
 
         return Js
 

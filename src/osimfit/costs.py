@@ -611,24 +611,107 @@ class CoordinateStiffnessCostRep(CostRep):
 # HELPERS #
 ###########
 
-def _calc_quaternion(state, frame):
-    rotation = frame.getRotationInGround(state)
-    quaternion = rotation.convertRotationToQuaternion()
-    return np.array([quaternion.get(i) for i in range(4)])
-
-def _calc_quaternion_jacobian(eps):
-    # Simbody -> /SimTKcommon/Mechanics/include/SimTKcommon/internal/Rotation.h#L712
-    e = 0.5 * eps
-    return np.array([
-        [-e[1], -e[2], -e[3]],
-        [ e[0],  e[3], -e[2]],
-        [-e[3],  e[0],  e[1]],
-        [ e[2], -e[1],  e[0]],
-    ])
-
 #########
 # TASKS #
 #########
+
+@dataclass
+class TaskArrays:
+    """
+    Per-task quantities packed into arrays, so a term can evaluate every task in a few
+    vectorized numpy operations instead of looping in Python.
+
+    The model-bound calls that remain are made once per distinct *body* rather than
+    once per task: a station's location in ground is ``p_GB + R_GB @ station``, so one
+    transform read per body serves every task attached to it. On a full-body model that
+    turns 66 per-marker reads into 22 per-body reads.
+
+    Attributes
+    ----------
+    base_stations: np.ndarray, shape (num_tasks, 3)
+        Each task's point in its base frame, before scaling or offsets.
+    mobod_indexes: np.ndarray, shape (num_tasks,)
+        Each task's base-frame `MobilizedBodyIndex`.
+    scale_groups: np.ndarray, shape (num_tasks,)
+        Index of the `BodyScaleGroup` scaling each task, or -1 where none applies.
+    offset_groups: np.ndarray, shape (num_tasks,)
+        Index of the offset group applying to each task, or -1 where none applies.
+    base_frames: list[osim.PhysicalFrame]
+        The distinct base frames across all tasks, one per entry of `body_rows`.
+    body_rows: np.ndarray, shape (num_tasks,)
+        For each task, the index into `base_frames` of its base frame.
+    reference_positions: np.ndarray, shape (num_tasks, 3)
+        Each task's reference position.
+    weights: np.ndarray or None, shape (num_tasks,)
+        Each task's cost weight, for terms carrying a single weight per task.
+        ``None`` for terms that weight position and orientation separately.
+    scaled_rows, scaled_groups: np.ndarray
+        The tasks a body scale applies to, and the scale group of each. Paired, so
+        ``stations[scaled_rows] *= scales[scaled_groups]`` applies every scale at once.
+    shifted_rows, shifted_groups: np.ndarray
+        The same pairing for placement offsets.
+    scaled_base_stations: np.ndarray, shape (len(scaled_rows), 3)
+        ``base_stations[scaled_rows]``, used when accumulating the body-scale Jacobian.
+    unique_mobod_indexes: np.ndarray
+        The distinct base-frame mobod indexes across all tasks, i.e. exactly the rows a
+        per-body gradient scatter can touch.
+    double_weights_column: np.ndarray or None, shape (num_tasks, 1)
+        ``2 * weights`` as a column, the factor the squared-error gradient needs.
+    position_weights, orientation_weights: np.ndarray or None
+        Each task's separate position and orientation weights, for terms that carry
+        both. ``None`` for terms with a single weight per task.
+    double_position_weights_column: np.ndarray or None, shape (num_tasks, 1)
+        ``2 * position_weights`` as a column.
+    reference_orientations: np.ndarray or None, shape (num_tasks, 4)
+        Each task's reference quaternion.
+    base_relative_rotations: np.ndarray or None, shape (num_tasks, 3, 3)
+        Each task's rotation relative to its base frame, which is fixed. A frame's
+        rotation in ground is ``R_GB @ R_BF``, so one transform read per base frame
+        yields every task's orientation.
+    reference_rotations: np.ndarray or None, shape (num_tasks, 3, 3)
+        Each task's reference orientation as a rotation matrix. Lets the orientation
+        error be evaluated without forming quaternions; see
+        `FrameTasks.calc_orientation_alignment`.
+
+    Notes
+    -----
+    Every field is derived from the registered tasks alone, so all of it is computed
+    once and reused. Recomputing even cheap expressions like ``scale_groups >= 0`` on
+    each evaluation costs more than the work it guards once there are only a handful of
+    tasks.
+    """
+    base_stations: np.ndarray
+    mobod_indexes: np.ndarray
+    scale_groups: np.ndarray
+    offset_groups: np.ndarray
+    base_frames: list
+    body_rows: np.ndarray
+    reference_positions: np.ndarray
+    weights: np.ndarray = None
+    scaled_rows: np.ndarray = None
+    scaled_groups: np.ndarray = None
+    shifted_rows: np.ndarray = None
+    shifted_groups: np.ndarray = None
+    scaled_base_stations: np.ndarray = None
+    unique_mobod_indexes: np.ndarray = None
+    double_weights_column: np.ndarray = None
+    position_weights: np.ndarray = None
+    orientation_weights: np.ndarray = None
+    double_position_weights_column: np.ndarray = None
+    reference_orientations: np.ndarray = None
+    base_relative_rotations: np.ndarray = None
+    reference_rotations: np.ndarray = None
+
+    def __post_init__(self):
+        self.scaled_rows = np.flatnonzero(self.scale_groups >= 0)
+        self.scaled_groups = self.scale_groups[self.scaled_rows]
+        self.shifted_rows = np.flatnonzero(self.offset_groups >= 0)
+        self.shifted_groups = self.offset_groups[self.shifted_rows]
+        self.scaled_base_stations = self.base_stations[self.scaled_rows]
+        self.unique_mobod_indexes = np.unique(self.mobod_indexes)
+        self.double_weights_column = (None if self.weights is None
+                                      else 2.0 * self.weights[:, None])
+
 
 class Tasks(ABC):
     """
@@ -637,6 +720,151 @@ class Tasks(ABC):
     @abstractmethod
     def initialize_tasks(self, state: osim.State, **kwargs) -> float:
         pass
+
+    def invalidate_task_arrays(self) -> None:
+        """
+        Drop the cached `TaskArrays`. Called whenever a task is registered, so the
+        arrays are rebuilt on next use.
+        """
+        self._task_arrays = None
+
+    @property
+    def task_arrays(self) -> TaskArrays:
+        """
+        The cached `TaskArrays` for the registered tasks, built on first use.
+        """
+        if getattr(self, '_task_arrays', None) is None:
+            self._task_arrays = self._build_task_arrays()
+        return self._task_arrays
+
+    def _build_task_arrays(self) -> TaskArrays:
+        """
+        Pack the per-task Python lists into arrays, and group the tasks by base frame.
+        """
+        num_tasks = self.num_tasks
+        base_stations = (np.asarray(self.base_stations, dtype=float).reshape(-1, 3)
+                         if num_tasks else np.zeros((0, 3)))
+        mobod_indexes = np.array(
+            [int(self.mobod_indexes.getElt(i)) for i in range(num_tasks)], dtype=int)
+        scale_groups = np.array(
+            [-1 if cache.body_scale_group_index is None
+             else cache.body_scale_group_index for cache in self.station_caches],
+            dtype=int)
+        offset_groups = np.array(
+            [-1 if g is None else g for g in self.offset_group_indexes], dtype=int)
+
+        # One entry per distinct base frame, in first-seen order.
+        frames, rows, row_of_mobod = [], [], {}
+        for i, cache in enumerate(self.station_caches):
+            key = cache.mobod_index
+            if key not in row_of_mobod:
+                row_of_mobod[key] = len(frames)
+                frames.append(cache.base_frame)
+            rows.append(row_of_mobod[key])
+
+        reference_positions = (np.asarray(self.positions, dtype=float).reshape(-1, 3)
+                               if num_tasks else np.zeros((0, 3)))
+        single_weights = getattr(self, 'weights', None)
+        weights = (np.asarray(single_weights, dtype=float)
+                   if single_weights is not None else None)
+
+        return TaskArrays(
+            base_stations=base_stations, mobod_indexes=mobod_indexes,
+            scale_groups=scale_groups, offset_groups=offset_groups,
+            base_frames=frames, body_rows=np.array(rows, dtype=int),
+            reference_positions=reference_positions, weights=weights)
+
+    def calc_base_frame_transforms(self, state: osim.State) -> tuple:
+        """
+        Read each distinct base frame's transform in ground, returning
+        ``(rotations, origins)`` with shapes ``(num_frames, 3, 3)`` and
+        ``(num_frames, 3)``.
+
+        This is the only model-bound work the vectorized paths do per evaluation.
+        `Transform.to_numpy` returns the rotation and translation together as a
+        ``(3, 4)`` array in one crossing, so a body's whole pose costs a single call
+        rather than the ten it takes to read a rotation and an origin element by
+        element.
+        """
+        frames = self.task_arrays.base_frames
+        if not frames:
+            return np.zeros((0, 3, 3)), np.zeros((0, 3))
+        poses = np.array([frame.getTransformInGround(state).to_numpy()
+                          for frame in frames])
+        return poses[:, :, :3], poses[:, :, 3]
+
+    @staticmethod
+    def write_station_array(container, values: np.ndarray, rows=None) -> None:
+        """
+        Copy a numpy ``(n, 3)`` array into a SimTK `Array_<Vec3>`, whose elements are
+        addressed by a single index.
+
+        `updFromMat` moves the whole container in one crossing, so the full array is
+        always written; `rows` is accepted for signature compatibility and ignored,
+        since writing every row in bulk is cheaper than writing a subset one element
+        at a time.
+
+        Parameters
+        ----------
+        container: osim.SimTKArrayVec3
+            The container to fill. Must already be sized to ``len(values)``.
+        values: np.ndarray, shape (n, 3)
+            The values to write.
+        rows: iterable of int, optional
+            Ignored. See above.
+        """
+        container.updFromMat(np.ascontiguousarray(values, dtype=float).reshape(-1))
+
+    @staticmethod
+    def write_vec3_vector(container, values: np.ndarray, rows=None) -> None:
+        """
+        Copy a numpy ``(n, 3)`` array into a SimTK `Vector_<Vec3>`.
+
+        `updFromMat` moves the whole container in one crossing, so the full array is
+        always written; `rows` is accepted for signature compatibility and ignored.
+
+        Parameters
+        ----------
+        container: osim.VectorVec3
+            The container to fill. Must already be sized to ``len(values)``.
+        values: np.ndarray, shape (n, 3)
+            The values to write.
+        rows: iterable of int, optional
+            Ignored. See above.
+        """
+        container.updFromMat(np.ascontiguousarray(values, dtype=float).reshape(-1))
+
+    @staticmethod
+    def write_spatialvec_vector(container, values: np.ndarray) -> None:
+        """
+        Copy a numpy ``(n, 6)`` array into a SimTK `Vector_<SpatialVec>`, columns 0-2
+        becoming each element's first Vec3 and columns 3-5 its second.
+
+        Parameters
+        ----------
+        container: osim.VectorOfSpatialVec
+            The container to fill. Must already be sized to ``len(values)``.
+        values: np.ndarray, shape (n, 6)
+            The values to write.
+        """
+        container.updFromMat(np.ascontiguousarray(values, dtype=float).reshape(-1))
+
+    def calc_station_positions(self, state: osim.State,
+                               stations: np.ndarray) -> np.ndarray:
+        """
+        Return every task's station location in ground as an ``(num_tasks, 3)`` array,
+        computed from one transform read per base frame.
+
+        Parameters
+        ----------
+        state: osim.State
+            The `State` to evaluate, realized through Position.
+        stations: np.ndarray, shape (num_tasks, 3)
+            Each task's point in its base frame, already scaled and offset.
+        """
+        rotations, origins = self.calc_base_frame_transforms(state)
+        rows = self.task_arrays.body_rows
+        return origins[rows] + (rotations[rows] @ stations[..., None])[..., 0]
 
 
 class MarkerTasks(Tasks):
@@ -654,6 +882,7 @@ class MarkerTasks(Tasks):
         self.base_frames = []
         self.base_stations = []
         self.offset_group_indexes: list[int] = []
+        self._task_arrays: TaskArrays = None
 
     def add_marker(self, marker_path: str, position: osim.Vec3, weight: float = 1.0,
                    offset_group_index: int | None = None):
@@ -690,6 +919,7 @@ class MarkerTasks(Tasks):
         self.base_frames.append(cache.base_frame)
         self.base_stations.append(cache.base_station)
         self.offset_group_indexes.append(offset_group_index)
+        self.invalidate_task_arrays()
 
 
 class FrameTasks(Tasks):
@@ -709,6 +939,7 @@ class FrameTasks(Tasks):
         self.base_frames = []
         self.base_stations = []
         self.offset_group_indexes: list[int] = []
+        self._task_arrays: TaskArrays = None
 
     def add_frame(self, frame_path: str, position: osim.Vec3,
                   orientation: osim.Quaternion, position_weight: float = 1.0,
@@ -757,6 +988,75 @@ class FrameTasks(Tasks):
         self.base_frames.append(cache.base_frame)
         self.base_stations.append(cache.base_station)
         self.offset_group_indexes.append(offset_group_index)
+        self.invalidate_task_arrays()
+
+    def _build_task_arrays(self) -> TaskArrays:
+        """
+        Extend the shared arrays with the frame-specific ones: separate position and
+        orientation weights, the reference quaternions, and each frame's fixed rotation
+        relative to its base frame.
+        """
+        arrays = super()._build_task_arrays()
+        arrays.position_weights = np.asarray(self.position_weights, dtype=float)
+        arrays.orientation_weights = np.asarray(self.orientation_weights, dtype=float)
+        arrays.double_position_weights_column = (
+            2.0 * arrays.position_weights[:, None] if self.num_tasks
+            else np.zeros((0, 1)))
+        arrays.reference_orientations = (
+            np.asarray(self.orientations, dtype=float).reshape(-1, 4)
+            if self.num_tasks else np.zeros((0, 4)))
+        arrays.base_relative_rotations = (
+            np.array([frame.findTransformInBaseFrame().R().to_numpy()
+                      for frame in self.frames])
+            if self.num_tasks else np.zeros((0, 3, 3)))
+        # Built through SimTK so the quaternion convention is exact by construction.
+        arrays.reference_rotations = (
+            np.array([osim.Rotation(osim.Quaternion(*[float(v) for v in q])).to_numpy()
+                      for q in arrays.reference_orientations])
+            if self.num_tasks else np.zeros((0, 3, 3)))
+        return arrays
+
+    def calc_orientation_gradients(self, frame_rotations: np.ndarray) -> np.ndarray:
+        """
+        Return the derivative of each task's orientation error with respect to the
+        frame's spatial angular velocity, as an ``(num_tasks, 3)`` array.
+
+        Differentiating the trace form used by `calc_orientation_alignment` gives this
+        straight from the rotation matrices, with no quaternion formed: for a spatial
+        angular velocity ``w``, ``d trace(R_ref^T R) / dw`` is the vector of the
+        antisymmetric part of ``R R_ref^T``. Agrees with the quaternion formulation --
+        ``-2 w (eps . q_ref) J(eps)^T q_ref`` -- to roundoff, and costs several times
+        less.
+        """
+        arrays = self.task_arrays
+        aligned = np.einsum('nij,nkj->nik', frame_rotations,
+                            arrays.reference_rotations)
+        return (-0.25 * arrays.orientation_weights)[:, None] * np.stack(
+            [aligned[:, 1, 2] - aligned[:, 2, 1],
+             aligned[:, 2, 0] - aligned[:, 0, 2],
+             aligned[:, 0, 1] - aligned[:, 1, 0]], axis=1)
+
+    def calc_orientation_alignment(self, frame_rotations: np.ndarray) -> np.ndarray:
+        """
+        Return ``(eps . reference)**2`` for every task, the quantity the orientation
+        error is built from, computed without forming any quaternion.
+
+        For unit quaternions ``trace(R_ref^T R) == 4 (q_ref . q)**2 - 1``, so the
+        squared alignment follows from the rotation matrices directly. That avoids a
+        quaternion conversion, which costs an order of magnitude more in array
+        operations than this does.
+        """
+        return (np.einsum('nij,nij->n', self.task_arrays.reference_rotations,
+                          frame_rotations) + 1.0) / 4.0
+
+    def calc_frame_rotations(self, base_rotations: np.ndarray) -> np.ndarray:
+        """
+        Return each task frame's rotation in ground, ``R_GB @ R_BF``, given the
+        per-task base-frame rotations. A frame's rotation relative to its base frame
+        is fixed, so one transform read per base frame yields every task's
+        orientation.
+        """
+        return base_rotations @ self.task_arrays.base_relative_rotations
 
 
 ##############
@@ -800,51 +1100,52 @@ class FrameTrackingTerm(FrameTasks, TrackingTerm):
         self.initialize_tasks()
 
     def calc_error(self, state, **kwargs) -> float:
-        error = 0.0
-        for i, frame in enumerate(self.frames):
-            p_model = frame.getPositionInGround(state).to_numpy()
-            position_error = self.position_weights[i] * np.square(
-                np.linalg.norm(p_model - self.positions[i]))
+        if self.num_tasks == 0:
+            return 0.0
+        arrays = self.task_arrays
+        base_rotations, origins = self.calc_base_frame_transforms(state)
+        rows = arrays.body_rows
+        R_GB = base_rotations[rows]
 
-            eps = _calc_quaternion(state, frame)
-            orientation_error = self.orientation_weights[i] * (
-                1.0 - np.square(np.dot(eps, self.orientations[i])))
+        positions = origins[rows] + (R_GB @ arrays.base_stations[..., None])[..., 0]
+        residuals = positions - arrays.reference_positions
+        position_error = arrays.position_weights * np.sum(
+            residuals * residuals, axis=1)
 
-            error += position_error + orientation_error
-        return error
+        alignment = self.calc_orientation_alignment(
+            self.calc_frame_rotations(R_GB))
+        orientation_error = arrays.orientation_weights * (1.0 - alignment)
+
+        return float(np.sum(position_error + orientation_error))
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
         if self.num_tasks == 0:
             return [np.zeros((1, len(self.mc.coordinate_q_indexes)))]
 
-        # Loop over all frames and compute the "spatial error" (i.e., the combined
-        # position and orientation error) for each.
+        # Compute the "spatial error" (i.e., the combined position and orientation
+        # error) for every frame at once. One transform read per base frame serves
+        # both halves, since a frame's rotation in ground is R_GB @ R_BF.
+        arrays = self.task_arrays
+        base_rotations, origins = self.calc_base_frame_transforms(state)
+        rows = arrays.body_rows
+        R_GB = base_rotations[rows]
+
+        positions = origins[rows] + (R_GB @ arrays.base_stations[..., None])[..., 0]
+        position_error = arrays.double_position_weights_column * (
+            positions - arrays.reference_positions)
+
+        orientation_error = self.calc_orientation_gradients(
+            self.calc_frame_rotations(R_GB))
+
+        # A SpatialVec holds the angular half first, then the linear half.
         spatialError = osim.VectorOfSpatialVec(self.num_tasks, osim.SpatialVec(0))
-        for i, frame in enumerate(self.frames):
-            wp = self.position_weights[i]
-            wo = self.orientation_weights[i]
-
-            # Position error.
-            p_model = frame.getPositionInGround(state)
-            p_error = osim.Vec3(
-                2.0 * wp * (p_model[0] - self.positions[i][0]),
-                2.0 * wp * (p_model[1] - self.positions[i][1]),
-                2.0 * wp * (p_model[2] - self.positions[i][2]))
-
-            # Orientation error.
-            eps = _calc_quaternion(state, frame)
-            jac_eps = _calc_quaternion_jacobian(eps)
-            omega = jac_eps.T @ self.orientations[i]
-            scale = wo * -2.0 * np.dot(eps, self.orientations[i])
-            w_error = osim.Vec3(scale * omega[0], scale * omega[1], scale * omega[2])
-
-            # Combine the position and orientation into a SpatialVec to pass to the
-            # frame Jacobian operator below.
-            spatialError.set(i, osim.SpatialVec(w_error, p_error))
+        self.write_spatialvec_vector(
+            spatialError, np.concatenate([orientation_error, position_error], axis=1))
 
         # Calculate the frame (position and orientation) error Jacobian.
         Ju = osim.Vector(state.getNU(), 0.0)
-        self.mc.model.multiplyByFrameJacobianTranspose(Ju)
+        self.mc.model.multiplyByFrameJacobianTranspose(
+            state, self.mobod_indexes, self.stations, spatialError, Ju)
         Jq = osim.Vector(state.getNQ(), 0.0)
         self.mc.model.multiplyByNInv(state, True, Ju, Jq)
 
@@ -868,27 +1169,25 @@ class MarkerTrackingTerm(MarkerTasks, TrackingTerm):
         self.initialize_tasks()
 
     def calc_error(self, state, **kwargs) -> float:
-        error = 0.0
-        for marker, position, weight in zip(
-                self.markers, self.positions, self.weights):
-            p_model = marker.getLocationInGround(state).to_numpy()
-            error += weight * np.square(np.linalg.norm(p_model - position))
-        return error
+        if self.num_tasks == 0:
+            return 0.0
+        arrays = self.task_arrays
+        positions = self.calc_station_positions(state, arrays.base_stations)
+        residuals = positions - arrays.reference_positions
+        return float(np.sum(arrays.weights * np.sum(residuals * residuals, axis=1)))
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
         if self.num_tasks == 0:
             return [np.zeros((1, len(self.mc.coordinate_q_indexes)))]
 
-        # Inialize the array used to calculate the position error Jacobian via the
+        # Initialize the array used to calculate the position error Jacobian via the
         # grouped Simbody operator.
+        arrays = self.task_arrays
+        positions = self.calc_station_positions(state, arrays.base_stations)
+        gradient = arrays.double_weights_column * (
+            positions - arrays.reference_positions)
         f_GP = osim.VectorVec3(self.num_tasks, osim.Vec3(0))
-        for i, (marker, position, weight) in enumerate(
-                zip(self.markers, self.positions, self.weights)):
-            p_model = marker.getLocationInGround(state)
-            f_GP.set(i, osim.Vec3(
-                2.0 * weight * (p_model[0] - position[0]),
-                2.0 * weight * (p_model[1] - position[1]),
-                2.0 * weight * (p_model[2] - position[2])))
+        self.write_vec3_vector(f_GP, gradient)
 
         # Calculate the position error Jacobian.
         Ju = osim.Vector(state.getNU(), 0.0)
@@ -910,27 +1209,61 @@ class BilevelTerm(TrackingTerm):
     """
     def __init__(self):
         super().__init__()
+        self._station_array = None
 
-    def apply_scales(self, body_scales: np.ndarray) -> None:
-        for itask, cache in enumerate(self.station_caches):
-            s = cache.calc_scaled_base_station(body_scales)
-            self.stations.updElt(itask).set(0, float(s[0]))
-            self.stations.updElt(itask).set(1, float(s[1]))
-            self.stations.updElt(itask).set(2, float(s[2]))
+    @property
+    def station_array(self) -> np.ndarray:
+        """
+        The station locations set by the most recent `apply_state`, as an
+        ``(num_tasks, 3)`` array. Before any `apply_state` call -- or after a task has
+        been registered since the last one -- this falls back to the unscaled, unoffset
+        baselines, which is what an unparameterized evaluation should see.
+        """
+        cached = self._station_array
+        if cached is None or len(cached) != self.num_tasks:
+            cached = self._station_array = self.task_arrays.base_stations.copy()
+        return cached
 
-    def apply_offsets(self, offsets: np.ndarray) -> None:
-        for i, g in enumerate(self.offset_group_indexes):
-            if g is None:
-                continue
-            o = np.asarray(offsets[3*g : 3*g+3], dtype=float)
-            s = self.stations.getElt(i).to_numpy() + o
-            self.stations.updElt(i).set(0, float(s[0]))
-            self.stations.updElt(i).set(1, float(s[1]))
-            self.stations.updElt(i).set(2, float(s[2]))
+    def calc_stations(self, body_scales: np.ndarray,
+                      offsets: np.ndarray) -> np.ndarray:
+        """
+        Return every task's base-frame point with its group's body scale and placement
+        offset applied, as an ``(num_tasks, 3)`` array.
+
+        Scales multiply the cached baseline and offsets are added to it, so repeated
+        calls are absolute rather than compounding.
+
+        Parameters
+        ----------
+        body_scales: np.ndarray
+            Flat XYZ body-scale variables, one Vec3 per `BodyScaleGroup`.
+        offsets: np.ndarray
+            Flat XYZ offset variables, one Vec3 per offset group.
+        """
+        arrays = self.task_arrays
+        if not (len(arrays.scaled_rows) or len(arrays.shifted_rows)):
+            return arrays.base_stations
+
+        stations = arrays.base_stations.copy()
+        if len(arrays.scaled_rows):
+            scales = np.asarray(body_scales, dtype=float).reshape(-1, 3)
+            stations[arrays.scaled_rows] *= scales[arrays.scaled_groups]
+        if len(arrays.shifted_rows):
+            shifts = np.asarray(offsets, dtype=float).reshape(-1, 3)
+            stations[arrays.shifted_rows] += shifts[arrays.shifted_groups]
+        return stations
 
     def apply_state(self, body_scales: np.ndarray, offsets: np.ndarray) -> None:
-        self.apply_scales(body_scales)
-        self.apply_offsets(offsets)
+        """
+        Apply body scales and placement offsets to this term's station locations.
+
+        The result is kept both as `station_array`, which the vectorized error and
+        Jacobian paths read, and in the SimTK `stations` container that the grouped
+        Simbody operators require. The SimTK container is written exactly once per
+        call.
+        """
+        self._station_array = self.calc_stations(body_scales, offsets)
+        self.write_station_array(self.stations, self._station_array)
 
 
 class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
@@ -951,13 +1284,20 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
         self.initialize_tasks()
 
     def calc_error(self, state, **kwargs) -> float:
-        error = 0.0
-        for i, (frame, position, weight) in enumerate(
-                zip(self.base_frames, self.positions, self.weights)):
-            p_model = frame.findStationLocationInGround(
-                state, self.stations.getElt(i)).to_numpy()
-            error += weight * np.square(np.linalg.norm(p_model - position))
-        return error
+        """
+        Return the weighted squared marker position error, using the scaled and offset
+        station locations applied by `apply_state`.
+
+        Positions are reconstructed from one transform read per base frame, which
+        costs fewer crossings than a `findStationLocationInGround` per task whenever
+        tasks outnumber the bodies they sit on.
+        """
+        if self.num_tasks == 0:
+            return 0.0
+        arrays = self.task_arrays
+        positions = self.calc_station_positions(state, self.station_array)
+        residuals = positions - arrays.reference_positions
+        return float(np.sum(arrays.weights * np.sum(residuals * residuals, axis=1)))
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
         Jq = np.zeros((1, len(self.mc.coordinate_q_indexes)))
@@ -969,20 +1309,20 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
             return [Jq, Js, Jo, Jr, Jl]
 
         # Calculate the per-marker error gradient in Ground. This is a force-like term
-        # will be multiplied with (the transpose of) each position Jacobian below. Also,
-        # precompute the sensitivity of each marker's ground position to a shift from
-        # an offset variable.
+        # that will be multiplied with (the transpose of) each position Jacobian below.
+        # Also, precompute the sensitivity of each marker's ground position to a shift
+        # from an offset variable. One transform read per base frame serves every
+        # marker attached to it, and the per-marker arithmetic is vectorized.
+        arrays = self.task_arrays
+        rotations, origins = self.calc_base_frame_transforms(state)
+        rows = arrays.body_rows
+        R_GB = rotations[rows]
+        p_GS = origins[rows] + (R_GB @ self.station_array[..., None])[..., 0]
+        gradient = arrays.double_weights_column * (p_GS - arrays.reference_positions)
+        doffset = (gradient[:, None, :] @ R_GB)[:, 0, :]
+
         dp_GS = osim.VectorVec3(self.num_tasks, osim.Vec3(0))
-        doffset = np.zeros((self.num_tasks, 3))
-        for i, (frame, position, weight) in enumerate(
-                zip(self.base_frames, self.positions, self.weights)):
-            p_GS = frame.findStationLocationInGround(state, self.stations.getElt(i))
-            dp_GS.set(i, osim.Vec3(2.0 * weight * (p_GS[0] - position[0]),
-                                   2.0 * weight * (p_GS[1] - position[1]),
-                                   2.0 * weight * (p_GS[2] - position[2])))
-            rotation = frame.getRotationInGround(state)
-            R_GB = np.array([[rotation.get(r, c) for c in range(3)] for r in range(3)])
-            doffset[i] = dp_GS.get(i).to_numpy() @ R_GB
+        self.write_vec3_vector(dp_GS, gradient)
 
         # Calculate the Jacobian of the position error with respect to the coordinates.
         grad_u = osim.Vector(state.getNU(), 0.0)
@@ -999,11 +1339,11 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
         #
         #     dp_GB.get(k) += dp_GS.get(i)   # for each marker i on body k
         #
+        accumulated = np.zeros((self.mc.num_mobod, 3))
+        np.add.at(accumulated, arrays.mobod_indexes, gradient)
         dp_GB = osim.VectorVec3(self.mc.num_mobod, osim.Vec3(0))
-        for i in range(self.num_tasks):
-            k = int(self.mobod_indexes.getElt(i))
-            cur = dp_GB.get(k).to_numpy() + dp_GS.get(i).to_numpy()
-            dp_GB.set(k, osim.Vec3(float(cur[0]), float(cur[1]), float(cur[2])))
+        self.write_vec3_vector(dp_GB, accumulated,
+                               rows=arrays.unique_mobod_indexes)
 
         # Calculate the position-error Jacobian with respect to body scales.
         Js = self.mc.calc_position_jacobian_wrt_body_scales(state, dp_GB)
@@ -1015,16 +1355,14 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
 
         # Assemble the marker offset Jacobian based on the offset sensitivities. Also,
         # include the contributions from the marker offsets to the Jacobian with respect
-        # to body scales.
-        for i in range(self.num_tasks):
-            g_off = self.offset_group_indexes[i]
-            g_scale = self.station_caches[i].body_scale_group_index
-            if g_off is None and g_scale is None:
-                continue
-            if g_off is not None:
-                Jo[0, 3*g_off:3*g_off+3] += doffset[i]
-            if g_scale is not None:
-                Js[0, 3*g_scale:3*g_scale+3] += self.base_stations[i] * doffset[i]
+        # to body scales. Several tasks can share a group, so these are scattered with
+        # `np.add.at` rather than assigned.
+        if len(arrays.shifted_rows):
+            np.add.at(Jo.reshape(-1, 3), arrays.shifted_groups,
+                      doffset[arrays.shifted_rows])
+        if len(arrays.scaled_rows):
+            np.add.at(Js.reshape(-1, 3), arrays.scaled_groups,
+                      arrays.scaled_base_stations * doffset[arrays.scaled_rows])
 
         return [Jq, Js, Jo, Jr, Jl]
 
@@ -1047,19 +1385,25 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
         self.initialize_tasks()
 
     def calc_error(self, state, **kwargs) -> float:
-        error = 0.0
-        for i, (frame, base_frame) in enumerate(zip(self.frames, self.base_frames)):
-            p_model = base_frame.findStationLocationInGround(
-                state, self.stations.getElt(i)).to_numpy()
-            position_error = self.position_weights[i] * np.square(
-                np.linalg.norm(p_model - self.positions[i]))
+        if self.num_tasks == 0:
+            return 0.0
+        arrays = self.task_arrays
+        base_rotations, origins = self.calc_base_frame_transforms(state)
+        rows = arrays.body_rows
+        R_GB = base_rotations[rows]
 
-            eps = _calc_quaternion(state, frame)
-            orientation_error = self.orientation_weights[i] * (
-                1.0 - np.square(np.dot(eps, self.orientations[i])))
+        # Positions come from the scaled and offset stations applied by apply_state,
+        # so the error stays consistent with any applied offsets.
+        positions = origins[rows] + (R_GB @ self.station_array[..., None])[..., 0]
+        residuals = positions - arrays.reference_positions
+        position_error = arrays.position_weights * np.sum(
+            residuals * residuals, axis=1)
 
-            error += position_error + orientation_error
-        return error
+        alignment = self.calc_orientation_alignment(
+            self.calc_frame_rotations(R_GB))
+        orientation_error = arrays.orientation_weights * (1.0 - alignment)
+
+        return float(np.sum(position_error + orientation_error))
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
         Jq = np.zeros((1, len(self.mc.coordinate_q_indexes)))
@@ -1070,42 +1414,31 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
         if self.num_tasks == 0:
             return [Jq, Js, Jo, Jr, Jl]
 
-        # Loop over all frames and compute the "spatial error" (i.e., the combined
-        # position and orientation error) for each.
+        # Compute the combined position and orientation error for every frame at
+        # once. One transform read per base frame serves the positions, the
+        # orientations (a frame's rotation in ground is R_GB @ R_BF) and the offset
+        # sensitivities below.
+        arrays = self.task_arrays
+        base_rotations, origins = self.calc_base_frame_transforms(state)
+        rows = arrays.body_rows
+        R_GB = base_rotations[rows]
+
+        # The frames' ground positions come from their (possibly offset) cached
+        # stations, so the gradient is consistent with any applied offsets.
+        positions = origins[rows] + (R_GB @ self.station_array[..., None])[..., 0]
+        gradient = arrays.double_position_weights_column * (
+            positions - arrays.reference_positions)
+
+        orientation_error = self.calc_orientation_gradients(
+            self.calc_frame_rotations(R_GB))
+
+        # A SpatialVec holds the angular half first, then the linear half.
         spatialError = osim.VectorOfSpatialVec(self.num_tasks, osim.SpatialVec(0))
-        # Store the position-error gradient along the way. We need it for the body scale
-        # and offset Jacobian calculations. Also, precompute the sensitivity of each
-        # frame's ground position to a shift from an offset variable.
-        dp_GF = osim.VectorVec3(self.num_tasks, osim.Vec3(0))
-        doffset = np.zeros((self.num_tasks, 3))
-        for i, (frame, base_frame) in enumerate(zip(self.frames, self.base_frames)):
-            wp = self.position_weights[i]
-            wo = self.orientation_weights[i]
-            position = self.positions[i]
+        self.write_spatialvec_vector(
+            spatialError, np.concatenate([orientation_error, gradient], axis=1))
 
-            # The frame's ground position is computed from its (possibly offset) cached
-            # station so that the gradient is consistent with any applied offsets.
-            p_GF = base_frame.findStationLocationInGround(
-                state, self.stations.getElt(i))
-            dp_GF.set(i, osim.Vec3(2.0 * wp * (p_GF[0] - position[0]),
-                                   2.0 * wp * (p_GF[1] - position[1]),
-                                   2.0 * wp * (p_GF[2] - position[2])))
-
-            # Calculate the per-frame orientation error in Ground.
-            eps = _calc_quaternion(state, frame)
-            jac_eps = _calc_quaternion_jacobian(eps)
-            omega = jac_eps.T @ self.orientations[i]
-            scale = wo * -2.0 * np.dot(eps, self.orientations[i])
-            dw_GF = osim.Vec3(scale * omega[0], scale * omega[1], scale * omega[2])
-
-            # Combine the position and orientation into a SpatialVec to pass to the
-            # frame Jacobian operator below.
-            spatialError.set(i, osim.SpatialVec(dw_GF, dp_GF.get(i)))
-
-            # Precompute the position sensitivity to a base-frame station shift.
-            rotation = base_frame.getRotationInGround(state)
-            R_GB = np.array([[rotation.get(r, c) for c in range(3)] for r in range(3)])
-            doffset[i] = dp_GF.get(i).to_numpy() @ R_GB
+        # Sensitivity of each frame's ground position to a base-frame station shift.
+        doffset = np.einsum('ni,nij->nj', gradient, R_GB)
 
         # Calculate the frame (position and orientation) error Jacobian.
         grad_u = osim.Vector(state.getNU(), 0.0)
@@ -1122,11 +1455,10 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
         #
         #     dp_GB.get(k) += dp_GF.get(i)   # for each frame i on body k
         #
+        accumulated = np.zeros((self.mc.num_mobod, 3))
+        np.add.at(accumulated, arrays.mobod_indexes, gradient)
         dp_GB = osim.VectorVec3(self.mc.num_mobod, osim.Vec3(0))
-        for i in range(self.num_tasks):
-            k = int(self.mobod_indexes.getElt(i))
-            cur = dp_GB.get(k).to_numpy() + dp_GF.get(i).to_numpy()
-            dp_GB.set(k, osim.Vec3(float(cur[0]), float(cur[1]), float(cur[2])))
+        self.write_vec3_vector(dp_GB, accumulated)
 
         # Calculate the position-error Jacobian with respect to body scales. This does
         # not include the contributions from frame offsets, we will include that below.
@@ -1139,16 +1471,14 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
 
         # Assemble the frame offset Jacobian based on the offset sensitivities. Also,
         # include the contributions from the frame offsets to the Jacobian with respect
-        # to body scales.
-        for i in range(self.num_tasks):
-            g_off = self.offset_group_indexes[i]
-            g_scale = self.station_caches[i].body_scale_group_index
-            if g_off is None and g_scale is None:
-                continue
-            if g_off is not None:
-                Jo[0, 3*g_off:3*g_off+3] += doffset[i]
-            if g_scale is not None:
-                Js[0, 3*g_scale:3*g_scale+3] += self.base_stations[i] * doffset[i]
+        # to body scales. Several tasks can share a group, so these are scattered with
+        # `np.add.at` rather than assigned.
+        if len(arrays.shifted_rows):
+            np.add.at(Jo.reshape(-1, 3), arrays.shifted_groups,
+                      doffset[arrays.shifted_rows])
+        if len(arrays.scaled_rows):
+            np.add.at(Js.reshape(-1, 3), arrays.scaled_groups,
+                      arrays.scaled_base_stations * doffset[arrays.scaled_rows])
 
         return [Jq, Js, Jo, Jr, Jl]
 

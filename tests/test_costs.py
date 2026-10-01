@@ -14,6 +14,7 @@ from osimfit.model import (ModelCache, BodyScale, BodyScaleGroup, MarkerOffsetGr
 from osimfit.bounds import Bounds
 from osimfit.solvers import InverseKinematicsSolver, SplinedKinematicsSolver
 from osimfit.costs import (AnthropometricRegularizationCostRep, CostInput,
+                           FrameTrackingTerm, FrameBilevelTerm, MarkerTrackingTerm,
                            CostRep, SymbolicCost, SymbolicCostRep,
                            BodyScaleRegularizationCost, BodyScaleIsotropyCost,
                            OffsetRegularizationCost, BilevelCostRep,
@@ -1788,3 +1789,171 @@ def test_beam_length_scale_regularization_holds_a_factor_at_its_target(tmp_path)
     solution = solver.solve()
     np.testing.assert_allclose(
         solution.get_parameter(ELBOW, BeamLengthScale).value, [1.0], atol=1e-3)
+
+#############################
+# TERM JACOBIANS VERSUS FD  #
+#############################
+
+def _chain_with_rotated_offset_frames():
+    """
+    A pin-jointed chain carrying markers and `PhysicalOffsetFrame`s whose rotations
+    relative to their bodies are not identity, so the frame terms' orientation path is
+    exercised rather than skipped.
+    """
+    model = osim.Model()
+    model.setName('offset_chain')
+    previous = model.getGround()
+    for i in range(3):
+        body = osim.Body(f'b{i}', 1.0, osim.Vec3(0), osim.Inertia(1, 1, 1, 0, 0, 0))
+        model.addBody(body)
+        joint = osim.PinJoint(f'j{i}', previous, osim.Vec3(0.2 * i, 0, 0),
+                              osim.Vec3(0), body, osim.Vec3(0, -0.3, 0), osim.Vec3(0))
+        joint.updCoordinate().setName(f'q{i}')
+        model.addJoint(joint)
+        previous = body
+        model.addMarker(osim.Marker(f'm{i}', body, osim.Vec3(0.05, 0.1, -0.02)))
+        body.addComponent(osim.PhysicalOffsetFrame(
+            f'off{i}', body,
+            osim.Transform(osim.Rotation(0.4 + 0.1 * i, osim.Vec3(0.3, 0.5, 0.8)),
+                           osim.Vec3(0.01, 0.02, -0.03))))
+    model.finalizeConnections()
+    return model
+
+
+def _coordinate_jacobian_by_finite_difference(mc, term, step=1e-6):
+    """
+    Differentiate `term.calc_error` with respect to the independent coordinates by
+    central differences, realizing to Position at each perturbation.
+    """
+    indexes = mc.coordinate_q_indexes
+    q = np.array(mc.state.getQ().to_numpy())
+    jacobian = np.zeros(len(indexes))
+    for column, index in enumerate(indexes):
+        errors = []
+        for sign in (1.0, -1.0):
+            perturbed = q.copy()
+            perturbed[index] += sign * step
+            mc.state.setQ(osim.Vector.createFromMat(perturbed))
+            mc.model.realizePosition(mc.state)
+            errors.append(term.calc_error(mc.state))
+        jacobian[column] = (errors[0] - errors[1]) / (2.0 * step)
+    mc.state.setQ(osim.Vector.createFromMat(q))
+    mc.model.realizePosition(mc.state)
+    return jacobian
+
+
+def test_frame_tracking_term_jacobian_matches_finite_differences():
+    """
+    The analytic frame Jacobian must match finite differences of the error it
+    differentiates. This covers the orientation path, whose gradient is computed from
+    rotation matrices rather than quaternions, and the position path together.
+    """
+    mc = ModelCache(_chain_with_rotated_offset_frames())
+    term = FrameTrackingTerm(mc)
+    rng = np.random.default_rng(0)
+    for i in range(3):
+        quaternion = rng.normal(size=4)
+        quaternion /= np.linalg.norm(quaternion)
+        term.add_frame(f'/bodyset/b{i}/off{i}',
+                       osim.Vec3(*[float(v) for v in rng.uniform(-0.2, 0.2, 3)]),
+                       osim.Quaternion(*[float(v) for v in quaternion]),
+                       position_weight=1.0 + 0.1 * i,
+                       orientation_weight=0.5 + 0.2 * i)
+
+    q = np.zeros(mc.state.getNQ())
+    q[mc.coordinate_q_indexes] = rng.uniform(-0.4, 0.4, len(mc.coordinate_q_indexes))
+    mc.state.setQ(osim.Vector.createFromMat(q))
+    mc.model.realizePosition(mc.state)
+
+    analytic = term.calc_jacobian(mc.state)[0][0, :]
+    numeric = _coordinate_jacobian_by_finite_difference(mc, term)
+    np.testing.assert_allclose(analytic, numeric, rtol=1e-5, atol=1e-7)
+
+
+def test_frame_bilevel_term_coordinate_jacobian_matches_finite_differences():
+    """
+    The same check for the bilevel frame term, whose position gradient flows through
+    the scaled and offset station locations.
+    """
+    model = _chain_with_rotated_offset_frames()
+    mc = ModelCache(model)
+    bodies = [mc.model.getBodySet().get(i) for i in range(mc.model.getNumBodies())]
+    for body in bodies:
+        mc.add_parameter_group(BodyScaleGroup([body.getAbsolutePathString()],
+                                              [int(body.getMobilizedBodyIndex())]))
+    mc.cache_body_scale_group_joints()
+
+    term = FrameBilevelTerm(mc)
+    rng = np.random.default_rng(1)
+    for i in range(3):
+        quaternion = rng.normal(size=4)
+        quaternion /= np.linalg.norm(quaternion)
+        term.add_frame(f'/bodyset/b{i}/off{i}',
+                       osim.Vec3(*[float(v) for v in rng.uniform(-0.2, 0.2, 3)]),
+                       osim.Quaternion(*[float(v) for v in quaternion]),
+                       position_weight=1.0, orientation_weight=0.7)
+
+    scales = rng.uniform(0.9, 1.1, 3 * len(mc.body_scale_groups))
+    mc.set_scaled_mobilizer_frame_positions(mc.state, scales)
+    term.apply_state(scales, np.zeros(0))
+    q = np.zeros(mc.state.getNQ())
+    q[mc.coordinate_q_indexes] = rng.uniform(-0.4, 0.4, len(mc.coordinate_q_indexes))
+    mc.state.setQ(osim.Vector.createFromMat(q))
+    mc.model.realizePosition(mc.state)
+
+    analytic = term.calc_jacobian(mc.state)[0][0, :]
+    numeric = _coordinate_jacobian_by_finite_difference(mc, term)
+    np.testing.assert_allclose(analytic, numeric, rtol=1e-5, atol=1e-7)
+
+
+def test_marker_tracking_term_jacobian_matches_finite_differences():
+    mc = ModelCache(_chain_with_rotated_offset_frames())
+    term = MarkerTrackingTerm(mc)
+    rng = np.random.default_rng(2)
+    for i in range(3):
+        term.add_marker(f'/markerset/m{i}',
+                        osim.Vec3(*[float(v) for v in rng.uniform(-0.2, 0.2, 3)]),
+                        weight=1.0 + 0.3 * i)
+    q = np.zeros(mc.state.getNQ())
+    q[mc.coordinate_q_indexes] = rng.uniform(-0.4, 0.4, len(mc.coordinate_q_indexes))
+    mc.state.setQ(osim.Vector.createFromMat(q))
+    mc.model.realizePosition(mc.state)
+
+    analytic = term.calc_jacobian(mc.state)[0][0, :]
+    numeric = _coordinate_jacobian_by_finite_difference(mc, term)
+    np.testing.assert_allclose(analytic, numeric, rtol=1e-5, atol=1e-7)
+
+
+def test_orientation_error_matches_the_quaternion_definition():
+    """
+    The orientation error is evaluated from rotation matrices via
+    ``trace(R_ref^T R) == 4 (q_ref . q)**2 - 1`` rather than by forming quaternions.
+    Pin that against the quaternion definition it replaces.
+    """
+    mc = ModelCache(_chain_with_rotated_offset_frames())
+    term = FrameTrackingTerm(mc)
+    rng = np.random.default_rng(3)
+    references = []
+    for i in range(3):
+        quaternion = rng.normal(size=4)
+        quaternion /= np.linalg.norm(quaternion)
+        references.append(quaternion)
+        term.add_frame(f'/bodyset/b{i}/off{i}', osim.Vec3(0),
+                       osim.Quaternion(*[float(v) for v in quaternion]),
+                       position_weight=0.0, orientation_weight=1.0)
+
+    q = np.zeros(mc.state.getNQ())
+    q[mc.coordinate_q_indexes] = rng.uniform(-0.6, 0.6, len(mc.coordinate_q_indexes))
+    mc.state.setQ(osim.Vector.createFromMat(q))
+    mc.model.realizePosition(mc.state)
+
+    # position_weight is zero, so calc_error is the orientation error alone.
+    expected = 0.0
+    for i, reference in enumerate(references):
+        frame = osim.PhysicalFrame.safeDownCast(
+            mc.model.getComponent(f'/bodyset/b{i}/off{i}'))
+        quaternion = frame.getRotationInGround(mc.state).convertRotationToQuaternion()
+        eps = np.array([quaternion.get(k) for k in range(4)])
+        expected += 1.0 - np.square(np.dot(eps, reference))
+
+    assert term.calc_error(mc.state) == pytest.approx(expected, rel=1e-12, abs=1e-14)
