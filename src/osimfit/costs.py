@@ -244,13 +244,39 @@ class Function(ca.Callback, ABC):
     enable_fd: bool, optional
         If ``True``, CasADi finite-differences the callback instead of using its analytic
         Jacobian (`get_jacobian`). Default is ``False``.
+    defer_construction: bool, optional
+        If ``True``, delay `construct_callback` until the function is first called.
+        Required for callbacks whose declared input sizes are not final at
+        construction time (e.g. a tracking rep's reference block grows as tasks are
+        registered). Default is ``False``, which constructs eagerly so CasADi metadata
+        (`size1_in`, `n_in`, ...) is available immediately.
     """
-    def __init__(self, name: str, mc: ModelCache, enable_fd: bool = False):
+    def __init__(self, name: str, mc: ModelCache, enable_fd: bool = False,
+                 defer_construction: bool = False):
         ca.Callback.__init__(self)
         self.mc = mc
         self.state = self.mc.state
         self.enable_fd = enable_fd
-        self.construct(name, {'enable_fd': True} if enable_fd else {})
+        self._callback_name = name
+        self._constructed = False
+        if not defer_construction:
+            self.construct_callback()
+
+    def construct_callback(self) -> None:
+        """
+        Register this callback with CasADi.
+
+        Called eagerly from `__init__` unless `defer_construction` was set, in which
+        case the first `__call__` triggers it. Deferral exists because CasADi queries
+        the declared input sizes during `construct`, and a tracking rep's reference
+        block is not final until every marker and frame has been registered. Repeated
+        calls are a no-op.
+        """
+        if self._constructed:
+            return
+        self._constructed = True
+        self.construct(self._callback_name,
+                       {'enable_fd': True} if self.enable_fd else {})
 
     def get_n_in(self): return self._get_num_inputs()
     def get_n_out(self): return self._get_num_outputs()
@@ -335,14 +361,38 @@ class CallbackCostRep(CostRep, Function):
     A `CostRep` backed by a CasADi callback function that evaluates the cost and its
     Jacobian through OpenSim. Constructed with a fully-populated `ModelCache`, so the
     input sizes it declares to CasADi match the solver's registered parameter groups.
-    """
 
-    def __call__(self, input: CostInput) -> ca.MX:
-        return ca.Function.__call__(
-            self, *(getattr(input, name) for name in CostInput.INPUT_ORDER))
+    Reps whose evaluation depends on per-sample reference data declare a trailing
+    `reference` input after the `CostInput.INPUT_ORDER` blocks. Reference data is a
+    problem *parameter*, not an optimization variable, so it is deliberately kept out
+    of `CostInput`: `required_inputs` and a solver's `SUPPORTED_INPUTS` continue to
+    describe only the optimization variables. Reps with `reference_size == 0` declare
+    no such input and are unaffected.
+
+    Attributes
+    ----------
+    reference_size: int
+        Length of the trailing reference input, or 0 for reps that need none.
+    """
+    reference_size: int = 0
+
+    @property
+    def default_reference(self) -> np.ndarray:
+        """
+        The reference values registered on this rep, used when `__call__` is given no
+        explicit `reference`. Empty for reps that declare no reference input.
+        """
+        return np.zeros(0)
+
+    def __call__(self, input: CostInput, reference=None) -> ca.MX:
+        self.construct_callback()
+        args = [getattr(input, name) for name in CostInput.INPUT_ORDER]
+        if self.reference_size:
+            args.append(self.default_reference if reference is None else reference)
+        return ca.Function.__call__(self, *args)
 
     def _get_num_inputs(self):
-        return len(CostInput.INPUT_ORDER)
+        return len(CostInput.INPUT_ORDER) + (1 if self.reference_size else 0)
 
     def _get_num_outputs(self):
         return 1
@@ -357,6 +407,8 @@ class CallbackCostRep(CostRep, Function):
             'beam_length_scales': len(self.mc.beam_length_scale_groups),
         }
         order = CostInput.INPUT_ORDER
+        if self.reference_size and i == len(order):
+            return self.reference_size
         if not 0 <= i < len(order):
             raise IndexError(f'Invalid input index {i} for {type(self).__name__}.')
         return sizes[order[i]]
@@ -691,6 +743,31 @@ class MarkerTasks(Tasks):
         self.base_stations.append(cache.base_station)
         self.offset_group_indexes.append(offset_group_index)
 
+    @property
+    def reference_size(self) -> int:
+        """Length of this term's reference block: an XYZ position per marker."""
+        return 3 * self.num_tasks
+
+    def pack_reference(self, positions=None) -> np.ndarray:
+        """
+        Flatten per-marker reference positions into ``[x0, y0, z0, x1, ...]``.
+
+        Parameters
+        ----------
+        positions: sequence of array-like, optional
+            Per-marker XYZ positions. Defaults to the positions registered via
+            `add_marker`.
+        """
+        positions = self.positions if positions is None else positions
+        if not len(positions):
+            return np.zeros(0)
+        return np.concatenate(
+            [np.asarray(p, dtype=float).reshape(3) for p in positions])
+
+    def unpack_reference(self, reference) -> np.ndarray:
+        """View a flat reference block as an ``(num_tasks, 3)`` position array."""
+        return np.asarray(reference, dtype=float).reshape(self.num_tasks, 3)
+
 
 class FrameTasks(Tasks):
     """
@@ -758,6 +835,44 @@ class FrameTasks(Tasks):
         self.base_stations.append(cache.base_station)
         self.offset_group_indexes.append(offset_group_index)
 
+    @property
+    def reference_size(self) -> int:
+        """
+        Length of this term's reference block: an XYZ position plus a 4-component
+        quaternion per frame, laid out as all positions followed by all orientations.
+        """
+        return 7 * self.num_tasks
+
+    def pack_reference(self, positions=None, orientations=None) -> np.ndarray:
+        """
+        Flatten per-frame reference data into
+        ``[p0, ..., p_{n-1}, e0, ..., e_{n-1}]``, positions before orientations.
+
+        Parameters
+        ----------
+        positions: sequence of array-like, optional
+            Per-frame XYZ positions. Defaults to those registered via `add_frame`.
+        orientations: sequence of array-like, optional
+            Per-frame quaternions. Defaults to those registered via `add_frame`.
+        """
+        positions = self.positions if positions is None else positions
+        orientations = self.orientations if orientations is None else orientations
+        if not len(positions):
+            return np.zeros(0)
+        return np.concatenate(
+            [np.asarray(p, dtype=float).reshape(3) for p in positions] +
+            [np.asarray(e, dtype=float).reshape(4) for e in orientations])
+
+    def unpack_reference(self, reference) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Split a flat reference block into an ``(num_tasks, 3)`` position array and an
+        ``(num_tasks, 4)`` orientation array.
+        """
+        reference = np.asarray(reference, dtype=float).reshape(-1)
+        split = 3 * self.num_tasks
+        return (reference[:split].reshape(self.num_tasks, 3),
+                reference[split:].reshape(self.num_tasks, 4))
+
 
 ##############
 # COST TERMS #
@@ -775,11 +890,12 @@ class TrackingTerm(ABC):
         super().__init__()
 
     @abstractmethod
-    def calc_error(self, state: osim.State, **kwargs) -> float:
+    def calc_error(self, state: osim.State, *reference, **kwargs) -> float:
         pass
 
     @abstractmethod
-    def calc_jacobian(self, state: osim.State, **kwargs) -> list[np.ndarray]:
+    def calc_jacobian(self, state: osim.State, *reference,
+                      **kwargs) -> list[np.ndarray]:
         pass
 
 
@@ -799,23 +915,43 @@ class FrameTrackingTerm(FrameTasks, TrackingTerm):
         self.mc = mc
         self.initialize_tasks()
 
-    def calc_error(self, state, **kwargs) -> float:
+    def calc_error(self, state, positions=None, orientations=None, **kwargs) -> float:
+        """
+        Return the weighted squared position and orientation error.
+
+        Parameters
+        ----------
+        state: osim.State
+            The `State` to evaluate, realized through Position.
+        positions: array-like, shape (num_tasks, 3), optional
+            Per-frame reference positions. Defaults to those registered via
+            `add_frame`.
+        orientations: array-like, shape (num_tasks, 4), optional
+            Per-frame reference quaternions. Defaults to those registered via
+            `add_frame`.
+        """
+        positions = self.positions if positions is None else positions
+        orientations = self.orientations if orientations is None else orientations
         error = 0.0
         for i, frame in enumerate(self.frames):
             p_model = frame.getPositionInGround(state).to_numpy()
             position_error = self.position_weights[i] * np.square(
-                np.linalg.norm(p_model - self.positions[i]))
+                np.linalg.norm(p_model - positions[i]))
 
             eps = _calc_quaternion(state, frame)
             orientation_error = self.orientation_weights[i] * (
-                1.0 - np.square(np.dot(eps, self.orientations[i])))
+                1.0 - np.square(np.dot(eps, orientations[i])))
 
             error += position_error + orientation_error
         return error
 
-    def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
+    def calc_jacobian(self, state, positions=None, orientations=None,
+                      **kwargs) -> list[np.ndarray]:
         if self.num_tasks == 0:
             return [np.zeros((1, len(self.mc.coordinate_q_indexes)))]
+
+        positions = self.positions if positions is None else positions
+        orientations = self.orientations if orientations is None else orientations
 
         # Loop over all frames and compute the "spatial error" (i.e., the combined
         # position and orientation error) for each.
@@ -827,15 +963,15 @@ class FrameTrackingTerm(FrameTasks, TrackingTerm):
             # Position error.
             p_model = frame.getPositionInGround(state)
             p_error = osim.Vec3(
-                2.0 * wp * (p_model[0] - self.positions[i][0]),
-                2.0 * wp * (p_model[1] - self.positions[i][1]),
-                2.0 * wp * (p_model[2] - self.positions[i][2]))
+                2.0 * wp * (p_model[0] - positions[i][0]),
+                2.0 * wp * (p_model[1] - positions[i][1]),
+                2.0 * wp * (p_model[2] - positions[i][2]))
 
             # Orientation error.
             eps = _calc_quaternion(state, frame)
             jac_eps = _calc_quaternion_jacobian(eps)
-            omega = jac_eps.T @ self.orientations[i]
-            scale = wo * -2.0 * np.dot(eps, self.orientations[i])
+            omega = jac_eps.T @ orientations[i]
+            scale = wo * -2.0 * np.dot(eps, orientations[i])
             w_error = osim.Vec3(scale * omega[0], scale * omega[1], scale * omega[2])
 
             # Combine the position and orientation into a SpatialVec to pass to the
@@ -868,23 +1004,37 @@ class MarkerTrackingTerm(MarkerTasks, TrackingTerm):
         self.mc = mc
         self.initialize_tasks()
 
-    def calc_error(self, state, **kwargs) -> float:
+    def calc_error(self, state, positions=None, **kwargs) -> float:
+        """
+        Return the weighted squared marker position error.
+
+        Parameters
+        ----------
+        state: osim.State
+            The `State` to evaluate, realized through Position.
+        positions: array-like, shape (num_tasks, 3), optional
+            Per-marker reference positions. Defaults to those registered via
+            `add_marker`.
+        """
+        positions = self.positions if positions is None else positions
         error = 0.0
         for marker, position, weight in zip(
-                self.markers, self.positions, self.weights):
+                self.markers, positions, self.weights):
             p_model = marker.getLocationInGround(state).to_numpy()
             error += weight * np.square(np.linalg.norm(p_model - position))
         return error
 
-    def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
+    def calc_jacobian(self, state, positions=None, **kwargs) -> list[np.ndarray]:
         if self.num_tasks == 0:
             return [np.zeros((1, len(self.mc.coordinate_q_indexes)))]
+
+        positions = self.positions if positions is None else positions
 
         # Inialize the array used to calculate the position error Jacobian via the
         # grouped Simbody operator.
         f_GP = osim.VectorVec3(self.num_tasks, osim.Vec3(0))
         for i, (marker, position, weight) in enumerate(
-                zip(self.markers, self.positions, self.weights)):
+                zip(self.markers, positions, self.weights)):
             p_model = marker.getLocationInGround(state)
             f_GP.set(i, osim.Vec3(
                 2.0 * weight * (p_model[0] - position[0]),
@@ -951,16 +1101,29 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
         self.mc = mc
         self.initialize_tasks()
 
-    def calc_error(self, state, **kwargs) -> float:
+    def calc_error(self, state, positions=None, **kwargs) -> float:
+        """
+        Return the weighted squared marker position error, using the scaled and
+        offset station locations applied by `apply_state`.
+
+        Parameters
+        ----------
+        state: osim.State
+            The `State` to evaluate, realized through Position.
+        positions: array-like, shape (num_tasks, 3), optional
+            Per-marker reference positions. Defaults to those registered via
+            `add_marker`.
+        """
+        positions = self.positions if positions is None else positions
         error = 0.0
         for i, (frame, position, weight) in enumerate(
-                zip(self.base_frames, self.positions, self.weights)):
+                zip(self.base_frames, positions, self.weights)):
             p_model = frame.findStationLocationInGround(
                 state, self.stations.getElt(i)).to_numpy()
             error += weight * np.square(np.linalg.norm(p_model - position))
         return error
 
-    def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
+    def calc_jacobian(self, state, positions=None, **kwargs) -> list[np.ndarray]:
         Jq = np.zeros((1, len(self.mc.coordinate_q_indexes)))
         Js = np.zeros((1, 3 * len(self.mc.body_scale_groups)))
         Jo = np.zeros((1, 3 * len(self.mc.marker_offset_groups)))
@@ -969,6 +1132,8 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
         if self.num_tasks == 0:
             return [Jq, Js, Jo, Jr, Jl]
 
+        positions = self.positions if positions is None else positions
+
         # Calculate the per-marker error gradient in Ground. This is a force-like term
         # will be multiplied with (the transpose of) each position Jacobian below. Also,
         # precompute the sensitivity of each marker's ground position to a shift from
@@ -976,7 +1141,7 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
         dp_GS = osim.VectorVec3(self.num_tasks, osim.Vec3(0))
         doffset = np.zeros((self.num_tasks, 3))
         for i, (frame, position, weight) in enumerate(
-                zip(self.base_frames, self.positions, self.weights)):
+                zip(self.base_frames, positions, self.weights)):
             p_GS = frame.findStationLocationInGround(state, self.stations.getElt(i))
             dp_GS.set(i, osim.Vec3(2.0 * weight * (p_GS[0] - position[0]),
                                    2.0 * weight * (p_GS[1] - position[1]),
@@ -1047,22 +1212,40 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
         self.mc = mc
         self.initialize_tasks()
 
-    def calc_error(self, state, **kwargs) -> float:
+    def calc_error(self, state, positions=None, orientations=None, **kwargs) -> float:
+        """
+        Return the weighted squared position and orientation error, using the scaled
+        and offset station locations applied by `apply_state`.
+
+        Parameters
+        ----------
+        state: osim.State
+            The `State` to evaluate, realized through Position.
+        positions: array-like, shape (num_tasks, 3), optional
+            Per-frame reference positions. Defaults to those registered via
+            `add_frame`.
+        orientations: array-like, shape (num_tasks, 4), optional
+            Per-frame reference quaternions. Defaults to those registered via
+            `add_frame`.
+        """
+        positions = self.positions if positions is None else positions
+        orientations = self.orientations if orientations is None else orientations
         error = 0.0
         for i, (frame, base_frame) in enumerate(zip(self.frames, self.base_frames)):
             p_model = base_frame.findStationLocationInGround(
                 state, self.stations.getElt(i)).to_numpy()
             position_error = self.position_weights[i] * np.square(
-                np.linalg.norm(p_model - self.positions[i]))
+                np.linalg.norm(p_model - positions[i]))
 
             eps = _calc_quaternion(state, frame)
             orientation_error = self.orientation_weights[i] * (
-                1.0 - np.square(np.dot(eps, self.orientations[i])))
+                1.0 - np.square(np.dot(eps, orientations[i])))
 
             error += position_error + orientation_error
         return error
 
-    def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
+    def calc_jacobian(self, state, positions=None, orientations=None,
+                      **kwargs) -> list[np.ndarray]:
         Jq = np.zeros((1, len(self.mc.coordinate_q_indexes)))
         Js = np.zeros((1, 3 * len(self.mc.body_scale_groups)))
         Jo = np.zeros((1, 3 * len(self.mc.frame_offset_groups)))
@@ -1070,6 +1253,9 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
         Jl = np.zeros((1, len(self.mc.beam_length_scale_groups)))
         if self.num_tasks == 0:
             return [Jq, Js, Jo, Jr, Jl]
+
+        positions = self.positions if positions is None else positions
+        orientations = self.orientations if orientations is None else orientations
 
         # Loop over all frames and compute the "spatial error" (i.e., the combined
         # position and orientation error) for each.
@@ -1082,7 +1268,7 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
         for i, (frame, base_frame) in enumerate(zip(self.frames, self.base_frames)):
             wp = self.position_weights[i]
             wo = self.orientation_weights[i]
-            position = self.positions[i]
+            position = positions[i]
 
             # The frame's ground position is computed from its (possibly offset) cached
             # station so that the gradient is consistent with any applied offsets.
@@ -1095,8 +1281,8 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
             # Calculate the per-frame orientation error in Ground.
             eps = _calc_quaternion(state, frame)
             jac_eps = _calc_quaternion_jacobian(eps)
-            omega = jac_eps.T @ self.orientations[i]
-            scale = wo * -2.0 * np.dot(eps, self.orientations[i])
+            omega = jac_eps.T @ orientations[i]
+            scale = wo * -2.0 * np.dot(eps, orientations[i])
             dw_GF = osim.Vec3(scale * omega[0], scale * omega[1], scale * omega[2])
 
             # Combine the position and orientation into a SpatialVec to pass to the
@@ -1218,7 +1404,8 @@ class TrackingCostRep(CallbackCostRep):
         Jacobian. Default is ``False``.
     """
     def __init__(self, name: str, mc: ModelCache, enable_fd: bool = False):
-        Function.__init__(self, name, mc, enable_fd=enable_fd)
+        Function.__init__(self, name, mc, enable_fd=enable_fd,
+                          defer_construction=True)
         self.marker_term = MarkerTrackingTerm(mc)
         self.frame_term = FrameTrackingTerm(mc)
 
@@ -1245,18 +1432,63 @@ class TrackingCostRep(CallbackCostRep):
                                   position_weight=position_weight,
                                   orientation_weight=orientation_weight)
 
+
+    @property
+    def reference_size(self) -> int:
+        return self.marker_term.reference_size + self.frame_term.reference_size
+
+    @property
+    def default_reference(self) -> np.ndarray:
+        """
+        The reference data registered on this rep via its ``add_*_cost_term`` methods,
+        flattened as ``[marker block, frame block]``. Used when `__call__` is given no
+        explicit reference.
+        """
+        return np.concatenate([self.marker_term.pack_reference(),
+                               self.frame_term.pack_reference()])
+
+    def _split_reference(self, arg):
+        """
+        Split the trailing reference input into per-term views, returning
+        ``(marker_positions, frame_positions, frame_orientations)``. Returns a triple
+        of ``None`` when this rep declares no reference input, so the terms fall back
+        to their registered defaults.
+        """
+        if not self.reference_size:
+            return None, None, None
+        reference = np.asarray(
+            arg[len(CostInput.INPUT_ORDER)].full(), dtype=float).reshape(-1)
+        split = self.marker_term.reference_size
+        marker_positions = self.marker_term.unpack_reference(reference[:split])
+        frame_positions, frame_orientations = self.frame_term.unpack_reference(
+            reference[split:])
+        return marker_positions, frame_positions, frame_orientations
+
+    def _jacobian_blocks(self, blocks):
+        """
+        Pad a list of per-`CostInput` Jacobian blocks with a structurally-sized zero
+        block for the trailing reference input, which the cost never differentiates
+        with respect to.
+        """
+        if self.reference_size:
+            blocks = blocks + [np.zeros((1, self.reference_size))]
+        return blocks
+
     def _eval(self, arg):
         self.apply_state(arg)
-        error = (self.marker_term.calc_error(self.state) +
-                 self.frame_term.calc_error(self.state))
+        marker_p, frame_p, frame_e = self._split_reference(arg)
+        error = (self.marker_term.calc_error(self.state, marker_p) +
+                 self.frame_term.calc_error(self.state, frame_p, frame_e))
         return [error]
 
     def _jac_eval(self, arg):
         self.apply_state(arg)
-        J = (self.marker_term.calc_jacobian(self.state)[0] +
-             self.frame_term.calc_jacobian(self.state)[0])
-        empty = np.zeros((1, 0))
-        return [J] + [empty] * (len(CostInput.INPUT_ORDER) - 1)
+        marker_p, frame_p, frame_e = self._split_reference(arg)
+        J = (self.marker_term.calc_jacobian(self.state, marker_p)[0] +
+             self.frame_term.calc_jacobian(self.state, frame_p, frame_e)[0])
+        blocks = [J] + [np.zeros((1, self._get_input_size(i)))
+                        for i in range(1, len(CostInput.INPUT_ORDER))]
+        return self._jacobian_blocks(blocks)
 
 
 class BilevelCost(TrackingCostBase):
@@ -1333,7 +1565,8 @@ class BilevelCostRep(CallbackCostRep):
     """
 
     def __init__(self, name: str, mc: ModelCache, enable_fd: bool = False):
-        Function.__init__(self, name, mc, enable_fd=enable_fd)
+        Function.__init__(self, name, mc, enable_fd=enable_fd,
+                          defer_construction=True)
         self.marker_term = MarkerBilevelTerm(mc)
         self.frame_term = FrameBilevelTerm(mc)
         self.mc.cache_body_scale_group_joints()
@@ -1380,18 +1613,65 @@ class BilevelCostRep(CallbackCostRep):
                                   orientation_weight,
                                   offset_group_index=offset_group_index)
 
+
+    @property
+    def reference_size(self) -> int:
+        return self.marker_term.reference_size + self.frame_term.reference_size
+
+    @property
+    def default_reference(self) -> np.ndarray:
+        """
+        The reference data registered on this rep via its ``add_*_cost_term`` methods,
+        flattened as ``[marker block, frame block]``. Used when `__call__` is given no
+        explicit reference.
+        """
+        return np.concatenate([self.marker_term.pack_reference(),
+                               self.frame_term.pack_reference()])
+
+    def _split_reference(self, arg):
+        """
+        Split the trailing reference input into per-term views, returning
+        ``(marker_positions, frame_positions, frame_orientations)``. Returns a triple
+        of ``None`` when this rep declares no reference input, so the terms fall back
+        to their registered defaults.
+        """
+        if not self.reference_size:
+            return None, None, None
+        reference = np.asarray(
+            arg[len(CostInput.INPUT_ORDER)].full(), dtype=float).reshape(-1)
+        split = self.marker_term.reference_size
+        marker_positions = self.marker_term.unpack_reference(reference[:split])
+        frame_positions, frame_orientations = self.frame_term.unpack_reference(
+            reference[split:])
+        return marker_positions, frame_positions, frame_orientations
+
+    def _jacobian_blocks(self, blocks):
+        """
+        Pad a list of per-`CostInput` Jacobian blocks with a structurally-sized zero
+        block for the trailing reference input, which the cost never differentiates
+        with respect to.
+        """
+        if self.reference_size:
+            blocks = blocks + [np.zeros((1, self.reference_size))]
+        return blocks
+
     def _eval(self, arg):
         self.apply_state(arg)
+        marker_p, frame_p, frame_e = self._split_reference(arg)
         error = 0
-        error += self.marker_term.calc_error(self.state)
-        error += self.frame_term.calc_error(self.state)
+        error += self.marker_term.calc_error(self.state, marker_p)
+        error += self.frame_term.calc_error(self.state, frame_p, frame_e)
         return [error]
 
     def _jac_eval(self, arg):
         self.apply_state(arg)
-        Jq_m, Js_m, Jmo, Jr_m, Jl_m = self.marker_term.calc_jacobian(self.state)
-        Jq_f, Js_f, Jfo, Jr_f, Jl_f = self.frame_term.calc_jacobian(self.state)
-        return [Jq_m + Jq_f, Js_m + Js_f, Jmo, Jfo, Jr_m + Jr_f, Jl_m + Jl_f]
+        marker_p, frame_p, frame_e = self._split_reference(arg)
+        Jq_m, Js_m, Jmo, Jr_m, Jl_m = self.marker_term.calc_jacobian(
+            self.state, marker_p)
+        Jq_f, Js_f, Jfo, Jr_f, Jl_f = self.frame_term.calc_jacobian(
+            self.state, frame_p, frame_e)
+        return self._jacobian_blocks(
+            [Jq_m + Jq_f, Js_m + Js_f, Jmo, Jfo, Jr_m + Jr_f, Jl_m + Jl_f])
 
 
 class AnthropometricRegularizationCost(Cost):
@@ -1497,7 +1777,8 @@ class AnthropometricRegularizationCostRep(CallbackCostRep):
         Function.__init__(self, 'anthropometric_regularization_cost', mc,
                           enable_fd=enable_fd)
 
-    def __call__(self, input: CostInput) -> ca.MX:
+    def __call__(self, input: CostInput, reference=None) -> ca.MX:
+        self.construct_callback()
         return ca.Function.__call__(self, input.body_scales)
 
     def _get_num_inputs(self):
