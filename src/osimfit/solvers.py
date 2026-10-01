@@ -9,7 +9,8 @@ from .bounds import Bounds
 from .data_sources import Trial
 from .costs import (BilevelCost, BilevelCostRep, Cost, CostInput, CostRep,
                     TrackingCost)
-from .model import ModelCache, Parameter, BodyScale, MarkerOffset, FrameOffset
+from .model import (ModelCache, Parameter, BodyScale, MarkerOffset, FrameOffset,
+                    EllipsoidRadii, BeamLength)
 from .scaling import Axis, Scaler, ManualBodyScale
 
 
@@ -101,8 +102,8 @@ class Solution:
         return matches[0]
 
     @staticmethod
-    def create_states_table(model, state, coordinate_indexes, times,
-                            q_opt, qdot_opt=None) -> osim.TimeSeriesTable:
+    def create_states_table(model, state, coordinate_q_indexes, coordinate_u_indexes,
+                            times, q_opt, qdot_opt=None) -> osim.TimeSeriesTable:
         """
         Build an OpenSim StatesTrajectory and export it to a TimeSeriesTable.
 
@@ -111,8 +112,10 @@ class Solution:
         model: osim.Model
         state: osim.State
             An initialized state that will be mutated in place during construction.
-        coordinate_indexes: list[int]
-            Indexes of the independent coordinates in the full state vector.
+        coordinate_q_indexes: list[int]
+            q-indexes of the independent coordinates in the full state vector.
+        coordinate_u_indexes: list[int]
+            u-indexes of the independent coordinates in the full state vector.
         times: sequence of float
         q_opt: np.ndarray, shape (num_times, num_coords)
         qdot_opt: np.ndarray, shape (num_times, num_coords), optional
@@ -121,12 +124,12 @@ class Solution:
         for i, time in enumerate(times):
             state.setTime(time)
             q = np.zeros(state.getNQ())
-            q[coordinate_indexes] = q_opt[i, :]
+            q[coordinate_q_indexes] = q_opt[i, :]
             state.setQ(osim.Vector.createFromMat(q))
             if qdot_opt is not None:
-                qdot = np.zeros(state.getNQ())
-                qdot[coordinate_indexes] = qdot_opt[i, :]
-                state.setU(osim.Vector.createFromMat(qdot))
+                u = np.zeros(state.getNU())
+                u[coordinate_u_indexes] = qdot_opt[i, :]
+                state.setU(osim.Vector.createFromMat(u))
             statesTraj.append(state)
         return statesTraj.exportToTable(model)
 
@@ -170,8 +173,8 @@ class Solver(ABC):
         self.state = self.mc.state
 
         # Convenience aliases for the cached coordinate maps.
-        self.coordinate_map = self.mc.coordinate_map
-        self.coordinate_indexes = self.mc.coordinate_indexes
+        self.coordinate_q_map = self.mc.coordinate_q_map
+        self.coordinate_q_indexes = self.mc.coordinate_q_indexes
 
         # Optimization settings.
         self.convergence_tolerance = convergence_tolerance
@@ -304,7 +307,7 @@ class Solver(ABC):
                 f"Initial guess states table for trial '{name}' is empty ({shape}).")
 
         labels = set(table.getColumnLabels())
-        missing = [coord_path + '/value' for coord_path in self.coordinate_map
+        missing = [coord_path + '/value' for coord_path in self.coordinate_q_map
                    if coord_path + '/value' not in labels]
         if missing:
             raise ValueError(
@@ -314,11 +317,11 @@ class Solver(ABC):
     def extract_guess_coordinates(self, table: osim.TimeSeriesTable) -> np.ndarray:
         """
         Read a guess states table into a ``(num_rows, num_coords)`` array of coordinate
-        values, with columns ordered to match this solver's `coordinate_map`.
+        values, with columns ordered to match this solver's `coordinate_q_map`.
         """
         return np.column_stack([
             table.getDependentColumn(coord_path + '/value').to_numpy()
-            for coord_path in self.coordinate_map])
+            for coord_path in self.coordinate_q_map])
 
     @staticmethod
     def compute_average_trapezoidal_error(errors, times):
@@ -445,7 +448,7 @@ class InverseKinematicsSolver(TrackingSolver):
         cost_reps: list[CostRep]
             Reps of the solver's registered costs, built once per solve.
         """
-        x = ca.SX.sym('x', len(self.coordinate_indexes))
+        x = ca.SX.sym('x', len(self.coordinate_q_indexes))
         tracking_rep = tracking_cost.create_rep('tracking_cost', self.mc, trial, itime)
         cost_input = CostInput(coordinates=x)
         f = tracking_rep(cost_input)
@@ -468,7 +471,7 @@ class InverseKinematicsSolver(TrackingSolver):
         default_x0 = []
         lbx = []
         ubx = []
-        for coord_path in self.coordinate_map:
+        for coord_path in self.coordinate_q_map:
             coord = osim.Coordinate.safeDownCast(self.mc.model.getComponent(coord_path))
             default_x0.append(coord.getDefaultValue())
             lbx.append(coord.getRangeMin())
@@ -495,7 +498,7 @@ class InverseKinematicsSolver(TrackingSolver):
             # optimization problem at each time step.
             x0 = list(default_x0)
             statesTraj = osim.StatesTrajectory()
-            q_traj = np.zeros((num_times, len(self.coordinate_indexes)))
+            q_traj = np.zeros((num_times, len(self.coordinate_q_indexes)))
             for itime, time in enumerate(times):
                 print(f"Trial '{trial.name}': solving time {itime+1} of {num_times} "
                       f'(t={time:.3f} s)...')
@@ -512,7 +515,7 @@ class InverseKinematicsSolver(TrackingSolver):
                 # Write solution into the rep's state.
                 tracking_rep.state.setTime(time)
                 q = np.zeros(tracking_rep.state.getNQ())
-                q[self.coordinate_indexes] = q_traj[itime, :]
+                q[self.coordinate_q_indexes] = q_traj[itime, :]
                 tracking_rep.state.setQ(osim.Vector.createFromMat(q))
                 statesTraj.append(tracking_rep.state)
 
@@ -533,9 +536,10 @@ class SplinedKinematicsSolver(TrackingSolver):
     Solve for model kinematics by representing each coordinate trajectory as a B-spline
     and optimizing over the spline control points across the whole trial. Because the
     control points couple every time step, this solver can optionally also optimize
-    global bilevel parameters (e.g., body scales, marker and frame offsets); register
-    them with ``add_parameter``. With no parameters registered, it reduces to a
-    spline-based inverse kinematics problem tracking the reference data.
+    global bilevel parameters (e.g., body scales, marker and frame offsets, ellipsoid
+    radii, and cantilever-free-beam lengths); register them with ``add_parameter``.
+    With no parameters registered, it reduces to a spline-based inverse kinematics
+    problem tracking the reference data.
 
     All registered trials are optimized simultaneously. Each trial
     contributes its own block of spline control points, with its own knot vector sized
@@ -562,7 +566,8 @@ class SplinedKinematicsSolver(TrackingSolver):
         intervals of equal width, so the realized spacing matches ``knot_interval`` up
         to that rounding. Every registered trial must span at least one knot interval.
     """
-    SUPPORTED_INPUTS = frozenset({'body_scales', 'marker_offsets', 'frame_offsets'})
+    SUPPORTED_INPUTS = frozenset({'body_scales', 'marker_offsets', 'frame_offsets',
+                                  'ellipsoid_radii', 'beam_lengths'})
 
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
                  orientation_weight=1.0, degree=3, knot_interval=0.05):
@@ -658,6 +663,20 @@ class SplinedKinematicsSolver(TrackingSolver):
         """
         return list(self._parameters_by_input.get(FrameOffset.cost_input, []))
 
+    @property
+    def ellipsoid_radii(self) -> list[EllipsoidRadii]:
+        """
+        The registered `EllipsoidRadii` parameters, in registration order.
+        """
+        return list(self._parameters_by_input.get(EllipsoidRadii.cost_input, []))
+
+    @property
+    def beam_lengths(self) -> list[BeamLength]:
+        """
+        The registered `BeamLength` parameters, in registration order.
+        """
+        return list(self._parameters_by_input.get(BeamLength.cost_input, []))
+
     def add_parameter(self, parameter: Parameter):
         """
         Register a `Parameter` to be optimized over in the bilevel optimization problem.
@@ -740,8 +759,8 @@ class SplinedKinematicsSolver(TrackingSolver):
         # Apply pre-`Model::scale()` quanities.
         ModelCache.apply_custom_joint_translation_scales(model, translation_scales)
 
-        # Apply the remaining optimized parameters (e.g., marker and frame offsets) to
-        # the scaled model.
+        # Apply the remaining optimized parameters (e.g., marker and frame offsets,
+        # ellipsoid radii, beam lengths) to the scaled model.
         for parameter in solution.parameters:
             if not isinstance(parameter, BodyScale):
                 parameter.apply_to_model(model)
@@ -790,7 +809,7 @@ class SplinedKinematicsSolver(TrackingSolver):
         if guess is not None:
             self._validate_guess(guess)
 
-        num_coords = len(self.coordinate_indexes)
+        num_coords = len(self.coordinate_q_indexes)
 
         # Build a spline basis per trial.
         trial_times: list[list[float]] = []
@@ -825,6 +844,10 @@ class SplinedKinematicsSolver(TrackingSolver):
                           if isinstance(p, MarkerOffset))
         num_frames = sum(p.num_variables for p in self.parameters
                          if isinstance(p, FrameOffset))
+        num_radii = sum(p.num_variables for p in self.parameters
+                        if isinstance(p, EllipsoidRadii))
+        num_lengths = sum(p.num_variables for p in self.parameters
+                          if isinstance(p, BeamLength))
 
         # Apply the parameters from the initial guess to the solver's list of registered
         # parameters.
@@ -840,13 +863,15 @@ class SplinedKinematicsSolver(TrackingSolver):
         s = ca.MX.sym('body_scales', num_scales)
         mo = ca.MX.sym('marker_offsets', num_markers)
         fo = ca.MX.sym('frame_offsets', num_frames)
+        er = ca.MX.sym('ellipsoid_radii', num_radii)
+        bl = ca.MX.sym('beam_lengths', num_lengths)
         x0 = []
         lbx = []
         ubx = []
         for itrial, trial in enumerate(self.trials):
             num_control_points = trial_num_control_points[itrial]
             guess_table = (None if guess is None else guess.states_tables[trial.name])
-            for coord_path in self.coordinate_map:
+            for coord_path in self.coordinate_q_map:
                 coord = osim.Coordinate.safeDownCast(
                     self.mc.model.getComponent(coord_path))
                 x0 += ([coord.getDefaultValue()] * num_control_points
@@ -857,7 +882,8 @@ class SplinedKinematicsSolver(TrackingSolver):
                 ubx += [coord.getRangeMax()] * num_control_points
 
         # Append each parameter's initial guess and bounds, in type order, matching the
-        # [coeffs_0, ..., coeffs_J, s, mo, fo] layout of the optimization vector below.
+        # [coeffs_0, ..., coeffs_J, s, mo, fo, er, bl] layout of the optimization vector
+        # below.
         for p in self.parameters:
             p.append_guess_and_bounds(x0, lbx, ubx)
 
@@ -883,7 +909,8 @@ class SplinedKinematicsSolver(TrackingSolver):
                     itime)
                 tracking_reps.append(tracking_rep)
                 cost_input = CostInput(coordinates=q[itime, :].T, body_scales=s,
-                                       marker_offsets=mo, frame_offsets=fo)
+                                       marker_offsets=mo, frame_offsets=fo,
+                                       ellipsoid_radii=er, beam_lengths=bl)
                 errors[itime] = tracking_rep(cost_input)
 
             f += self.compute_average_trapezoidal_error(errors, times)
@@ -897,12 +924,13 @@ class SplinedKinematicsSolver(TrackingSolver):
 
         # Add the cost terms on the parameters shared across all trials.
         cost_reps = [cost.create_rep(self.mc) for cost in self.costs]
-        parameter_input = CostInput(body_scales=s, marker_offsets=mo, frame_offsets=fo)
+        parameter_input = CostInput(body_scales=s, marker_offsets=mo, frame_offsets=fo,
+                                    ellipsoid_radii=er, beam_lengths=bl)
         for cost_rep in cost_reps:
             f += cost_rep(parameter_input)
 
         # Solve.
-        x = ca.vertcat(*[ca.vec(c) for c in coeffs], s, mo, fo)
+        x = ca.vertcat(*[ca.vec(c) for c in coeffs], s, mo, fo, er, bl)
         nlp = {'x': x, 'f': f}
         opts = {}
         opts['ipopt'] = self.get_ipopt_options(print_level=5)
@@ -921,8 +949,8 @@ class SplinedKinematicsSolver(TrackingSolver):
             q_opt = np.array(trial_B[itrial] @ coeffs_opt)
             qdot_opt = np.array(trial_dB[itrial] @ coeffs_opt)
             states_tables[trial.name] = Solution.create_states_table(
-                self.mc.model, self.state, self.coordinate_indexes,
-                trial_times[itrial], q_opt, qdot_opt)
+                self.mc.model, self.state, self.coordinate_q_indexes,
+                self.mc.coordinate_u_indexes, trial_times[itrial], q_opt, qdot_opt)
             spline_nodes[trial.name] = np.array(coeffs_opt)
             i += num_coeff_vars
 
@@ -1034,7 +1062,7 @@ class MarkerPlacer(Solver):
         if guess is not None:
             self._validate_guess(guess)
 
-        num_coords = len(self.coordinate_indexes)
+        num_coords = len(self.coordinate_q_indexes)
 
         # Define the marker offset parameters. These are shared across every trial.
         marker_offsets: list[MarkerOffset] = []
@@ -1063,7 +1091,7 @@ class MarkerPlacer(Solver):
         for trial in self.trials:
             guess_q = (None if guess is None else self.extract_guess_coordinates(
                 guess.states_tables[trial.name])[0, :])
-            for icoord, coord_path in enumerate(self.coordinate_map):
+            for icoord, coord_path in enumerate(self.coordinate_q_map):
                 coord = osim.Coordinate.safeDownCast(
                     self.mc.model.getComponent(coord_path))
                 x0.append(coord.getDefaultValue() if guess_q is None
@@ -1107,8 +1135,8 @@ class MarkerPlacer(Solver):
         for trial in self.trials:
             pose = x_flat[i : i + num_coords].reshape(1, num_coords)
             states_tables[trial.name] = Solution.create_states_table(
-                self.mc.model, self.state, self.coordinate_indexes,
-                [trial.times[0]], pose)
+                self.mc.model, self.state, self.coordinate_q_indexes,
+                self.mc.coordinate_u_indexes, [trial.times[0]], pose)
             i += num_coords
 
         # The shared offset blocks follow every trial's pose, so `i` is already at the

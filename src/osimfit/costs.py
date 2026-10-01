@@ -34,16 +34,23 @@ class CostInput:
         Flattened per-group XYZ marker offsets.
     frame_offsets: ca.MX, optional
         Flattened per-group XYZ frame offsets.
+    ellipsoid_radii: ca.MX, optional
+        Flattened per-group XYZ ellipsoid radii, in meters.
+    beam_lengths: ca.MX, optional
+        Per-group cantilever-free-beam lengths, in meters.
     """
     INPUT_ORDER: ClassVar[tuple[str, ...]] = (
-        'coordinates', 'body_scales', 'marker_offsets', 'frame_offsets')
+        'coordinates', 'body_scales', 'marker_offsets', 'frame_offsets',
+        'ellipsoid_radii', 'beam_lengths')
     TRIPLET_INPUTS: ClassVar[tuple[str, ...]] = (
-        'body_scales', 'marker_offsets', 'frame_offsets')
+        'body_scales', 'marker_offsets', 'frame_offsets', 'ellipsoid_radii')
 
     coordinates: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
     body_scales: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
     marker_offsets: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
     frame_offsets: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
+    ellipsoid_radii: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
+    beam_lengths: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
 
     @classmethod
     def field_index(cls, name: str) -> int:
@@ -83,7 +90,7 @@ class CostInput:
         ----------
         name: str
             The field to view. Must be one of `TRIPLET_INPUTS` (`body_scales`,
-            `marker_offsets`, or `frame_offsets`).
+            `marker_offsets`, `frame_offsets`, or `ellipsoid_radii`).
 
         Returns
         -------
@@ -342,10 +349,12 @@ class CallbackCostRep(CostRep, Function):
 
     def _get_input_size(self, i):
         sizes = {
-            'coordinates': len(self.mc.coordinate_indexes),
+            'coordinates': len(self.mc.coordinate_q_indexes),
             'body_scales': 3 * len(self.mc.body_scale_groups),
             'marker_offsets': 3 * len(self.mc.marker_offset_groups),
             'frame_offsets': 3 * len(self.mc.frame_offset_groups),
+            'ellipsoid_radii': 3 * len(self.mc.ellipsoid_radii_groups),
+            'beam_lengths': len(self.mc.beam_length_groups),
         }
         order = CostInput.INPUT_ORDER
         if not 0 <= i < len(order):
@@ -652,7 +661,7 @@ class FrameTrackingTerm(FrameTasks, TrackingTerm):
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
         if self.num_tasks == 0:
-            return [np.zeros((1, len(self.mc.coordinate_indexes)))]
+            return [np.zeros((1, len(self.mc.coordinate_q_indexes)))]
 
         # Loop over all frames and compute the "spatial error" (i.e., the combined
         # position and orientation error) for each.
@@ -680,12 +689,12 @@ class FrameTrackingTerm(FrameTasks, TrackingTerm):
             spatialError.set(i, osim.SpatialVec(w_error, p_error))
 
         # Calculate the frame (position and orientation) error Jacobian.
-        vec = osim.Vector(state.getNQ(), 0.0)
-        self.mc.model.multiplyByFrameJacobianTranspose(
-            state, self.mobod_indexes, self.stations, spatialError, vec)
-        J = vec.to_numpy()
+        Ju = osim.Vector(state.getNU(), 0.0)
+        self.mc.model.multiplyByFrameJacobianTranspose(Ju)
+        Jq = osim.Vector(state.getNQ(), 0.0)
+        self.mc.model.multiplyByNInv(state, True, Ju, Jq)
 
-        return [np.expand_dims(J[self.mc.coordinate_indexes], axis=0)]
+        return [np.expand_dims(Jq.to_numpy()[self.mc.coordinate_q_indexes], axis=0)]
 
 
 class MarkerTrackingTerm(MarkerTasks, TrackingTerm):
@@ -714,7 +723,7 @@ class MarkerTrackingTerm(MarkerTasks, TrackingTerm):
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
         if self.num_tasks == 0:
-            return [np.zeros((1, len(self.mc.coordinate_indexes)))]
+            return [np.zeros((1, len(self.mc.coordinate_q_indexes)))]
 
         # Inialize the array used to calculate the position error Jacobian via the
         # grouped Simbody operator.
@@ -728,11 +737,13 @@ class MarkerTrackingTerm(MarkerTasks, TrackingTerm):
                 2.0 * weight * (p_model[2] - position[2])))
 
         # Calculate the position error Jacobian.
-        vec = osim.Vector(state.getNQ(), 0.0)
+        Ju = osim.Vector(state.getNU(), 0.0)
         self.mc.model.multiplyByStationJacobianTranspose(
-            state, self.mobod_indexes, self.stations, f_GP, vec)
+            state, self.mobod_indexes, self.stations, f_GP, Ju)
+        Jq = osim.Vector(state.getNQ(), 0.0)
+        self.mc.model.multiplyByNInv(state, True, Ju, Jq)
 
-        return [np.expand_dims(vec.to_numpy()[self.mc.coordinate_indexes], axis=0)]
+        return [np.expand_dims(Jq.to_numpy()[self.mc.coordinate_q_indexes], axis=0)]
 
 
 class BilevelTerm(TrackingTerm):
@@ -795,11 +806,13 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
         return error
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
-        Jq = np.zeros((1, len(self.mc.coordinate_indexes)))
+        Jq = np.zeros((1, len(self.mc.coordinate_q_indexes)))
         Js = np.zeros((1, 3 * len(self.mc.body_scale_groups)))
         Jo = np.zeros((1, 3 * len(self.mc.marker_offset_groups)))
+        Jr = np.zeros((1, 3 * len(self.mc.ellipsoid_radii_groups)))
+        Jl = np.zeros((1, len(self.mc.beam_length_groups)))
         if self.num_tasks == 0:
-            return [Jq, Js, Jo]
+            return [Jq, Js, Jo, Jr, Jl]
 
         # Calculate the per-marker error gradient in Ground. This is a force-like term
         # will be multiplied with (the transpose of) each position Jacobian below. Also,
@@ -818,10 +831,12 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
             doffset[i] = dp_GS.get(i).to_numpy() @ R_GB
 
         # Calculate the Jacobian of the position error with respect to the coordinates.
-        vec = osim.Vector(state.getNQ(), 0.0)
+        grad_u = osim.Vector(state.getNU(), 0.0)
         self.mc.model.multiplyByStationJacobianTranspose(
-            state, self.mobod_indexes, self.stations, dp_GS, vec)
-        Jq[0, :] = vec.to_numpy()[self.mc.coordinate_indexes]
+            state, self.mobod_indexes, self.stations, dp_GS, grad_u)
+        grad_q = osim.Vector(state.getNQ(), 0.0)
+        self.mc.model.multiplyByNInv(state, True, grad_u, grad_q)
+        Jq[0, :] = grad_q.to_numpy()[self.mc.coordinate_q_indexes]
 
         # Scatter per-station gradients for each task into a vector respresenting the
         # error gradient with respect to body origins, which we need for the Jacobian
@@ -839,6 +854,11 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
         # Calculate the position-error Jacobian with respect to body scales.
         Js = self.mc.calc_position_jacobian_wrt_body_scales(state, dp_GB)
 
+        # Calculate the position-error Jacobians with respect to the joint-level
+        # parameters.
+        Jr = self.mc.calc_position_jacobian_wrt_ellipsoid_radii(state, dp_GB)
+        Jl = self.mc.calc_position_jacobian_wrt_beam_lengths(state, dp_GB)
+
         # Assemble the marker offset Jacobian based on the offset sensitivities. Also,
         # include the contributions from the marker offsets to the Jacobian with respect
         # to body scales.
@@ -852,7 +872,7 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
             if g_scale is not None:
                 Js[0, 3*g_scale:3*g_scale+3] += self.base_stations[i] * doffset[i]
 
-        return [Jq, Js, Jo]
+        return [Jq, Js, Jo, Jr, Jl]
 
 
 class FrameBilevelTerm(FrameTasks, BilevelTerm):
@@ -888,11 +908,13 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
         return error
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
-        Jq = np.zeros((1, len(self.mc.coordinate_indexes)))
+        Jq = np.zeros((1, len(self.mc.coordinate_q_indexes)))
         Js = np.zeros((1, 3 * len(self.mc.body_scale_groups)))
         Jo = np.zeros((1, 3 * len(self.mc.frame_offset_groups)))
+        Jr = np.zeros((1, 3 * len(self.mc.ellipsoid_radii_groups)))
+        Jl = np.zeros((1, len(self.mc.beam_length_groups)))
         if self.num_tasks == 0:
-            return [Jq, Js, Jo]
+            return [Jq, Js, Jo, Jr, Jl]
 
         # Loop over all frames and compute the "spatial error" (i.e., the combined
         # position and orientation error) for each.
@@ -932,10 +954,12 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
             doffset[i] = dp_GF.get(i).to_numpy() @ R_GB
 
         # Calculate the frame (position and orientation) error Jacobian.
-        vec = osim.Vector(state.getNQ(), 0.0)
+        grad_u = osim.Vector(state.getNU(), 0.0)
         self.mc.model.multiplyByFrameJacobianTranspose(
-            state, self.mobod_indexes, self.stations, spatialError, vec)
-        Jq[0, :] = vec.to_numpy()[self.mc.coordinate_indexes]
+            state, self.mobod_indexes, self.stations, spatialError, grad_u)
+        grad_q = osim.Vector(state.getNQ(), 0.0)
+        self.mc.model.multiplyByNInv(state, True, grad_u, grad_q)
+        Jq[0, :] = grad_q.to_numpy()[self.mc.coordinate_q_indexes]
 
         # Scatter per-station gradients for each task into a vector respresenting the
         # error gradient with respect to body origins, which we need for the Jacobian
@@ -954,6 +978,11 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
         # not include the contributions from frame offsets, we will include that below.
         Js = self.mc.calc_position_jacobian_wrt_body_scales(state, dp_GB)
 
+        # Calculate the position-error Jacobians with respect to the joint-level
+        # parameters.
+        Jr = self.mc.calc_position_jacobian_wrt_ellipsoid_radii(state, dp_GB)
+        Jl = self.mc.calc_position_jacobian_wrt_beam_lengths(state, dp_GB)
+
         # Assemble the frame offset Jacobian based on the offset sensitivities. Also,
         # include the contributions from the frame offsets to the Jacobian with respect
         # to body scales.
@@ -967,7 +996,7 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
             if g_scale is not None:
                 Js[0, 3*g_scale:3*g_scale+3] += self.base_stations[i] * doffset[i]
 
-        return [Jq, Js, Jo]
+        return [Jq, Js, Jo, Jr, Jl]
 
 
 ##################
@@ -1044,7 +1073,7 @@ class TrackingCostRep(CallbackCostRep):
         position stage.
         """
         q = np.zeros(self.state.getNQ())
-        q[self.mc.coordinate_indexes] = np.squeeze(arg[0].full())
+        q[self.mc.coordinate_q_indexes] = np.squeeze(arg[0].full())
         self.state.setQ(osim.Vector.createFromMat(q))
         self.mc.model.realizePosition(self.state)
 
@@ -1072,13 +1101,14 @@ class TrackingCostRep(CallbackCostRep):
         J = (self.marker_term.calc_jacobian(self.state)[0] +
              self.frame_term.calc_jacobian(self.state)[0])
         empty = np.zeros((1, 0))
-        return [J, empty, empty, empty]
+        return [J] + [empty] * (len(CostInput.INPUT_ORDER) - 1)
 
 
 class BilevelCost(TrackingCostBase):
     """
     The tracking cost of `TrackingCost`, as a function of the model's generalized
-    coordinates, its body scales, and its per-marker/frame XYZ placement offsets.
+    coordinates, its body scales, its per-marker/frame XYZ placement offsets, and its
+    joint-level geometry (e.g., ellipsoid radii).
 
     Parameters
     ----------
@@ -1088,7 +1118,8 @@ class BilevelCost(TrackingCostBase):
         Weight applied to frame orientation errors. Default is 1.0.
     """
     required_inputs = frozenset(
-        {'coordinates', 'body_scales', 'marker_offsets', 'frame_offsets'})
+        {'coordinates', 'body_scales', 'marker_offsets', 'frame_offsets',
+         'ellipsoid_radii', 'beam_lengths'})
 
     def __init__(self, position_weight: float = 1.0,
                  orientation_weight: float = 1.0):
@@ -1130,8 +1161,8 @@ class BilevelCostRep(CallbackCostRep):
     """
     The rep of a `BilevelCost`: a callback that evaluates the sum of tracking cost
     terms over a set of model markers and frames with respect to the model's generalized
-    coordinates, a set of body scales, and a set of per-marker/frame XYZ placement
-    offsets.
+    coordinates, a set of body scales, a set of per-marker/frame XYZ placement offsets,
+    a set of ellipsoid radii, and a set of beam lengths.
 
     Parameters
     ----------
@@ -1154,8 +1185,9 @@ class BilevelCostRep(CallbackCostRep):
 
     def apply_state(self, arg):
         """
-        Apply input coordinates, body-scale variables, and offset variables to the
-        model State, then realize to Position.
+        Apply input coordinates, body-scale variables, offset variables, and
+        joint-level variables (ellipsoid radii and beam lengths) to the model State,
+        then realize to Position.
         """
         body_scales = np.squeeze(arg[1].full())
         body_scales = np.atleast_1d(body_scales).astype(float)
@@ -1167,8 +1199,14 @@ class BilevelCostRep(CallbackCostRep):
         frame_offsets = np.atleast_1d(np.squeeze(arg[3].full())).astype(float)
         self.frame_term.apply_state(body_scales, frame_offsets)
 
+        ellipsoid_radii = np.atleast_1d(np.squeeze(arg[4].full())).astype(float)
+        self.mc.set_ellipsoid_radii(self.state, ellipsoid_radii)
+
+        beam_lengths = np.atleast_1d(np.squeeze(arg[5].full())).astype(float)
+        self.mc.set_beam_lengths(self.state, beam_lengths)
+
         q = np.zeros(self.state.getNQ())
-        q[self.mc.coordinate_indexes] = np.squeeze(arg[0].full())
+        q[self.mc.coordinate_q_indexes] = np.squeeze(arg[0].full())
         self.state.setQ(osim.Vector.createFromMat(q))
         self.mc.model.realizePosition(self.state)
 
@@ -1196,9 +1234,9 @@ class BilevelCostRep(CallbackCostRep):
 
     def _jac_eval(self, arg):
         self.apply_state(arg)
-        Jq_m, Js_m, Jmo = self.marker_term.calc_jacobian(self.state)
-        Jq_f, Js_f, Jfo = self.frame_term.calc_jacobian(self.state)
-        return [Jq_m + Jq_f, Js_m + Js_f, Jmo, Jfo]
+        Jq_m, Js_m, Jmo, Jr_m, Jl_m = self.marker_term.calc_jacobian(self.state)
+        Jq_f, Js_f, Jfo, Jr_f, Jl_f = self.frame_term.calc_jacobian(self.state)
+        return [Jq_m + Jq_f, Js_m + Js_f, Jmo, Jfo, Jr_m + Jr_f, Jl_m + Jl_f]
 
 
 class AnthropometricRegularizationCost(Cost):

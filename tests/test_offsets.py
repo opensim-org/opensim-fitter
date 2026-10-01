@@ -171,9 +171,10 @@ def _make_offset_solver_and_states_tables(tmp_path):
         FrameOffset('/bodyset/body/pof', Bounds(-1.0, 1.0), np.zeros(3)))
 
     times = solver.trials[0].times
-    coords = np.zeros((len(times), len(solver.coordinate_indexes)))
+    coords = np.zeros((len(times), len(solver.coordinate_q_indexes)))
     states_table = Solution.create_states_table(
-        solver.mc.model, solver.state, solver.coordinate_indexes, times, coords)
+        solver.mc.model, solver.state, solver.coordinate_q_indexes,
+        solver.mc.coordinate_u_indexes, times, coords)
     return solver, {'offsets': states_table}
 
 

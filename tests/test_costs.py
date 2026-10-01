@@ -9,7 +9,8 @@ import opensim as osim
 
 from pathlib import Path
 from osimfit.model import (ModelCache, BodyScale, BodyScaleGroup, MarkerOffsetGroup,
-                           FrameOffsetGroup, StationCache)
+                           FrameOffsetGroup, StationCache, EllipsoidRadiiGroup,
+                           BeamLengthGroup)
 from osimfit.bounds import Bounds
 from osimfit.solvers import InverseKinematicsSolver, SplinedKinematicsSolver
 from osimfit.costs import (AnthropometricRegularizationCostRep, CostInput,
@@ -164,7 +165,7 @@ def test_empty_tracking_cost_function():
     model = osim.Model(MODEL_FPATH)
     model.initSystem()
     cost = TrackingCostRep('cost', ModelCache(model))
-    x = ca.DM.zeros(len(cost.mc.coordinate_indexes))
+    x = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     assert float(cost(CostInput(coordinates=x))) == pytest.approx(0.0, abs=1e-12)
 
 
@@ -174,7 +175,7 @@ def test_tracking_cost_function_marker_at_reference_yields_zero():
     cost = TrackingCostRep('cost', ModelCache(model))
     # At q=0, m0 sits at the world origin.
     cost.add_marker_tracking_cost_term('/markerset/m0', osim.Vec3(0))
-    x = ca.DM.zeros(len(cost.mc.coordinate_indexes))
+    x = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     assert float(cost(CostInput(coordinates=x))) == pytest.approx(0.0, abs=1e-12)
 
 
@@ -202,7 +203,7 @@ def test_tracking_cost_function_jacobian_sliding_mass():
         cost.add_marker_tracking_cost_term(
             '/markerset/m1', osim.Vec3(0.7, 0, 0), weight=1.5)
 
-    x = ca.SX.sym('x', len(cost_jac.mc.coordinate_indexes))
+    x = ca.SX.sym('x', len(cost_jac.mc.coordinate_q_indexes))
     J_jac = ca.Function('J_jac', [x], [ca.jacobian(cost_jac(CostInput(x)), x)])
     J_fd = ca.Function('J_fd', [x], [ca.jacobian(cost_fd(CostInput(x)), x)])
 
@@ -222,7 +223,7 @@ def test_tracking_cost_function_jacobian_full_body():
         cost.add_marker_tracking_cost_term(
             '/markerset/L.ASIS', osim.Vec3(0.7, 0, 0), weight=1.5)
 
-    x = ca.SX.sym('x', len(cost_jac.mc.coordinate_indexes))
+    x = ca.SX.sym('x', len(cost_jac.mc.coordinate_q_indexes))
     J_jac = ca.Function('J_jac', [x], [ca.jacobian(cost_jac(CostInput(x)), x)])
     J_fd = ca.Function('J_fd', [x], [ca.jacobian(cost_fd(CostInput(x)), x)])
 
@@ -265,15 +266,21 @@ def getP_BM(model: osim.Model, joint_index: int, state: osim.State):
 
 
 def build_bilevel_rep(name, mc, body_scale_groups=[], marker_offset_groups=[],
-                       frame_offset_groups=[], enable_fd=False):
+                       frame_offset_groups=[], ellipsoid_radii_groups=[],
+                       beam_length_groups=[], enable_fd=False):
     """
     Register the given parameter groups on `mc` and build a BilevelCostRep, which
     reads its groups from the ModelCache. Mirrors what BilevelCost.create_rep does,
     without needing a Trial to supply reference data.
+
+    Joint-level groups go through `add_parameter_group` rather than being assigned
+    directly, since that is what resolves and caches their `Joint`s on the ModelCache.
     """
     mc.body_scale_groups = list(body_scale_groups)
     mc.marker_offset_groups = list(marker_offset_groups)
     mc.frame_offset_groups = list(frame_offset_groups)
+    for group in list(ellipsoid_radii_groups) + list(beam_length_groups):
+        mc.add_parameter_group(group)
     return BilevelCostRep(name, mc, enable_fd=enable_fd)
 
 
@@ -381,7 +388,7 @@ def test_bilevel_cost_function_empty_eval_is_zero():
         'cost', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
-    q = ca.DM.zeros(len(cost.mc.coordinate_indexes))
+    q = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     s = ca.DM.ones(3)
     assert float(cost(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1)))) == \
         pytest.approx(0.0, abs=1e-12)
@@ -400,7 +407,7 @@ def test_bilevel_cost_function_scaling_changes_marker_world_position():
         marker_offset_groups=[], frame_offset_groups=[])
     cost.add_marker_bilevel_cost_term('/markerset/m1', osim.Vec3(0.5, 0, 0))
 
-    q = ca.DM.zeros(len(cost.mc.coordinate_indexes))
+    q = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     s_unit = ca.DM([1.0, 1.0, 1.0])
     s_scaled = ca.DM([2.0, 1.0, 1.0])
     # At s_unit: m1 world = (-0.4 + 0.5) = 0.1. Error = (0.1 - 0.5)^2 = 0.16.
@@ -422,7 +429,7 @@ def test_bilevel_cost_function_frame_at_reference_yields_zero():
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
     cost.add_frame_bilevel_cost_term('/bodyset/body', osim.Vec3(0), osim.Quaternion())
-    q = ca.DM.zeros(len(cost.mc.coordinate_indexes))
+    q = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     s = ca.DM([1.0, 1.0, 1.0])
     assert float(cost(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1)))) == \
         pytest.approx(0.0, abs=1e-12)
@@ -442,7 +449,7 @@ def test_bilevel_cost_function_scaling_changes_frame_world_position():
     cost.add_frame_bilevel_cost_term(
         '/bodyset/body', osim.Vec3(0), osim.Quaternion(), position_weight=2.0)
 
-    q = ca.DM.zeros(len(cost.mc.coordinate_indexes))
+    q = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     s_unit = ca.DM([1.0, 1.0, 1.0])
     s_scaled = ca.DM([2.0, 1.0, 1.0])
     # At s_unit: origin = -0.4. Error = 2 * (-0.4)^2 = 0.32.
@@ -475,7 +482,7 @@ def test_bilevel_cost_function_jacobians_sliding_mass():
             '/bodyset/body', osim.Vec3(0.5, 0, 0), osim.Quaternion(),
             position_weight=1.5, orientation_weight=1.0)
 
-    q = ca.SX.sym('q', len(cost_jac.mc.coordinate_indexes))
+    q = ca.SX.sym('q', len(cost_jac.mc.coordinate_q_indexes))
     s = ca.SX.sym('s', 3)
     x = ca.vertcat(q, s)
 
@@ -487,7 +494,7 @@ def test_bilevel_cost_function_jacobians_sliding_mass():
         [ca.jacobian(cost_fd(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1))), x)])
 
     val = np.concatenate([
-        np.full(len(cost_jac.mc.coordinate_indexes), 0.1),
+        np.full(len(cost_jac.mc.coordinate_q_indexes), 0.1),
         np.array([1.1, 1.0, 1.0]),
     ])
     assert np.allclose(J_jac(val).full(), J_fd(val).full(), atol=1e-6)
@@ -521,7 +528,7 @@ def test_bilevel_cost_function_jacobians_full_body():
             osim.Quaternion(0.9, 0.1, 0.2, 0.3),
             position_weight=2.0, orientation_weight=1.5)
 
-    q = ca.SX.sym('q', len(cost_jac.mc.coordinate_indexes))
+    q = ca.SX.sym('q', len(cost_jac.mc.coordinate_q_indexes))
     s = ca.SX.sym('s', 3*bodyset.getSize())
     x = ca.vertcat(q, s)
 
@@ -533,7 +540,7 @@ def test_bilevel_cost_function_jacobians_full_body():
         [ca.jacobian(cost_fd(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1))), x)])
 
     val = np.concatenate([
-        np.full(len(cost_jac.mc.coordinate_indexes), 0.1),
+        np.full(len(cost_jac.mc.coordinate_q_indexes), 0.1),
         np.tile([1.1, 1.0, 1.0], bodyset.getSize()),
     ])
     assert np.allclose(J_jac(val).full(), J_fd(val).full(), atol=1e-6)
@@ -578,7 +585,7 @@ def test_bilevel_cost_function_grouped_jacobian_sums_solo_and_matches_fd():
             '/bodyset/body_1', osim.Vec3(0.5, 0, 0), osim.Quaternion(),
             position_weight=1.2)
 
-    nq = len(cost_shared.mc.coordinate_indexes)
+    nq = len(cost_shared.mc.coordinate_q_indexes)
     q = ca.SX.sym('q', nq)
     offset = ca.DM.zeros(0, 1)
 
@@ -614,6 +621,264 @@ def test_bilevel_cost_function_grouped_jacobian_sums_solo_and_matches_fd():
     solo_sum_cols = J_solo[:, nq:nq+3] + J_solo[:, nq+3:nq+6]
     np.testing.assert_allclose(J_shared[:, nq:nq+3], solo_sum_cols,
                                atol=1e-9)
+
+
+def create_ellipsoid_chain_model(radii=(0.1, 0.2, 0.3)):
+    """
+    Create a two-body chain: ground -> EllipsoidJoint -> 'proximal' -> PinJoint ->
+    'distal', with one marker on each body. The distal marker sits downstream of the
+    ellipsoid mobilizer, so its sensitivity to the radii exercises the outboard-subtree
+    accumulation inside multiplyByPositionJacobianWrtRadiiTranspose().
+    """
+    model = osim.Model()
+    model.setName('ellipsoid_chain')
+    ground = model.getGround()
+    proximal = osim.Body('proximal', 1.0, osim.Vec3(0), osim.Inertia(1))
+    model.addBody(proximal)
+    model.addJoint(osim.EllipsoidJoint(
+        'ellipsoid', ground, osim.Vec3(0), osim.Vec3(0),
+        proximal, osim.Vec3(0), osim.Vec3(0), osim.Vec3(*radii)))
+    distal = osim.Body('distal', 1.0, osim.Vec3(0), osim.Inertia(1))
+    model.addBody(distal)
+    model.addJoint(osim.PinJoint(
+        'pin', proximal, osim.Vec3(0.3, 0, 0), osim.Vec3(0),
+        distal, osim.Vec3(0), osim.Vec3(0)))
+    model.addMarker(osim.Marker('m_prox', proximal, osim.Vec3(0.2, 0.1, 0)))
+    model.addMarker(osim.Marker('m_dist', distal, osim.Vec3(0.4, 0, 0.1)))
+    model.finalizeConnections()
+    return model
+
+
+def create_beam_chain_model(length=1.2):
+    """
+    The `create_ellipsoid_chain_model` layout with the EllipsoidJoint replaced by a
+    CantileverFreeBeamJoint, so the distal marker exercises subtree accumulation in
+    multiplyByPositionJacobianWrtLengthTranspose().
+    """
+    model = osim.Model()
+    model.setName('beam_chain')
+    ground = model.getGround()
+    proximal = osim.Body('proximal', 1.0, osim.Vec3(0), osim.Inertia(1))
+    model.addBody(proximal)
+    model.addJoint(osim.CantileverFreeBeamJoint(
+        'beam', ground, osim.Vec3(0), osim.Vec3(0),
+        proximal, osim.Vec3(0), osim.Vec3(0), length))
+    distal = osim.Body('distal', 1.0, osim.Vec3(0), osim.Inertia(1))
+    model.addBody(distal)
+    model.addJoint(osim.PinJoint(
+        'pin', proximal, osim.Vec3(0.3, 0, 0), osim.Vec3(0),
+        distal, osim.Vec3(0), osim.Vec3(0)))
+    model.addMarker(osim.Marker('m_prox', proximal, osim.Vec3(0.2, 0.1, 0)))
+    model.addMarker(osim.Marker('m_dist', distal, osim.Vec3(0.4, 0, 0.1)))
+    model.finalizeConnections()
+    return model
+
+
+def create_two_ellipsoid_model(radii=(0.1, 0.2, 0.3)):
+    """
+    Create two independent bodies, each on its own EllipsoidJoint in ground, with one
+    marker each. Used to check that a shared EllipsoidRadiiGroup broadcasts across its
+    joints.
+    """
+    model = osim.Model()
+    model.setName('two_ellipsoid')
+    ground = model.getGround()
+    for i in range(2):
+        body = osim.Body(f'body_{i}', 1.0, osim.Vec3(0), osim.Inertia(1))
+        model.addBody(body)
+        model.addJoint(osim.EllipsoidJoint(
+            f'ellipsoid_{i}', ground, osim.Vec3(0), osim.Vec3(0),
+            body, osim.Vec3(0), osim.Vec3(0), osim.Vec3(*radii)))
+        model.addMarker(osim.Marker(f'm{i}', body, osim.Vec3(0.3, 0.1, 0)))
+    model.finalizeConnections()
+    return model
+
+
+def add_chain_cost_terms(cost):
+    """
+    Add the same marker and frame tracking terms used by the joint-parameter Jacobian
+    tests to `cost`. The frame term pins an orientation reference as well, so the
+    orientation-error path is exercised alongside the position-error path.
+    """
+    cost.add_marker_bilevel_cost_term(
+        '/markerset/m_prox', osim.Vec3(0.25, 0.05, 0.1), weight=2.0)
+    cost.add_marker_bilevel_cost_term(
+        '/markerset/m_dist', osim.Vec3(0.5, -0.1, 0.2), weight=1.5)
+    cost.add_frame_bilevel_cost_term(
+        '/bodyset/distal', osim.Vec3(0.3, 0.1, -0.2),
+        osim.Quaternion(0.9, 0.1, 0.2, 0.3),
+        position_weight=2.0, orientation_weight=1.5)
+
+
+def test_bilevel_cost_function_ellipsoid_radii_jacobian_matches_fd():
+    """
+    The analytic Jacobian with respect to a single EllipsoidRadiiGroup must match the
+    finite-difference Jacobian of the same callback, including the contribution routed
+    through the downstream (pin-jointed) body.
+    """
+    model = create_ellipsoid_chain_model()
+    model.initSystem()
+    groups = [EllipsoidRadiiGroup(['/jointset/ellipsoid'])]
+
+    cost_jac = build_bilevel_rep('cost_jac', ModelCache(model),
+                                 ellipsoid_radii_groups=groups)
+    cost_fd = build_bilevel_rep('cost_fd', ModelCache(model),
+                                ellipsoid_radii_groups=groups, enable_fd=True)
+    for cost in (cost_jac, cost_fd):
+        add_chain_cost_terms(cost)
+
+    nq = len(cost_jac.mc.coordinate_q_indexes)
+    q = ca.SX.sym('q', nq)
+    r = ca.SX.sym('r', 3)
+    x = ca.vertcat(q, r)
+    empty = ca.DM.zeros(0, 1)
+
+    def jacobian_of(cost):
+        return ca.Function('J', [x], [ca.jacobian(
+            cost(CostInput(coordinates=q, body_scales=empty, marker_offsets=empty,
+                           frame_offsets=empty, ellipsoid_radii=r,
+                           beam_lengths=empty)), x)])
+
+    val = np.concatenate([np.full(nq, 0.15), np.array([0.1, 0.2, 0.3])])
+    np.testing.assert_allclose(jacobian_of(cost_jac)(val).full(),
+                               jacobian_of(cost_fd)(val).full(), atol=1e-6)
+
+
+def test_bilevel_cost_function_beam_length_jacobian_matches_fd():
+    """
+    The analytic Jacobian with respect to a single BeamLengthGroup must match the
+    finite-difference Jacobian of the same callback, including the contribution routed
+    through the downstream (pin-jointed) body.
+    """
+    model = create_beam_chain_model()
+    model.initSystem()
+    groups = [BeamLengthGroup(['/jointset/beam'])]
+
+    cost_jac = build_bilevel_rep('cost_jac', ModelCache(model),
+                                 beam_length_groups=groups)
+    cost_fd = build_bilevel_rep('cost_fd', ModelCache(model),
+                                beam_length_groups=groups, enable_fd=True)
+    for cost in (cost_jac, cost_fd):
+        add_chain_cost_terms(cost)
+
+    nq = len(cost_jac.mc.coordinate_q_indexes)
+    q = ca.SX.sym('q', nq)
+    length = ca.SX.sym('length', 1)
+    x = ca.vertcat(q, length)
+    empty = ca.DM.zeros(0, 1)
+
+    def jacobian_of(cost):
+        return ca.Function('J', [x], [ca.jacobian(
+            cost(CostInput(coordinates=q, body_scales=empty, marker_offsets=empty,
+                           frame_offsets=empty, ellipsoid_radii=empty,
+                           beam_lengths=length)), x)])
+
+    val = np.concatenate([np.full(nq, 0.15), np.array([1.2])])
+    np.testing.assert_allclose(jacobian_of(cost_jac)(val).full(),
+                               jacobian_of(cost_fd)(val).full(), atol=1e-6)
+
+
+def test_bilevel_shared_ellipsoid_group_jacobian_sums_solo_and_matches_fd():
+    """
+    For two bodies each on their own EllipsoidJoint, the shared-group radii Jacobian
+    must (a) equal the sum of the solo Jacobian columns when both solo groups hold the
+    same radii, and (b) agree with the finite-difference Jacobian of the shared
+    callback.
+    """
+    model = create_two_ellipsoid_model()
+    model.initSystem()
+    solo_groups = [EllipsoidRadiiGroup(['/jointset/ellipsoid_0']),
+                   EllipsoidRadiiGroup(['/jointset/ellipsoid_1'])]
+    shared_groups = [EllipsoidRadiiGroup(
+        ['/jointset/ellipsoid_0', '/jointset/ellipsoid_1'])]
+
+    cost_solo = build_bilevel_rep('cost_solo', ModelCache(model),
+                                  ellipsoid_radii_groups=solo_groups)
+    cost_shared = build_bilevel_rep('cost_shared', ModelCache(model),
+                                    ellipsoid_radii_groups=shared_groups)
+    cost_fd = build_bilevel_rep('cost_fd', ModelCache(model),
+                                ellipsoid_radii_groups=shared_groups, enable_fd=True)
+    for cost in (cost_solo, cost_shared, cost_fd):
+        cost.add_marker_bilevel_cost_term(
+            '/markerset/m0', osim.Vec3(0.35, 0.05, 0.1), weight=2.0)
+        cost.add_marker_bilevel_cost_term(
+            '/markerset/m1', osim.Vec3(0.2, -0.1, 0.25), weight=1.5)
+
+    nq = len(cost_shared.mc.coordinate_q_indexes)
+    q = ca.SX.sym('q', nq)
+    empty = ca.DM.zeros(0, 1)
+
+    def jacobian_of(cost, r, x):
+        return ca.Function('J', [x], [ca.jacobian(
+            cost(CostInput(coordinates=q, body_scales=empty, marker_offsets=empty,
+                           frame_offsets=empty, ellipsoid_radii=r,
+                           beam_lengths=empty)), x)])
+
+    # (b) Shared analytic vs FD on the shared callback.
+    r_shared = ca.SX.sym('r_shared', 3)
+    x_shared = ca.vertcat(q, r_shared)
+    val_shared = np.concatenate([np.full(nq, 0.15), np.array([0.1, 0.2, 0.3])])
+    J_shared = jacobian_of(cost_shared, r_shared, x_shared)(val_shared).full()
+    J_fd = jacobian_of(cost_fd, r_shared, x_shared)(val_shared).full()
+    np.testing.assert_allclose(J_shared, J_fd, atol=1e-6)
+
+    # (a) Shared radii column equals the sum of the solo radii columns.
+    r_solo = ca.SX.sym('r_solo', 6)
+    x_solo = ca.vertcat(q, r_solo)
+    val_solo = np.concatenate([np.full(nq, 0.15), np.tile([0.1, 0.2, 0.3], 2)])
+    J_solo = jacobian_of(cost_solo, r_solo, x_solo)(val_solo).full()
+    np.testing.assert_allclose(J_shared[:, nq:nq+3],
+                               J_solo[:, nq:nq+3] + J_solo[:, nq+3:nq+6], atol=1e-9)
+
+
+def test_bilevel_cost_function_all_parameter_jacobians_match_fd():
+    """
+    Body scales, marker offsets, frame offsets, ellipsoid radii, and beam lengths
+    active at once: the assembled six-input Jacobian must match finite differences.
+    Guards the ordering of the blocks returned by `BilevelCostRep._jac_eval`.
+    """
+    model = create_ellipsoid_chain_model()
+    model.initSystem()
+    body_scale_groups = [BodyScaleGroup(['/bodyset/distal'], [2])]
+    marker_offset_groups = [MarkerOffsetGroup(['/markerset/m_dist'], [2])]
+    frame_offset_groups = [FrameOffsetGroup(['/bodyset/distal'], [2])]
+    ellipsoid_radii_groups = [EllipsoidRadiiGroup(['/jointset/ellipsoid'])]
+
+    def build(name, enable_fd):
+        return build_bilevel_rep(
+            name, ModelCache(model), body_scale_groups=body_scale_groups,
+            marker_offset_groups=marker_offset_groups,
+            frame_offset_groups=frame_offset_groups,
+            ellipsoid_radii_groups=ellipsoid_radii_groups, enable_fd=enable_fd)
+
+    cost_jac = build('cost_jac', False)
+    cost_fd = build('cost_fd', True)
+    for cost in (cost_jac, cost_fd):
+        add_chain_cost_terms(cost)
+
+    nq = len(cost_jac.mc.coordinate_q_indexes)
+    q = ca.SX.sym('q', nq)
+    s = ca.SX.sym('s', 3)
+    mo = ca.SX.sym('mo', 3)
+    fo = ca.SX.sym('fo', 3)
+    r = ca.SX.sym('r', 3)
+    x = ca.vertcat(q, s, mo, fo, r)
+
+    def jacobian_of(cost):
+        return ca.Function('J', [x], [ca.jacobian(
+            cost(CostInput(coordinates=q, body_scales=s, marker_offsets=mo,
+                           frame_offsets=fo, ellipsoid_radii=r,
+                           beam_lengths=ca.DM.zeros(0, 1))), x)])
+
+    val = np.concatenate([
+        np.full(nq, 0.15),
+        np.array([1.1, 1.0, 0.95]),
+        np.array([0.01, -0.02, 0.03]),
+        np.array([-0.01, 0.02, 0.01]),
+        np.array([0.1, 0.2, 0.3]),
+    ])
+    np.testing.assert_allclose(jacobian_of(cost_jac)(val).full(),
+                               jacobian_of(cost_fd)(val).full(), atol=1e-6)
 
 
 def test_bilevel_apply_state_shifts_station():
@@ -662,7 +927,7 @@ def test_bilevel_offset_changes_marker_error():
         frame_offset_groups=[])
     cost.add_marker_bilevel_cost_term('/markerset/m1', osim.Vec3(0.5, 0, 0),
                                  offset_group_index=0)
-    q = ca.DM.zeros(len(cost.mc.coordinate_indexes))
+    q = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     s = ca.DM.ones(3)
     # No offset: m1 world = 0.5, reference = 0.5, error = 0.
     assert float(cost(CostInput(q, s, ca.DM.zeros(3), ca.DM.zeros(0, 1)))) == \
@@ -687,7 +952,7 @@ def test_bilevel_offset_frame_orientation_invariant():
     cost.add_frame_bilevel_cost_term(
         '/bodyset/body', osim.Vec3(0), osim.Quaternion(0.9, 0.1, 0.2, 0.3),
         position_weight=0.0, orientation_weight=1.0, offset_group_index=0)
-    q = ca.DM.zeros(len(cost.mc.coordinate_indexes))
+    q = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     s = ca.DM.ones(3)
     e0 = float(cost(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM.zeros(3))))
     e1 = float(cost(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM([0.2, -0.1, 0.3]))))
@@ -730,7 +995,7 @@ def test_bilevel_cost_function_offset_jacobians_full_body():
             position_weight=2.0, orientation_weight=1.5,
             offset_group_index=0)
 
-    nq = len(cost_jac.mc.coordinate_indexes)
+    nq = len(cost_jac.mc.coordinate_q_indexes)
     q = ca.SX.sym('q', nq)
     s = ca.SX.sym('s', 3)
     mo = ca.SX.sym('mo', 3)
