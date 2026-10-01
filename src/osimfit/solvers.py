@@ -566,8 +566,8 @@ class SplinedKinematicsSolver(TrackingSolver):
         intervals of equal width, so the realized spacing matches ``knot_interval`` up
         to that rounding. Every registered trial must span at least one knot interval.
     """
-    SUPPORTED_INPUTS = frozenset({'body_scales', 'marker_offsets', 'frame_offsets',
-                                  'ellipsoid_radii', 'beam_lengths'})
+    SUPPORTED_INPUTS = frozenset({'coordinates', 'body_scales', 'marker_offsets',
+                                  'frame_offsets', 'ellipsoid_radii', 'beam_lengths'})
 
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
                  orientation_weight=1.0, degree=3, knot_interval=0.05):
@@ -738,6 +738,7 @@ class SplinedKinematicsSolver(TrackingSolver):
 
         # Get pre-`Model::scale()` quanities.
         translation_scales = ModelCache.get_custom_joint_translation_scales(model)
+        ellipsoid_radii = ModelCache.get_ellipsoid_joint_radii(model)
 
         # Construct a scaler using the optimized body scales as manual scale factors.
         # This calls Model::scale() under the hood. Body scales are applied via the
@@ -758,6 +759,7 @@ class SplinedKinematicsSolver(TrackingSolver):
 
         # Apply pre-`Model::scale()` quanities.
         ModelCache.apply_custom_joint_translation_scales(model, translation_scales)
+        ModelCache.apply_ellipsoid_joint_radii(model, ellipsoid_radii)
 
         # Apply the remaining optimized parameters (e.g., marker and frame offsets,
         # ellipsoid radii, beam lengths) to the scaled model.
@@ -889,6 +891,11 @@ class SplinedKinematicsSolver(TrackingSolver):
 
         # Accumulate the tracking cost for each trial. Reps are held in a list for the
         # lifetime of the solve so CasADi's references to them stay valid.
+        coordinate_cost_reps = [cost.create_rep(self.mc) for cost in self.costs
+                                if 'coordinates' in cost.required_inputs]
+        parameter_cost_reps = [cost.create_rep(self.mc) for cost in self.costs
+                               if 'coordinates' not in cost.required_inputs]
+
         f = 0
         tracking_reps = []
         cost_type = BilevelCost if num_params > 0 else TrackingCost
@@ -911,7 +918,10 @@ class SplinedKinematicsSolver(TrackingSolver):
                 cost_input = CostInput(coordinates=q[itime, :].T, body_scales=s,
                                        marker_offsets=mo, frame_offsets=fo,
                                        ellipsoid_radii=er, beam_lengths=bl)
-                errors[itime] = tracking_rep(cost_input)
+                error = tracking_rep(cost_input)
+                for cost_rep in coordinate_cost_reps:
+                    error += cost_rep(cost_input)
+                errors[itime] = error
 
             f += self.compute_average_trapezoidal_error(errors, times)
 
@@ -923,10 +933,9 @@ class SplinedKinematicsSolver(TrackingSolver):
             self.assert_offset_groups_used(tracking_reps)
 
         # Add the cost terms on the parameters shared across all trials.
-        cost_reps = [cost.create_rep(self.mc) for cost in self.costs]
         parameter_input = CostInput(body_scales=s, marker_offsets=mo, frame_offsets=fo,
                                     ellipsoid_radii=er, beam_lengths=bl)
-        for cost_rep in cost_reps:
+        for cost_rep in parameter_cost_reps:
             f += cost_rep(parameter_input)
 
         # Solve.

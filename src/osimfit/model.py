@@ -66,9 +66,10 @@ class FrameOffsetGroup(OffsetGroup):
 @dataclass
 class JointParameterGroup:
     """
-    A group of joints sharing one value of a joint-level parameter (e.g., a set of
-    `EllipsoidJoint`s sharing one set of ellipsoid radii). The value is absolute, not a
-    scale factor, so every joint in the group is assigned the same value.
+    A group of joints sharing one dimensionless factor on a joint-level parameter (e.g.
+    a set of `EllipsoidJoint`s sharing one factor on their ellipsoid radii). The
+    factor multiplies each joint's own baseline value, read from the model when the
+    group is registered.
 
     Attributes
     ----------
@@ -78,7 +79,7 @@ class JointParameterGroup:
     Notes
     -----
     A group holds only model-independent descriptors, so the same group may be
-    registered on more than one `ModelCache`. The `Joint`s themselves are
+    registered on more than one `ModelCache`. The `Joint`s and their baselines are
     model-specific and are therefore cached on the `ModelCache`; see
     `ModelCache.add_parameter_group`.
     """
@@ -89,7 +90,7 @@ class JointParameterGroup:
 class EllipsoidRadiiGroup(JointParameterGroup):
     """
     A `JointParameterGroup` whose joints are `EllipsoidJoint`s sharing one Vec3 of
-    ellipsoid radii, in meters.
+    factors on their baseline ellipsoid radii.
     """
 
 
@@ -97,7 +98,7 @@ class EllipsoidRadiiGroup(JointParameterGroup):
 class BeamLengthGroup(JointParameterGroup):
     """
     A `JointParameterGroup` whose joints are `CantileverFreeBeamJoint`s sharing one
-    beam length, in meters.
+    factor on their baseline beam length.
     """
 
 
@@ -149,9 +150,15 @@ class ModelCache:
     ellipsoid_radii_group_joints: list[list[osim.EllipsoidJoint]]
         Per-`EllipsoidRadiiGroup` `EllipsoidJoint`s, parallel to
         `ellipsoid_radii_groups`.
+    ellipsoid_radii_group_baselines: list[list[np.ndarray]]
+        Per-`EllipsoidRadiiGroup` baseline XYZ radii, one length-3 array per joint,
+        parallel to `ellipsoid_radii_group_joints`. A group's factors multiply these.
     beam_length_group_joints: list[list[osim.CantileverFreeBeamJoint]]
         Per-`BeamLengthGroup` `CantileverFreeBeamJoint`s, parallel to
         `beam_length_groups`.
+    beam_length_group_baselines: list[list[float]]
+        Per-`BeamLengthGroup` baseline beam lengths, one per joint, parallel to
+        `beam_length_group_joints`. A group's factor multiplies these.
     parent_of: dict[int, int]
         Per-mobod parent in the multibody tree. ``parent_of[k]`` is the
         ``MobilizedBodyIndex`` of body ``k``'s parent (Ground has no entry).
@@ -186,7 +193,9 @@ class ModelCache:
         self.body_scale_group_inboard_joints: list[list[osim.Joint]] = []
         self.body_scale_group_outboard_joints: list[list[osim.Joint]] = []
         self.ellipsoid_radii_group_joints: list[list[osim.EllipsoidJoint]] = []
+        self.ellipsoid_radii_group_baselines: list[list[np.ndarray]] = []
         self.beam_length_group_joints: list[list[osim.CantileverFreeBeamJoint]] = []
+        self.beam_length_group_baselines: list[list[float]] = []
 
         # Joints where qdot != u are acceptable, but assert that nq == nu (i.e.,
         # disallow quaternions).
@@ -250,14 +259,18 @@ class ModelCache:
         elif isinstance(group, FrameOffsetGroup):
             self.frame_offset_groups.append(group)
         elif isinstance(group, EllipsoidRadiiGroup):
+            joints = self._resolve_joints(group.joint_paths, osim.EllipsoidJoint)
             self.ellipsoid_radii_groups.append(group)
-            self.ellipsoid_radii_group_joints.append(
-                self._resolve_joints(group.joint_paths, osim.EllipsoidJoint))
+            self.ellipsoid_radii_group_joints.append(joints)
+            self.ellipsoid_radii_group_baselines.append(
+                [joint.get_radii_x_y_z().to_numpy() for joint in joints])
         elif isinstance(group, BeamLengthGroup):
+            joints = self._resolve_joints(group.joint_paths,
+                                          osim.CantileverFreeBeamJoint)
             self.beam_length_groups.append(group)
-            self.beam_length_group_joints.append(
-                self._resolve_joints(group.joint_paths,
-                                     osim.CantileverFreeBeamJoint))
+            self.beam_length_group_joints.append(joints)
+            self.beam_length_group_baselines.append(
+                [float(joint.get_beam_length()) for joint in joints])
         else:
             raise ValueError(
                 f'Unsupported parameter group type {type(group).__name__}.')
@@ -441,41 +454,49 @@ class ModelCache:
                             ellipsoid_radii: np.ndarray) -> None:
         """
         Set the radii of every `EllipsoidJoint` in every registered
-        `EllipsoidRadiiGroup`. The radii are absolute values in meters, so repeated
-        calls are absolute rather than compounding. Invalidates Stage::Instance and
-        higher.
+        `EllipsoidRadiiGroup` to that joint's cached baseline radii times the group's
+        factors. Because every call starts from the baseline rather than from the
+        state's current radii, repeated calls are absolute rather than compounding.
+        Invalidates Stage::Instance and higher.
 
         Parameters
         ----------
         state: osim.State
             The State to update.
         ellipsoid_radii: np.ndarray, shape (3 * len(ellipsoid_radii_groups),)
-            Flat XYZ ellipsoid radii, one Vec3 per EllipsoidRadiiGroup.
+            Flat XYZ factors on the baseline radii, one Vec3 per EllipsoidRadiiGroup.
         """
-        for i, joints in enumerate(self.ellipsoid_radii_group_joints):
-            r = np.asarray(ellipsoid_radii[3*i : 3*i+3], dtype=float)
-            radii = osim.Vec3(float(r[0]), float(r[1]), float(r[2]))
-            for joint in joints:
-                joint.setRadii(state, radii)
+        for i, (joints, baselines) in enumerate(zip(
+                self.ellipsoid_radii_group_joints,
+                self.ellipsoid_radii_group_baselines)):
+            factors = np.asarray(ellipsoid_radii[3*i : 3*i+3], dtype=float)
+            for joint, baseline in zip(joints, baselines):
+                r = baseline * factors
+                joint.setRadii(state, osim.Vec3(
+                    float(r[0]), float(r[1]), float(r[2])))
 
     def set_beam_lengths(self, state: osim.State,
                          beam_lengths: np.ndarray) -> None:
         """
         Set the beam length of every `CantileverFreeBeamJoint` in every registered
-        `BeamLengthGroup`. The lengths are absolute values in meters, so repeated calls
-        are absolute rather than compounding. Invalidates Stage::Instance and higher.
+        `BeamLengthGroup` to that joint's cached baseline length times the group's
+        factor. Because every call starts from the baseline rather than from the
+        state's current length, repeated calls are absolute rather than compounding.
+        Invalidates Stage::Instance and higher.
 
         Parameters
         ----------
         state: osim.State
             The State to update.
         beam_lengths: np.ndarray, shape (len(beam_length_groups),)
-            Beam lengths, one per BeamLengthGroup.
+            Factors on the baseline beam lengths, one per BeamLengthGroup.
         """
-        for i, joints in enumerate(self.beam_length_group_joints):
-            length = float(beam_lengths[i])
-            for joint in joints:
-                joint.setLength(state, length)
+        for i, (joints, baselines) in enumerate(zip(
+                self.beam_length_group_joints,
+                self.beam_length_group_baselines)):
+            factor = float(beam_lengths[i])
+            for joint, baseline in zip(joints, baselines):
+                joint.setLength(state, baseline * factor)
 
     def calc_position_jacobian_wrt_ellipsoid_radii(
             self, state: osim.State, dp_GB: osim.VectorVec3) -> np.ndarray:
@@ -488,6 +509,10 @@ class ModelCache:
         its orientation, so a station's position sensitivity is captured entirely by
         `dp_GB`; unlike body scales, there is no station-location contribution to add.
 
+        The optimization variables are factors on each joint's baseline radii, so each
+        joint's radii-space gradient is carried to factor space by the chain rule,
+        ``dE/dfactor = baseline * dE/dradius``, and summed over the group's joints.
+
         Parameters
         ----------
         state: osim.State
@@ -498,10 +523,12 @@ class ModelCache:
             ground).
         """
         Jr = np.zeros((1, 3 * len(self.ellipsoid_radii_groups)))
-        for i, joints in enumerate(self.ellipsoid_radii_group_joints):
+        for i, (joints, baselines) in enumerate(zip(
+                self.ellipsoid_radii_group_joints,
+                self.ellipsoid_radii_group_baselines)):
             col = np.zeros(3)
-            for joint in joints:
-                col += joint.multiplyByPositionJacobianWrtRadiiTranspose(
+            for joint, baseline in zip(joints, baselines):
+                col += baseline * joint.multiplyByPositionJacobianWrtRadiiTranspose(
                     state, dp_GB).to_numpy()
             Jr[0, 3*i:3*(i+1)] = col
 
@@ -516,7 +543,8 @@ class ModelCache:
 
         As with ellipsoid radii, a `CantileverFreeBeamJoint`'s length affects the
         outboard body's origin position but not its orientation, so `dp_GB` captures a
-        station's full position sensitivity.
+        station's full position sensitivity, and the optimization variable is a factor
+        on each joint's baseline length, so ``dE/dfactor = baseline * dE/dlength``.
 
         Parameters
         ----------
@@ -528,11 +556,13 @@ class ModelCache:
             ground).
         """
         Jl = np.zeros((1, len(self.beam_length_groups)))
-        for i, joints in enumerate(self.beam_length_group_joints):
+        for i, (joints, baselines) in enumerate(zip(
+                self.beam_length_group_joints,
+                self.beam_length_group_baselines)):
             Jl[0, i] = sum(
-                float(joint.multiplyByPositionJacobianWrtLengthTranspose(
+                baseline * float(joint.multiplyByPositionJacobianWrtLengthTranspose(
                     state, dp_GB))
-                for joint in joints)
+                for joint, baseline in zip(joints, baselines))
 
         return Jl
 
@@ -608,6 +638,60 @@ class ModelCache:
             tscale_np = np.asarray(tscale, dtype=float)
             st.scale(osim.Vec3(float(tscale_np[0]), float(tscale_np[1]),
                                float(tscale_np[2])))
+
+    @staticmethod
+    def get_ellipsoid_joint_radii(model: osim.Model) -> dict[str, np.ndarray]:
+        """
+        Return a dictionary mapping every `EllipsoidJoint`'s path to its current
+        [rx, ry, rz] radii.
+
+        Parameters
+        ----------
+        model: osim.Model
+            The model to read from.
+
+        Returns
+        -------
+        dict[str, np.ndarray]
+            A dictionary mapping EllipsoidJoint paths to their current radii.
+        """
+        radii: dict[str, np.ndarray] = {}
+        jointset = model.getJointSet()
+        for ijoint in range(jointset.getSize()):
+            joint_path = jointset.get(ijoint).getAbsolutePathString()
+            ej = osim.EllipsoidJoint.safeDownCast(model.getComponent(joint_path))
+            if ej is not None:
+                radii[joint_path] = ej.get_radii_x_y_z().to_numpy()
+
+        return radii
+
+    @staticmethod
+    def apply_ellipsoid_joint_radii(model: osim.Model, radii: dict) -> None:
+        """
+        Write each `(joint_path, Vec3)` entry of `radii` back onto that
+        `EllipsoidJoint`.
+
+        `EllipsoidJoint::extendScale` multiplies a joint's radii by its parent frame's
+        body scale factors, so a `Model::scale()` performed for the optimized body
+        scales also resizes the ellipsoid. Saving the radii beforehand and restoring
+        them here undoes exactly that, leaving an `EllipsoidRadii` factor free to apply
+        on top of the model's own baseline rather than compounding with a body scale.
+
+        Parameters
+        ----------
+        model: osim.Model
+            The model to mutate.
+        radii: dict[str, np.ndarray | osim.Vec3]
+            Mapping from EllipsoidJoint absolute path to a length-3 Vec3-like radii
+            value.
+        """
+        for joint_path, joint_radii in radii.items():
+            ej = osim.EllipsoidJoint.safeDownCast(model.getComponent(joint_path))
+            if ej is None:
+                raise ValueError(
+                    f'Component at {joint_path} is not an EllipsoidJoint.')
+            r = np.asarray(joint_radii, dtype=float)
+            ej.set_radii_x_y_z(osim.Vec3(float(r[0]), float(r[1]), float(r[2])))
 
     def calc_position_jacobian_wrt_body_scales(self, state: osim.State,
                                                dp_GB: osim.VectorVec3) -> np.ndarray:
@@ -1116,19 +1200,25 @@ class FrameOffset(Vec3Parameter):
 
 class EllipsoidRadii(Vec3Parameter):
     """
-    An optimized Vec3 of `EllipsoidJoint` radii, in meters, shared across one or more
-    joints. Pass a single joint path to optimize one joint's radii, or a list of joint
-    paths to share one set of radii across a group of joints (e.g., for left-right
-    symmetric shoulders).
+    An optimized Vec3 of dimensionless factors on `EllipsoidJoint` radii, shared across
+    one or more joints. Pass a single joint path to optimize one joint's radii, or a
+    list of joint paths to share one set of factors across a group of joints (e.g., for
+    left-right symmetric shoulders).
+
+    Each factor multiplies the joint's own baseline radii, so a group's joints keep
+    their individual nominal geometry and scale together in proportion. A left-right
+    pair mirrored by negated radii therefore stays mirrored under one positive factor.
+    A factor of 1.0 leaves the model's radii unchanged.
 
     Parameters
     ----------
     paths: str or list[str]
         Absolute model path(s) to the `EllipsoidJoint`(s) whose radii are optimized.
     bounds: Bounds
-        Bounds applied to each radius. The lower bound must be positive.
+        Bounds applied to each factor. The lower bound must be positive, since a
+        non-positive factor would collapse or invert the ellipsoid.
     value: np.ndarray
-        Initial [rx, ry, rz] radii, in meters.
+        Initial [fx, fy, fz] factors on the baseline radii.
     """
     group_type = EllipsoidRadiiGroup
     cost_input = 'ellipsoid_radii'
@@ -1136,7 +1226,7 @@ class EllipsoidRadii(Vec3Parameter):
     def validate(self, mc: ModelCache) -> None:
         if self.bounds.lower_bound <= 0.0:
             raise ValueError(
-                f'Ellipsoid radii must be positive, but the lower bound on '
+                f'Ellipsoid radii factors must be positive, but the lower bound on '
                 f'{self.paths} is {self.bounds.lower_bound}.')
         for path in self.paths:
             joint = osim.EllipsoidJoint.safeDownCast(mc.model.getComponent(path))
@@ -1150,16 +1240,21 @@ class EllipsoidRadii(Vec3Parameter):
     def apply_to_model(self, model: osim.Model) -> None:
         for path in self.paths:
             joint = osim.EllipsoidJoint.safeDownCast(model.getComponent(path))
-            joint.setEllipsoidRadii(osim.Vec3(
-                float(self.value[0]), float(self.value[1]),
-                float(self.value[2])))
+            radii = joint.get_radii_x_y_z().to_numpy() * self.value
+            joint.set_radii_x_y_z(osim.Vec3(
+                float(radii[0]), float(radii[1]), float(radii[2])))
 
 
 class BeamLength(ScalarParameter):
     """
-    An optimized `CantileverFreeBeamJoint` beam length, in meters, shared across one or
-    more joints. Pass a single joint path to optimize one joint's length, or a list of
-    joint paths to share one length across a group of joints.
+    An optimized dimensionless factor on a `CantileverFreeBeamJoint`'s beam length,
+    shared across one or more joints. Pass a single joint path to optimize one joint's
+    length, or a list of joint paths to share one factor across a group of joints.
+
+    The factor multiplies each joint's own baseline length, so a group spanning joints
+    of different nominal lengths (e.g. the lumbar, thoracic, and cervical segments of a
+    spine) scales them all in proportion rather than forcing them equal. A factor of
+    1.0 leaves the model's lengths unchanged.
 
     Parameters
     ----------
@@ -1167,9 +1262,10 @@ class BeamLength(ScalarParameter):
         Absolute model path(s) to the `CantileverFreeBeamJoint`(s) whose beam length is
         optimized.
     bounds: Bounds
-        Bounds applied to the length. The lower bound must be positive.
+        Bounds applied to the factor. The lower bound must be positive, since a
+        non-positive factor would collapse or invert the beam.
     value: float
-        Initial beam length, in meters.
+        Initial factor on the baseline beam length.
     """
     group_type = BeamLengthGroup
     cost_input = 'beam_lengths'
@@ -1177,8 +1273,8 @@ class BeamLength(ScalarParameter):
     def validate(self, mc: ModelCache) -> None:
         if self.bounds.lower_bound <= 0.0:
             raise ValueError(
-                f'Beam lengths must be positive, but the lower bound on {self.paths} '
-                f'is {self.bounds.lower_bound}.')
+                f'Beam length factors must be positive, but the lower bound on '
+                f'{self.paths} is {self.bounds.lower_bound}.')
         for path in self.paths:
             joint = osim.CantileverFreeBeamJoint.safeDownCast(
                 mc.model.getComponent(path))
@@ -1193,4 +1289,5 @@ class BeamLength(ScalarParameter):
         for path in self.paths:
             joint = osim.CantileverFreeBeamJoint.safeDownCast(
                 model.getComponent(path))
-            joint.set_beam_length(float(self.value[0]))
+            joint.set_beam_length(
+                float(joint.get_beam_length() * self.value[0]))

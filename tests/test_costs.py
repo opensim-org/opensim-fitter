@@ -10,7 +10,7 @@ import opensim as osim
 from pathlib import Path
 from osimfit.model import (ModelCache, BodyScale, BodyScaleGroup, MarkerOffsetGroup,
                            FrameOffsetGroup, StationCache, EllipsoidRadiiGroup,
-                           BeamLengthGroup)
+                           BeamLengthGroup, EllipsoidRadii, BeamLength)
 from osimfit.bounds import Bounds
 from osimfit.solvers import InverseKinematicsSolver, SplinedKinematicsSolver
 from osimfit.costs import (AnthropometricRegularizationCostRep, CostInput,
@@ -18,9 +18,14 @@ from osimfit.costs import (AnthropometricRegularizationCostRep, CostInput,
                            BodyScaleRegularizationCost, BodyScaleIsotropyCost,
                            OffsetRegularizationCost, BilevelCostRep,
                            TrackingCost, TrackingCostRep,
-                           AnthropometricRegularizationCost)
+                           AnthropometricRegularizationCost,
+                           CoordinateStiffnessCost, CoordinateStiffnessCostRep,
+                           EllipsoidRadiiRegularizationCost,
+                           BeamLengthRegularizationCost)
 from osimfit.scaling import Axis, AnthropometricMeasurement
 from tests.test_double_pendulum import create_double_pendulum
+from tests.test_mobilizer_factors import (ELBOW, create_beam_model,
+                                          create_prescribed_markers, marker_trial)
 
 # Define the test model path.
 MODEL_FPATH = str(Path(__file__).parent / 'subject_scale_walk.osim')
@@ -64,11 +69,15 @@ def test_splined_accepts_parameter_costs(double_pendulum_model):
     assert len(solver.costs) == 2
 
 
-def test_splined_rejects_coordinate_cost(double_pendulum_model):
+def test_splined_accepts_coordinate_cost(double_pendulum_model):
+    """
+    The splined solver provides the coordinates as well as the shared parameters, so a
+    coordinate-dependent cost is registrable; it is evaluated at every time sample
+    rather than once per solve.
+    """
     solver = SplinedKinematicsSolver(double_pendulum_model)
-    with pytest.raises(ValueError, match='coordinates'):
-        solver.add_cost(CoordinatePenalty())
-    assert solver.costs == []
+    solver.add_cost(CoordinatePenalty())
+    assert len(solver.costs) == 1
 
 
 def test_registered_cost_reps_size_themselves_from_the_solvers_parameters():
@@ -714,7 +723,9 @@ def test_bilevel_cost_function_ellipsoid_radii_jacobian_matches_fd():
     """
     The analytic Jacobian with respect to a single EllipsoidRadiiGroup must match the
     finite-difference Jacobian of the same callback, including the contribution routed
-    through the downstream (pin-jointed) body.
+    through the downstream (pin-jointed) body. The variables are factors on the
+    joint's baseline radii, so the analytic path carries the baseline through the
+    chain rule and finite differences must agree with it.
     """
     model = create_ellipsoid_chain_model()
     model.initSystem()
@@ -739,7 +750,7 @@ def test_bilevel_cost_function_ellipsoid_radii_jacobian_matches_fd():
                            frame_offsets=empty, ellipsoid_radii=r,
                            beam_lengths=empty)), x)])
 
-    val = np.concatenate([np.full(nq, 0.15), np.array([0.1, 0.2, 0.3])])
+    val = np.concatenate([np.full(nq, 0.15), np.array([1.1, 0.9, 1.05])])
     np.testing.assert_allclose(jacobian_of(cost_jac)(val).full(),
                                jacobian_of(cost_fd)(val).full(), atol=1e-6)
 
@@ -748,7 +759,9 @@ def test_bilevel_cost_function_beam_length_jacobian_matches_fd():
     """
     The analytic Jacobian with respect to a single BeamLengthGroup must match the
     finite-difference Jacobian of the same callback, including the contribution routed
-    through the downstream (pin-jointed) body.
+    through the downstream (pin-jointed) body. The variable is a factor on the joint's
+    baseline length, so the analytic path carries the baseline through the chain rule
+    and finite differences must agree with it.
     """
     model = create_beam_chain_model()
     model.initSystem()
@@ -773,7 +786,7 @@ def test_bilevel_cost_function_beam_length_jacobian_matches_fd():
                            frame_offsets=empty, ellipsoid_radii=empty,
                            beam_lengths=length)), x)])
 
-    val = np.concatenate([np.full(nq, 0.15), np.array([1.2])])
+    val = np.concatenate([np.full(nq, 0.15), np.array([1.15])])
     np.testing.assert_allclose(jacobian_of(cost_jac)(val).full(),
                                jacobian_of(cost_fd)(val).full(), atol=1e-6)
 
@@ -782,7 +795,7 @@ def test_bilevel_shared_ellipsoid_group_jacobian_sums_solo_and_matches_fd():
     """
     For two bodies each on their own EllipsoidJoint, the shared-group radii Jacobian
     must (a) equal the sum of the solo Jacobian columns when both solo groups hold the
-    same radii, and (b) agree with the finite-difference Jacobian of the shared
+    same factors, and (b) agree with the finite-difference Jacobian of the shared
     callback.
     """
     model = create_two_ellipsoid_model()
@@ -817,15 +830,15 @@ def test_bilevel_shared_ellipsoid_group_jacobian_sums_solo_and_matches_fd():
     # (b) Shared analytic vs FD on the shared callback.
     r_shared = ca.SX.sym('r_shared', 3)
     x_shared = ca.vertcat(q, r_shared)
-    val_shared = np.concatenate([np.full(nq, 0.15), np.array([0.1, 0.2, 0.3])])
+    val_shared = np.concatenate([np.full(nq, 0.15), np.array([1.1, 0.9, 1.05])])
     J_shared = jacobian_of(cost_shared, r_shared, x_shared)(val_shared).full()
     J_fd = jacobian_of(cost_fd, r_shared, x_shared)(val_shared).full()
     np.testing.assert_allclose(J_shared, J_fd, atol=1e-6)
 
-    # (a) Shared radii column equals the sum of the solo radii columns.
+    # (a) Shared factor column equals the sum of the solo factor columns.
     r_solo = ca.SX.sym('r_solo', 6)
     x_solo = ca.vertcat(q, r_solo)
-    val_solo = np.concatenate([np.full(nq, 0.15), np.tile([0.1, 0.2, 0.3], 2)])
+    val_solo = np.concatenate([np.full(nq, 0.15), np.tile([1.1, 0.9, 1.05], 2)])
     J_solo = jacobian_of(cost_solo, r_solo, x_solo)(val_solo).full()
     np.testing.assert_allclose(J_shared[:, nq:nq+3],
                                J_solo[:, nq:nq+3] + J_solo[:, nq+3:nq+6], atol=1e-9)
@@ -875,7 +888,7 @@ def test_bilevel_cost_function_all_parameter_jacobians_match_fd():
         np.array([1.1, 1.0, 0.95]),
         np.array([0.01, -0.02, 0.03]),
         np.array([-0.01, 0.02, 0.01]),
-        np.array([0.1, 0.2, 0.3]),
+        np.array([1.1, 0.9, 1.05]),
     ])
     np.testing.assert_allclose(jacobian_of(cost_jac)(val).full(),
                                jacobian_of(cost_fd)(val).full(), atol=1e-6)
@@ -1398,3 +1411,294 @@ def test_set_scaled_mobilizer_frames_requires_cached_joints():
     n = 3 * len(mc.body_scale_groups)
     with pytest.raises(RuntimeError, match='cache_body_scale_group_joints'):
         mc.set_scaled_mobilizer_frame_positions(mc.state, np.ones(n))
+
+
+#############################
+# COORDINATE STIFFNESS COST #
+#############################
+
+Q0 = '/jointset/j0/q0'
+Q1 = '/jointset/j1/q1'
+
+
+@pytest.fixture
+def pendulum():
+    model = create_double_pendulum(1.0, 1.0)
+    model.initSystem()
+    return model
+
+
+def test_stiffness_rejects_negative_weight():
+    with pytest.raises(ValueError, match='non-negative'):
+        CoordinateStiffnessCost({Q0: 1.0}, weight=-1.0)
+
+
+def test_stiffness_rejects_negative_stiffness():
+    with pytest.raises(ValueError, match='non-negative'):
+        CoordinateStiffnessCost({Q0: -1.0})
+
+
+def test_stiffness_rejects_empty_stiffnesses():
+    with pytest.raises(ValueError, match='at least one'):
+        CoordinateStiffnessCost({})
+
+
+def test_stiffness_rejects_unknown_coordinate(pendulum):
+    cost = CoordinateStiffnessCost({'/jointset/j0/nope': 1.0})
+    with pytest.raises(ValueError, match='not a coordinate in the model'):
+        cost.create_rep(ModelCache(pendulum))
+
+
+def test_stiffness_requires_coordinates():
+    assert CoordinateStiffnessCost({Q0: 1.0}).required_inputs == frozenset(
+        {'coordinates'})
+
+
+def test_stiffness_penalizes_only_the_named_coordinates(pendulum):
+    mc = ModelCache(pendulum)
+    rep = CoordinateStiffnessCost({Q1: 2.0}).create_rep(mc)
+    order = list(mc.coordinate_q_map)
+
+    # Moving the unpenalized coordinate leaves the cost at zero; moving the penalized
+    # one gives stiffness * deviation^2.
+    q = np.zeros(len(order))
+    q[order.index(Q0)] = 0.5
+    assert float(rep(CostInput(coordinates=ca.DM(q)))) == pytest.approx(0.0)
+
+    q = np.zeros(len(order))
+    q[order.index(Q1)] = 0.5
+    assert float(rep(CostInput(coordinates=ca.DM(q)))) == pytest.approx(2.0 * 0.25)
+
+
+def test_stiffness_weight_scales_the_penalty(pendulum):
+    mc = ModelCache(pendulum)
+    order = list(mc.coordinate_q_map)
+    q = np.zeros(len(order))
+    q[order.index(Q0)] = 0.3
+
+    plain = CoordinateStiffnessCost({Q0: 1.0}).create_rep(mc)
+    scaled = CoordinateStiffnessCost({Q0: 1.0}, weight=5.0).create_rep(mc)
+    assert float(scaled(CostInput(coordinates=ca.DM(q)))) == pytest.approx(
+        5.0 * float(plain(CostInput(coordinates=ca.DM(q)))))
+
+
+def test_stiffness_target_defaults_to_the_model_default_value(pendulum):
+    """
+    A coordinate whose default value is non-zero is pulled toward that value, not
+    toward zero, so the penalty vanishes at the model's neutral posture.
+    """
+    coordinate = osim.Coordinate.safeDownCast(pendulum.getComponent(Q0))
+    coordinate.setDefaultValue(0.4)
+    pendulum.finalizeConnections()
+
+    mc = ModelCache(pendulum)
+    rep = CoordinateStiffnessCost({Q0: 3.0}).create_rep(mc)
+    order = list(mc.coordinate_q_map)
+
+    q = np.zeros(len(order))
+    q[order.index(Q0)] = 0.4
+    assert float(rep(CostInput(coordinates=ca.DM(q)))) == pytest.approx(0.0)
+
+    q[order.index(Q0)] = 0.5
+    assert float(rep(CostInput(coordinates=ca.DM(q)))) == pytest.approx(
+        3.0 * (0.5 - 0.4)**2)
+
+
+def test_stiffness_explicit_target_overrides_the_model_default(pendulum):
+    mc = ModelCache(pendulum)
+    rep = CoordinateStiffnessCost({Q0: 1.0}, targets={Q0: 0.25}).create_rep(mc)
+    order = list(mc.coordinate_q_map)
+    q = np.zeros(len(order))
+    q[order.index(Q0)] = 0.25
+    assert float(rep(CostInput(coordinates=ca.DM(q)))) == pytest.approx(0.0)
+
+
+def test_stiffness_gradient_matches_the_analytic_spring(pendulum):
+    """
+    The cost is a plain CasADi expression, so CasADi differentiates it symbolically.
+    Its gradient must be the spring gradient 2 * weight * k * (q - target).
+    """
+    mc = ModelCache(pendulum)
+    order = list(mc.coordinate_q_map)
+    rep = CoordinateStiffnessCost({Q0: 2.0, Q1: 0.5}, weight=3.0).create_rep(mc)
+
+    x = ca.SX.sym('x', len(order))
+    gradient = ca.Function('g', [x],
+                           [ca.jacobian(rep(CostInput(coordinates=x)), x)])
+    q = np.zeros(len(order))
+    q[order.index(Q0)] = 0.3
+    q[order.index(Q1)] = -0.2
+
+    expected = np.zeros(len(order))
+    expected[order.index(Q0)] = 2.0 * 3.0 * 2.0 * 0.3
+    expected[order.index(Q1)] = 2.0 * 3.0 * 0.5 * -0.2
+    np.testing.assert_allclose(np.squeeze(gradient(q).full()), expected, atol=1e-12)
+
+
+def test_inverse_kinematics_accepts_a_stiffness(pendulum):
+    solver = InverseKinematicsSolver(pendulum)
+    solver.add_cost(CoordinateStiffnessCost({Q0: 1.0}))
+    assert len(solver.costs) == 1
+
+
+def test_splined_solver_accepts_a_stiffness(pendulum):
+    solver = SplinedKinematicsSolver(pendulum)
+    solver.add_cost(CoordinateStiffnessCost({Q0: 1.0}))
+    assert len(solver.costs) == 1
+
+
+def test_stiffness_pulls_an_underdetermined_coordinate_toward_its_target(pendulum):
+    """
+    Drive the objective with the stiffness alone and confirm the minimizer sits at the
+    target: the penalty is what determines an otherwise unconstrained coordinate.
+    """
+    mc = ModelCache(pendulum)
+    order = list(mc.coordinate_q_map)
+    rep = CoordinateStiffnessCost({Q0: 1.0, Q1: 1.0},
+                                  targets={Q0: 0.2, Q1: -0.3}).create_rep(mc)
+
+    x = ca.SX.sym('x', len(order))
+    nlp = {'x': x, 'f': rep(CostInput(coordinates=x))}
+    solver = ca.nlpsol('solver', 'ipopt', nlp,
+                       {'ipopt': {'print_level': 0}, 'print_time': False})
+    optimal = np.squeeze(solver(x0=np.zeros(len(order)))['x'].full())
+
+    assert optimal[order.index(Q0)] == pytest.approx(0.2, abs=1e-6)
+    assert optimal[order.index(Q1)] == pytest.approx(-0.3, abs=1e-6)
+
+
+def test_splined_solver_applies_the_stiffness_per_time_sample(tmp_path):
+    """
+    A coordinate-dependent cost is a distinct code path in `SplinedKinematicsSolver`:
+    it is evaluated at every time sample rather than once per solve. Solve the same
+    problem with and without a stiffness pulling one coordinate away from what the
+    markers alone imply, and confirm the stiffened solution moves toward the target.
+    """
+    coordinate = '/jointset/elbow_r/elbow_r_coord_2'
+    target = 0.4
+
+    trc_path = str(tmp_path / 'markers.trc')
+    create_prescribed_markers(create_beam_model(), trc_path)
+
+    def solve(stiffness):
+        model = create_beam_model()
+        model.initSystem()
+        solver = SplinedKinematicsSolver(model, convergence_tolerance=1e-6,
+                                         knot_interval=0.1, position_weight=5.0)
+        solver.add_trial(marker_trial('beam', trc_path))
+        if stiffness is not None:
+            solver.add_cost(CoordinateStiffnessCost({coordinate: stiffness},
+                                                    targets={coordinate: target}))
+        solution = solver.solve()
+        column = solution.states_tables['beam'].getDependentColumn(
+            coordinate + '/value').to_numpy()
+        return float(np.mean(column))
+
+    plain = solve(None)
+    stiffened = solve(1e3)
+
+    # The stiffened solve must sit closer to the target than the unstiffened one.
+    assert abs(stiffened - target) < abs(plain - target)
+
+
+##################################
+# MOBILIZER REGULARIZATION COSTS #
+##################################
+
+@pytest.mark.parametrize('cost_cls,input_name', [
+    (EllipsoidRadiiRegularizationCost, 'ellipsoid_radii'),
+    (BeamLengthRegularizationCost, 'beam_lengths'),
+])
+def test_mobilizer_regularization_requires_only_its_own_input(cost_cls, input_name):
+    assert cost_cls(1.0).required_inputs == frozenset({input_name})
+
+
+@pytest.mark.parametrize('cost_cls', [EllipsoidRadiiRegularizationCost,
+                                      BeamLengthRegularizationCost])
+def test_mobilizer_regularization_rejects_a_negative_weight(cost_cls):
+    with pytest.raises(ValueError, match='non-negative'):
+        cost_cls(weight=-1.0)
+
+
+@pytest.mark.parametrize('cost_cls,input_name', [
+    (EllipsoidRadiiRegularizationCost, 'ellipsoid_radii'),
+    (BeamLengthRegularizationCost, 'beam_lengths'),
+])
+def test_mobilizer_regularization_penalizes_deviation(cost_cls, input_name):
+    cost = cost_cls(weight=2.0)
+    factors = np.array([1.1, 0.9, 1.0])
+
+    assert float(cost.evaluate(
+        CostInput(**{input_name: np.ones(3)}))) == pytest.approx(0.0)
+    assert float(cost.evaluate(
+        CostInput(**{input_name: factors}))) == pytest.approx(
+            2.0 * (0.1**2 + 0.1**2 + 0.0))
+
+
+@pytest.mark.parametrize('cost_cls,input_name', [
+    (EllipsoidRadiiRegularizationCost, 'ellipsoid_radii'),
+    (BeamLengthRegularizationCost, 'beam_lengths'),
+])
+def test_mobilizer_regularization_honors_a_non_unit_target(cost_cls, input_name):
+    cost = cost_cls(weight=1.0, target=1.5)
+    assert float(cost.evaluate(
+        CostInput(**{input_name: np.array([1.5])}))) == pytest.approx(0.0)
+
+
+def test_mobilizer_regularization_ignores_the_other_parameter_type():
+    """
+    Splitting the costs is what makes each one's weight independent: the radii cost
+    must not see the beam lengths, and vice versa.
+    """
+    radii = np.array([1.4, 0.6, 1.0])
+    lengths = np.array([1.2])
+
+    radii_cost = EllipsoidRadiiRegularizationCost(weight=1.0)
+    with_lengths = radii_cost.evaluate(
+        CostInput(ellipsoid_radii=radii, beam_lengths=lengths))
+    without_lengths = radii_cost.evaluate(CostInput(ellipsoid_radii=radii))
+    assert float(with_lengths) == pytest.approx(float(without_lengths))
+
+    length_cost = BeamLengthRegularizationCost(weight=1.0)
+    with_radii = length_cost.evaluate(
+        CostInput(ellipsoid_radii=radii, beam_lengths=lengths))
+    without_radii = length_cost.evaluate(CostInput(beam_lengths=lengths))
+    assert float(with_radii) == pytest.approx(float(without_radii))
+
+
+@pytest.mark.parametrize('cost_cls', [EllipsoidRadiiRegularizationCost,
+                                      BeamLengthRegularizationCost])
+def test_splined_solver_accepts_the_mobilizer_regularization_costs(cost_cls):
+    solver = SplinedKinematicsSolver(create_beam_model())
+    solver.add_cost(cost_cls(weight=1e-3))
+    assert len(solver.costs) == 1
+
+
+@pytest.mark.parametrize('cost_cls', [EllipsoidRadiiRegularizationCost,
+                                      BeamLengthRegularizationCost])
+def test_inverse_kinematics_rejects_the_mobilizer_regularization_costs(cost_cls):
+    solver = InverseKinematicsSolver(create_beam_model())
+    with pytest.raises(ValueError, match='does not support'):
+        solver.add_cost(cost_cls(weight=1e-3))
+    assert solver.costs == []
+
+
+def test_beam_length_regularization_holds_a_factor_at_its_target(tmp_path):
+    """
+    With marker data generated from the nominal model, a regularized solve must leave
+    the factor at 1.0 rather than letting it absorb numerical slack.
+    """
+    trc_path = str(tmp_path / 'markers.trc')
+    create_prescribed_markers(create_beam_model(), trc_path)
+
+    model = create_beam_model()
+    model.initSystem()
+    solver = SplinedKinematicsSolver(
+        model, convergence_tolerance=1e-6, knot_interval=0.1, position_weight=5.0)
+    solver.add_trial(marker_trial('beam', trc_path))
+    solver.add_parameter(BeamLength(ELBOW, Bounds(0.5, 2.0), 1.0))
+    solver.add_cost(BeamLengthRegularizationCost(weight=1.0))
+
+    solution = solver.solve()
+    np.testing.assert_allclose(
+        solution.get_parameter(ELBOW, BeamLength).value, [1.0], atol=1e-3)
