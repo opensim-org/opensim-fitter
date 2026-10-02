@@ -1922,12 +1922,13 @@ def test_orientation_error_matches_the_quaternion_definition():
     mc.model.realizePosition(mc.state)
 
     # position_weight is zero, so calc_error is the orientation error alone.
-    expected = 0.0
+    quaternion_error = 0.0
     for i, reference in enumerate(references):
         frame = osim.PhysicalFrame.safeDownCast(
             mc.model.getComponent(f'/bodyset/b{i}/off{i}'))
         quaternion = frame.getRotationInGround(mc.state).convertRotationToQuaternion()
         eps = np.array([quaternion.get(k) for k in range(4)])
-        expected += 1.0 - np.square(np.dot(eps, reference))
+        quaternion_error += 1.0 - np.square(np.dot(eps, reference))
 
-    assert term.calc_error(mc.state) == pytest.approx(expected, rel=1e-12, abs=1e-14)
+    assert term.calc_error(mc.state) == pytest.approx(
+        quaternion_error, rel=1e-12, abs=1e-14)

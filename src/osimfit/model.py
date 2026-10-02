@@ -746,13 +746,10 @@ class ModelCache:
         self.model.multiplyByPositionJacobianWrtInboardFramePositionsTranspose(
             state, dp_GB, dp_PF)
 
+        # Read both gradients in one crossing each, then drop Ground's row.
         children = self.child_mobod_indexes
-        gradient_PF = np.empty((len(children), 3))
-        gradient_BM = np.empty((len(children), 3))
-        for row in range(len(children)):
-            cx = int(children[row])
-            gradient_PF[row] = dp_PF[cx].to_numpy()
-            gradient_BM[row] = dp_BM[cx].to_numpy()
+        gradient_PF = dp_PF.to_numpy()[children]
+        gradient_BM = dp_BM.to_numpy()[children]
 
         ds_body = np.zeros((self.num_mobod, 3))
         np.add.at(ds_body, self.parent_mobod_indexes,
