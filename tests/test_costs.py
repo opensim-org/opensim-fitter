@@ -14,6 +14,7 @@ from osimfit.model import (ModelCache, BodyScale, BodyScaleGroup, MarkerOffsetGr
 from osimfit.bounds import Bounds
 from osimfit.solvers import InverseKinematicsSolver, SplinedKinematicsSolver
 from osimfit.costs import (AnthropometricRegularizationCostRep, CostInput,
+                           FrameTrackingTerm, FrameBilevelTerm, MarkerTrackingTerm,
                            CostRep, SymbolicCost, SymbolicCostRep,
                            BodyScaleRegularizationCost, BodyScaleIsotropyCost,
                            OffsetRegularizationCost, BilevelCostRep,
@@ -366,13 +367,13 @@ def build_bilevel_rep(name, mc, body_scale_groups=[], marker_offset_groups=[],
     reads its groups from the ModelCache. Mirrors what BilevelCost.create_rep does,
     without needing a Trial to supply reference data.
 
-    Joint-level groups go through `add_parameter_group` rather than being assigned
-    directly, since that is what resolves and caches their `Joint`s on the ModelCache.
+    Every group goes through `add_parameter_group`, since that is what resolves the
+    model-specific state each group implies (a joint-level group's `Joint`s, a body
+    scale group's mobilizer frame writes).
     """
-    mc.body_scale_groups = list(body_scale_groups)
-    mc.marker_offset_groups = list(marker_offset_groups)
-    mc.frame_offset_groups = list(frame_offset_groups)
-    for group in list(ellipsoid_radii_scale_groups) + list(beam_length_scale_groups):
+    for group in (list(body_scale_groups) + list(marker_offset_groups)
+                  + list(frame_offset_groups) + list(ellipsoid_radii_scale_groups)
+                  + list(beam_length_scale_groups)):
         mc.add_parameter_group(group)
     return BilevelCostRep(name, mc, enable_fd=enable_fd)
 
@@ -1265,11 +1266,6 @@ def register_body_scales(mc, body_paths):
         mc.add_parameter_group(bs.to_group())
 
 
-def cache_group_joints(mc):
-    """Cache each group's mobilizer joints (as BilevelCostRep does)."""
-    mc.cache_body_scale_group_joints()
-
-
 def station_ground_under_scale(mc, station_path, s):
     """
     Station ground position under the solver's scaling model for flat scales `s`:
@@ -1332,7 +1328,6 @@ def test_station_position_jacobian_matches_finite_difference():
     model = create_two_link_model()
     mc = ModelCache(model)
     register_body_scales(mc, ['/bodyset/b0', '/bodyset/b1'])
-    cache_group_joints(mc)
     mc.model.realizePosition(mc.state)
 
     n = 3 * len(mc.body_scale_groups)
@@ -1466,24 +1461,21 @@ def test_body_scale_groups_may_be_shared_across_model_caches():
     assert mc1.model is not mc2.model
 
     def pointers(mc):
-        """The C++ addresses of each group's cached outboard Joints."""
-        return [[int(j.this) for j in joints]
-                for joints in mc.body_scale_group_outboard_joints]
+        """The C++ addresses of the outboard `Joint`s cached for scaling."""
+        return [int(j.this) for j in mc.outboard_frame_writes.joints]
 
     register_body_scales(mc1, ['/bodyset/b0', '/bodyset/b1'])
-    groups = mc1.body_scale_groups
-    mc1.cache_body_scale_group_joints()
+    groups = list(mc1.body_scale_groups)
     before = pointers(mc1)
 
     # Register the very same group objects on a second ModelCache.
-    mc2.body_scale_groups = list(groups)
-    mc2.cache_body_scale_group_joints()
+    for group in groups:
+        mc2.add_parameter_group(group)
 
-    # Caching on mc2 must leave mc1's joints alone, and the two caches must hold
+    # Registering on mc2 must leave mc1's joints alone, and the two caches must hold
     # different C++ Joints, one set per model copy.
     assert pointers(mc1) == before
-    assert before and all(a != b for ja, jb in zip(before, pointers(mc2))
-                          for a, b in zip(ja, jb))
+    assert before and all(a != b for a, b in zip(before, pointers(mc2)))
 
     # The shared group descriptors carry no model-specific state at all.
     for group in groups:
@@ -1491,12 +1483,20 @@ def test_body_scale_groups_may_be_shared_across_model_caches():
         assert not hasattr(group, 'inboard_joints')
 
 
-def test_set_scaled_mobilizer_frames_requires_cached_joints():
+def test_set_scaled_mobilizer_frames_needs_no_explicit_caching():
+    """
+    Registering a `BodyScaleGroup` rebuilds the mobilizer frame writes, so scaled
+    frames can be set straight afterwards with no separate caching step.
+    """
     mc = ModelCache(create_two_link_model())
     register_body_scales(mc, ['/bodyset/b0', '/bodyset/b1'])
-    n = 3 * len(mc.body_scale_groups)
-    with pytest.raises(RuntimeError, match='cache_body_scale_group_joints'):
-        mc.set_scaled_mobilizer_frame_positions(mc.state, np.ones(n))
+    mc.set_scaled_mobilizer_frame_positions(
+        mc.state, np.array([1.0, 2.0, 1.0, 1.0, 3.0, 1.0]))
+
+    # Each group body's outboard frame is its baseline [0, -0.5, 0] times that
+    # group's Y scale.
+    np.testing.assert_allclose(getP_BM(mc.model, 0, mc.state), [0.0, -1.0, 0.0])
+    np.testing.assert_allclose(getP_BM(mc.model, 1, mc.state), [0.0, -1.5, 0.0])
 
 
 #############################
@@ -1788,3 +1788,180 @@ def test_beam_length_scale_regularization_holds_a_factor_at_its_target(tmp_path)
     solution = solver.solve()
     np.testing.assert_allclose(
         solution.get_parameter(ELBOW, BeamLengthScale).value, [1.0], atol=1e-3)
+
+#############################
+# TERM JACOBIANS VERSUS FD  #
+#############################
+
+def _chain_with_rotated_offset_frames():
+    """
+    A pin-jointed chain carrying markers and `PhysicalOffsetFrame`s whose rotations
+    relative to their bodies are not identity, so the frame terms' orientation path is
+    exercised rather than skipped.
+    """
+    model = osim.Model()
+    model.setName('offset_chain')
+    previous = model.getGround()
+    for i in range(3):
+        body = osim.Body(f'b{i}', 1.0, osim.Vec3(0), osim.Inertia(1, 1, 1, 0, 0, 0))
+        model.addBody(body)
+        joint = osim.PinJoint(f'j{i}', previous, osim.Vec3(0.2 * i, 0, 0),
+                              osim.Vec3(0), body, osim.Vec3(0, -0.3, 0), osim.Vec3(0))
+        joint.updCoordinate().setName(f'q{i}')
+        model.addJoint(joint)
+        previous = body
+        model.addMarker(osim.Marker(f'm{i}', body, osim.Vec3(0.05, 0.1, -0.02)))
+        body.addComponent(osim.PhysicalOffsetFrame(
+            f'off{i}', body,
+            osim.Transform(osim.Rotation(0.4 + 0.1 * i, osim.Vec3(0.3, 0.5, 0.8)),
+                           osim.Vec3(0.01, 0.02, -0.03))))
+    model.finalizeConnections()
+    return model
+
+
+def _coordinate_jacobian_by_finite_difference(mc, term, step=1e-6):
+    """
+    Differentiate `term.calc_error` with respect to the independent coordinates by
+    central differences, realizing to Position at each perturbation.
+    """
+    indexes = mc.coordinate_q_indexes
+    q = np.array(mc.state.getQ().to_numpy())
+    jacobian = np.zeros(len(indexes))
+    for column, index in enumerate(indexes):
+        errors = []
+        for sign in (1.0, -1.0):
+            perturbed = q.copy()
+            perturbed[index] += sign * step
+            mc.state.setQ(osim.Vector.createFromMat(perturbed))
+            mc.model.realizePosition(mc.state)
+            errors.append(term.calc_error(mc.state))
+        jacobian[column] = (errors[0] - errors[1]) / (2.0 * step)
+    mc.state.setQ(osim.Vector.createFromMat(q))
+    mc.model.realizePosition(mc.state)
+    return jacobian
+
+
+def test_frame_tracking_term_jacobian_matches_finite_differences():
+    """
+    The analytic frame Jacobian must match finite differences of the error it
+    differentiates. This covers the orientation path, whose gradient is computed from
+    rotation matrices rather than quaternions, and the position path together.
+    """
+    mc = ModelCache(_chain_with_rotated_offset_frames())
+    term = FrameTrackingTerm(mc)
+    references = [
+        # Reference position, and reference orientation as an unnormalized quaternion.
+        ([0.13, 0.17, 0.04], [0.19, -0.20, 0.95, 0.16]),
+        ([-0.20, 0.14, -0.19], [0.51, -0.38, -0.69, -0.34]),
+        ([-0.08, -0.03, -0.19], [-0.79, -0.46, -0.35, -0.20]),
+    ]
+    for i, (position, quaternion) in enumerate(references):
+        quaternion = np.array(quaternion) / np.linalg.norm(quaternion)
+        term.add_frame(f'/bodyset/b{i}/off{i}', osim.Vec3(*position),
+                       osim.Quaternion(*[float(v) for v in quaternion]),
+                       position_weight=1.0 + 0.1 * i,
+                       orientation_weight=0.5 + 0.2 * i)
+
+    q = np.zeros(mc.state.getNQ())
+    q[mc.coordinate_q_indexes] = [-0.30, 0.14, 0.12]
+    mc.state.setQ(osim.Vector.createFromMat(q))
+    mc.model.realizePosition(mc.state)
+
+    analytic = term.calc_jacobian(mc.state)[0][0, :]
+    numeric = _coordinate_jacobian_by_finite_difference(mc, term)
+    np.testing.assert_allclose(analytic, numeric, rtol=1e-5, atol=1e-7)
+
+
+def test_frame_bilevel_term_coordinate_jacobian_matches_finite_differences():
+    """
+    The same check for the bilevel frame term, whose position gradient flows through
+    the scaled and offset station locations.
+    """
+    model = _chain_with_rotated_offset_frames()
+    mc = ModelCache(model)
+    bodies = [mc.model.getBodySet().get(i) for i in range(mc.model.getNumBodies())]
+    for body in bodies:
+        mc.add_parameter_group(BodyScaleGroup([body.getAbsolutePathString()],
+                                              [int(body.getMobilizedBodyIndex())]))
+
+    term = FrameBilevelTerm(mc)
+    references = [
+        # Reference position, and reference orientation as an unnormalized quaternion.
+        ([-0.08, -0.03, 0.13], [0.21, 0.51, 0.20, -0.81]),
+        ([0.02, -0.07, 0.12], [0.78, 0.49, 0.39, 0.04]),
+        ([-0.12, -0.10, 0.10], [-0.59, 0.73, 0.05, -0.36]),
+    ]
+    for i, (position, quaternion) in enumerate(references):
+        quaternion = np.array(quaternion) / np.linalg.norm(quaternion)
+        term.add_frame(f'/bodyset/b{i}/off{i}', osim.Vec3(*position),
+                       osim.Quaternion(*[float(v) for v in quaternion]),
+                       position_weight=1.0, orientation_weight=0.7)
+
+    # One XYZ scale triplet per body scale group, none of them uniform.
+    scales = np.array([0.96, 1.02, 1.10, 1.09, 1.05, 1.01, 0.96, 0.93, 1.09])
+    mc.set_scaled_mobilizer_frame_positions(mc.state, scales)
+    term.apply_state(scales, np.zeros(0))
+    q = np.zeros(mc.state.getNQ())
+    q[mc.coordinate_q_indexes] = [0.01, -0.31, 0.10]
+    mc.state.setQ(osim.Vector.createFromMat(q))
+    mc.model.realizePosition(mc.state)
+
+    analytic = term.calc_jacobian(mc.state)[0][0, :]
+    numeric = _coordinate_jacobian_by_finite_difference(mc, term)
+    np.testing.assert_allclose(analytic, numeric, rtol=1e-5, atol=1e-7)
+
+
+def test_marker_tracking_term_jacobian_matches_finite_differences():
+    mc = ModelCache(_chain_with_rotated_offset_frames())
+    term = MarkerTrackingTerm(mc)
+    references = [
+        [-0.10, -0.08, 0.13],
+        [-0.16, 0.04, 0.09],
+        [-0.12, -0.18, -0.09],
+    ]
+    for i, position in enumerate(references):
+        term.add_marker(f'/markerset/m{i}', osim.Vec3(*position),
+                        weight=1.0 + 0.3 * i)
+    q = np.zeros(mc.state.getNQ())
+    q[mc.coordinate_q_indexes] = [0.13, 0.05, -0.28]
+    mc.state.setQ(osim.Vector.createFromMat(q))
+    mc.model.realizePosition(mc.state)
+
+    analytic = term.calc_jacobian(mc.state)[0][0, :]
+    numeric = _coordinate_jacobian_by_finite_difference(mc, term)
+    np.testing.assert_allclose(analytic, numeric, rtol=1e-5, atol=1e-7)
+
+
+def test_orientation_error_matches_the_quaternion_definition():
+    """
+    The orientation error is evaluated from rotation matrices via
+    ``trace(R_ref^T R) == 4 (q_ref . q)**2 - 1`` rather than by forming quaternions.
+    Pin that against the quaternion definition it replaces.
+    """
+    mc = ModelCache(_chain_with_rotated_offset_frames())
+    term = FrameTrackingTerm(mc)
+    references = []
+    for i, quaternion in enumerate([[0.61, -0.76, 0.13, -0.17],
+                                    [-0.22, -0.10, -0.96, -0.11],
+                                    [-0.25, 0.96, 0.07, -0.10]]):
+        quaternion = np.array(quaternion) / np.linalg.norm(quaternion)
+        references.append(quaternion)
+        term.add_frame(f'/bodyset/b{i}/off{i}', osim.Vec3(0),
+                       osim.Quaternion(*[float(v) for v in quaternion]),
+                       position_weight=0.0, orientation_weight=1.0)
+
+    q = np.zeros(mc.state.getNQ())
+    q[mc.coordinate_q_indexes] = [-0.08, 0.10, 0.29]
+    mc.state.setQ(osim.Vector.createFromMat(q))
+    mc.model.realizePosition(mc.state)
+
+    # position_weight is zero, so calc_error is the orientation error alone.
+    expected = 0.0
+    for i, reference in enumerate(references):
+        frame = osim.PhysicalFrame.safeDownCast(
+            mc.model.getComponent(f'/bodyset/b{i}/off{i}'))
+        quaternion = frame.getRotationInGround(mc.state).convertRotationToQuaternion()
+        eps = np.array([quaternion.get(k) for k in range(4)])
+        expected += 1.0 - np.square(np.dot(eps, reference))
+
+    assert term.calc_error(mc.state) == pytest.approx(expected, rel=1e-12, abs=1e-14)
