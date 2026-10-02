@@ -166,22 +166,19 @@ class ModelCache:
         Inverse of ``parent_of``: ``children_of[k]`` is the list of mobod
         indexes whose parent is ``k``. Every mobod (including Ground at 0)
         has an entry, possibly empty.
-    outboard_write_joints, inboard_write_joints: list[osim.Joint]
-        The joints whose outboard (X_BM) and inboard (X_PF) mobilizer frames scaling
-        the registered `BodyScaleGroup`s rewrites: a group body's own joint for the
-        outboard frames, and every joint driving one of its children for the inboard
-        frames. Rebuilt by `add_parameter_group`, so they always describe the groups
-        registered so far.
-    outboard_write_transforms, inboard_write_transforms: list[osim.Transform]
-        A reusable `Transform` per write, its rotation already the baseline, so a
-        write only has to set the translation.
+    outboard_write_mobods, inboard_write_mobods: osim.SimTKArrayInt
+        The mobilized bodies whose outboard (X_BM) and inboard (X_PF) mobilizer
+        frames scaling the registered `BodyScaleGroup`s rewrites: a group body itself
+        for the outboard frames, and each of its children for the inboard frames.
+    outboard_write_rotations, inboard_write_rotations: osim.SimTKArrayRotation
+        Each frame's baseline rotation.
     outboard_write_baselines, inboard_write_baselines: np.ndarray, shape (n, 3)
         Each write's baseline frame translation.
     outboard_write_group_rows, inboard_write_group_rows: np.ndarray, shape (n,)
         Each write's `BodyScaleGroup` index, for gathering its scale.
     scale_group_mobod_indexes, scale_group_rows: np.ndarray
         Paired arrays over every body in every `BodyScaleGroup`: the body's mobod
-        index and the index of the group scaling it. Rebuilt alongside the writes.
+        index and the index of the group scaling it.
     """
     def __init__(self, model: str | osim.Model):
         modelProcessor = osim.ModelProcessor(model)
@@ -429,30 +426,28 @@ class ModelCache:
             [i for i, group in enumerate(self.body_scale_groups)
              for _ in group.mobod_indexes], dtype=int)
 
-        self.outboard_write_joints = []
-        self.outboard_write_transforms = []
+        self.outboard_write_mobods = osim.SimTKArrayInt()
+        self.outboard_write_rotations = osim.SimTKArrayRotation()
         baselines, group_rows = [], []
         for igroup, group_joints in enumerate(outboard_joints):
             for joint in group_joints:
                 index = int(joint.getChildFrame().getMobilizedBodyIndex())
-                self.outboard_write_joints.append(joint)
-                self.outboard_write_transforms.append(
-                    osim.Transform(self.baseline_R_BM[index], osim.Vec3(0)))
+                self.outboard_write_mobods.push_back(index)
+                self.outboard_write_rotations.push_back(self.baseline_R_BM[index])
                 baselines.append(self.baseline_p_BM[index])
                 group_rows.append(igroup)
         self.outboard_write_baselines = np.asarray(
             baselines, dtype=float).reshape(-1, 3)
         self.outboard_write_group_rows = np.asarray(group_rows, dtype=int)
 
-        self.inboard_write_joints = []
-        self.inboard_write_transforms = []
+        self.inboard_write_mobods = osim.SimTKArrayInt()
+        self.inboard_write_rotations = osim.SimTKArrayRotation()
         baselines, group_rows = [], []
         for igroup, group_joints in enumerate(inboard_joints):
             for joint in group_joints:
                 index = int(joint.getChildFrame().getMobilizedBodyIndex())
-                self.inboard_write_joints.append(joint)
-                self.inboard_write_transforms.append(
-                    osim.Transform(self.baseline_R_PF[index], osim.Vec3(0)))
+                self.inboard_write_mobods.push_back(index)
+                self.inboard_write_rotations.push_back(self.baseline_R_PF[index])
                 baselines.append(self.baseline_p_PF[index])
                 group_rows.append(igroup)
         self.inboard_write_baselines = np.asarray(
@@ -473,27 +468,24 @@ class ModelCache:
             Flat XYZ body-scale variables, one Vec3 per BodyScaleGroup.
         """
         scales = np.asarray(body_scales, dtype=float).reshape(-1, 3)
-        translation = osim.Vec3(0)
 
-        # Outboard frames (X_BM) attached to each group body.
-        for i, p_BM in enumerate(self.outboard_write_baselines
-                                 * scales[self.outboard_write_group_rows]):
-            translation.set(0, float(p_BM[0]))
-            translation.set(1, float(p_BM[1]))
-            translation.set(2, float(p_BM[2]))
-            transform = self.outboard_write_transforms[i]
-            transform.setP(translation)
-            self.outboard_write_joints[i].setOutboardFrame(state, transform)
+        # Outboard frames (X_BM) attached to each group body, written in one call.
+        if len(self.outboard_write_group_rows):
+            p_BM = (self.outboard_write_baselines
+                    * scales[self.outboard_write_group_rows])
+            self.model.setOutboardFrames(
+                state, self.outboard_write_mobods, self.outboard_write_rotations,
+                osim.Vector.createFromMat(
+                    np.ascontiguousarray(p_BM, dtype=float).reshape(-1)))
 
         # Inboard frames (X_PF) of every joint driving a group body's child.
-        for i, p_PF in enumerate(self.inboard_write_baselines
-                                 * scales[self.inboard_write_group_rows]):
-            translation.set(0, float(p_PF[0]))
-            translation.set(1, float(p_PF[1]))
-            translation.set(2, float(p_PF[2]))
-            transform = self.inboard_write_transforms[i]
-            transform.setP(translation)
-            self.inboard_write_joints[i].setInboardFrame(state, transform)
+        if len(self.inboard_write_group_rows):
+            p_PF = (self.inboard_write_baselines
+                    * scales[self.inboard_write_group_rows])
+            self.model.setInboardFrames(
+                state, self.inboard_write_mobods, self.inboard_write_rotations,
+                osim.Vector.createFromMat(
+                    np.ascontiguousarray(p_PF, dtype=float).reshape(-1)))
 
     def set_ellipsoid_radii_from_scales(
             self, state: osim.State, ellipsoid_radii_scales: np.ndarray) -> None:

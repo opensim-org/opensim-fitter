@@ -1452,23 +1452,32 @@ def test_body_scale_groups_may_be_shared_across_model_caches():
     mc1, mc2 = ModelCache(model), ModelCache(model)
     assert mc1.model is not mc2.model
 
-    def pointers(mc):
-        """The C++ addresses of the `Joint`s cached for scaling."""
-        return [int(j.this) for j in
-                mc.outboard_write_joints + mc.inboard_write_joints]
+    def snapshot(mc):
+        """The per-ModelCache state that scaling a body scale group writes through."""
+        return ([int(mc.outboard_write_mobods.getElt(i))
+                 for i in range(mc.outboard_write_mobods.size())],
+                [int(mc.inboard_write_mobods.getElt(i))
+                 for i in range(mc.inboard_write_mobods.size())],
+                mc.outboard_write_baselines.tolist(),
+                mc.inboard_write_baselines.tolist(),
+                mc.outboard_write_group_rows.tolist(),
+                mc.inboard_write_group_rows.tolist())
 
     register_body_scales(mc1, ['/bodyset/b0', '/bodyset/b1'])
     groups = list(mc1.body_scale_groups)
-    before = pointers(mc1)
+    before = snapshot(mc1)
+    assert before[0], 'expected at least one outboard write to pin'
 
     # Register the very same group objects on a second ModelCache.
     for group in groups:
         mc2.add_parameter_group(group)
 
-    # Registering on mc2 must leave mc1's joints alone, and the two caches must hold
-    # different C++ Joints, one set per model copy.
-    assert pointers(mc1) == before
-    assert before and all(a != b for a, b in zip(before, pointers(mc2)))
+    # Registering on mc2 must leave mc1's cache alone, and the two caches must hold
+    # their own C++ containers, one set per model copy.
+    assert snapshot(mc1) == before
+    assert int(mc1.outboard_write_mobods.this) != int(mc2.outboard_write_mobods.this)
+    assert int(mc1.outboard_write_rotations.this) != \
+        int(mc2.outboard_write_rotations.this)
 
     # The shared group descriptors carry no model-specific state at all.
     for group in groups:
