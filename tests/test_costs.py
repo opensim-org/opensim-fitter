@@ -1932,11 +1932,13 @@ def test_marker_tracking_term_jacobian_matches_finite_differences():
     np.testing.assert_allclose(analytic, numeric, rtol=1e-5, atol=1e-7)
 
 
-def test_orientation_error_matches_the_quaternion_definition():
+def test_orientation_error_is_four_times_the_quaternion_definition():
     """
-    The orientation error is evaluated from rotation matrices via
-    ``trace(R_ref^T R) == 4 (q_ref . q)**2 - 1`` rather than by forming quaternions.
-    Pin that against the quaternion definition it replaces.
+    The orientation error is evaluated from rotation matrices as
+    ``3 - trace(R_ref^T R)`` rather than by forming quaternions. Since
+    ``trace(R_ref^T R) == 4 (q_ref . q)**2 - 1`` for unit quaternions, that is exactly
+    four times the quaternion error ``1 - (eps . q_ref)**2``, the constant factor
+    being absorbed into the orientation weights. Pin that relationship.
     """
     mc = ModelCache(_chain_with_rotated_offset_frames())
     term = FrameTrackingTerm(mc)
@@ -1956,12 +1958,13 @@ def test_orientation_error_matches_the_quaternion_definition():
     mc.model.realizePosition(mc.state)
 
     # position_weight is zero, so calc_error is the orientation error alone.
-    expected = 0.0
+    quaternion_error = 0.0
     for i, reference in enumerate(references):
         frame = osim.PhysicalFrame.safeDownCast(
             mc.model.getComponent(f'/bodyset/b{i}/off{i}'))
         quaternion = frame.getRotationInGround(mc.state).convertRotationToQuaternion()
         eps = np.array([quaternion.get(k) for k in range(4)])
-        expected += 1.0 - np.square(np.dot(eps, reference))
+        quaternion_error += 1.0 - np.square(np.dot(eps, reference))
 
-    assert term.calc_error(mc.state) == pytest.approx(expected, rel=1e-12, abs=1e-14)
+    assert term.calc_error(mc.state) == pytest.approx(
+        4.0 * quaternion_error, rel=1e-12, abs=1e-14)
