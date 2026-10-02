@@ -630,6 +630,71 @@ def _calc_quaternion_jacobian(eps):
 # TASKS #
 #########
 
+@dataclass
+class TaskArrays:
+    """
+    Per-task quantities packed into arrays, so a term can evaluate every task in a few
+    vectorized numpy operations.
+
+    Attributes
+    ----------
+    base_stations: np.ndarray, shape (num_tasks, 3)
+        Each task's point in its base frame, before scaling or offsets.
+    mobod_indexes: np.ndarray, shape (num_tasks,)
+        Each task's base-frame `MobilizedBodyIndex`.
+    scale_groups: np.ndarray, shape (num_tasks,)
+        Index of the `BodyScaleGroup` scaling each task, or -1 where none applies.
+    offset_groups: np.ndarray, shape (num_tasks,)
+        Index of the offset group applying to each task, or -1 where none applies.
+    base_frames: list[osim.PhysicalFrame]
+        The distinct base frames across all tasks, one per entry of `body_rows`.
+    body_rows: np.ndarray, shape (num_tasks,)
+        For each task, the index into `base_frames` of its base frame.
+    reference_positions: np.ndarray, shape (num_tasks, 3)
+        Each task's reference position.
+    weights: np.ndarray or None, shape (num_tasks,)
+        Each task's cost weight, for terms carrying a single weight per task.
+        ``None`` for terms that weight position and orientation separately.
+    scaled_rows, scaled_groups: np.ndarray
+        The tasks a body scale applies to, and the scale group of each. Paired, so
+        ``stations[scaled_rows] *= scales[scaled_groups]`` applies every scale at once.
+    shifted_rows, shifted_groups: np.ndarray
+        The same pairing for placement offsets.
+    scaled_base_stations: np.ndarray, shape (len(scaled_rows), 3)
+        ``base_stations[scaled_rows]``, used when accumulating the body-scale Jacobian.
+    unique_mobod_indexes: np.ndarray
+        The distinct base-frame mobod indexes across all tasks, i.e. exactly the rows a
+        per-body gradient scatter can touch.
+    double_weights_column: np.ndarray or None, shape (num_tasks, 1)
+        ``2 * weights`` as a column, the factor the squared-error gradient needs.
+    """
+    base_stations: np.ndarray
+    mobod_indexes: np.ndarray
+    scale_groups: np.ndarray
+    offset_groups: np.ndarray
+    base_frames: list
+    body_rows: np.ndarray
+    reference_positions: np.ndarray
+    weights: np.ndarray = None
+    scaled_rows: np.ndarray = None
+    scaled_groups: np.ndarray = None
+    shifted_rows: np.ndarray = None
+    shifted_groups: np.ndarray = None
+    scaled_base_stations: np.ndarray = None
+    unique_mobod_indexes: np.ndarray = None
+    double_weights_column: np.ndarray = None
+
+    def __post_init__(self):
+        self.scaled_rows = np.flatnonzero(self.scale_groups >= 0)
+        self.scaled_groups = self.scale_groups[self.scaled_rows]
+        self.shifted_rows = np.flatnonzero(self.offset_groups >= 0)
+        self.shifted_groups = self.offset_groups[self.shifted_rows]
+        self.scaled_base_stations = self.base_stations[self.scaled_rows]
+        self.unique_mobod_indexes = np.unique(self.mobod_indexes)
+        self.double_weights_column = (None if self.weights is None
+                                      else 2.0 * self.weights[:, None])
+
+
 class Tasks(ABC):
     """
     A base class for task-specific storage and registration.
@@ -637,6 +702,59 @@ class Tasks(ABC):
     @abstractmethod
     def initialize_tasks(self, state: osim.State, **kwargs) -> float:
         pass
+
+    def invalidate_task_arrays(self) -> None:
+        """
+        Drop the cached `TaskArrays`. Called whenever a task is registered, so the
+        arrays are rebuilt on next use.
+        """
+        self._task_arrays = None
+
+    @property
+    def task_arrays(self) -> TaskArrays:
+        """
+        The cached `TaskArrays` for the registered tasks, built on first use.
+        """
+        if getattr(self, '_task_arrays', None) is None:
+            self._task_arrays = self._build_task_arrays()
+        return self._task_arrays
+
+    def _build_task_arrays(self) -> TaskArrays:
+        """
+        Pack the per-task Python lists into arrays, and group the tasks by base frame.
+        """
+        num_tasks = self.num_tasks
+        base_stations = (np.asarray(self.base_stations, dtype=float).reshape(-1, 3)
+                         if num_tasks else np.zeros((0, 3)))
+        mobod_indexes = np.array(
+            [int(self.mobod_indexes.getElt(i)) for i in range(num_tasks)], dtype=int)
+        scale_groups = np.array(
+            [-1 if cache.body_scale_group_index is None
+             else cache.body_scale_group_index for cache in self.station_caches],
+            dtype=int)
+        offset_groups = np.array(
+            [-1 if g is None else g for g in self.offset_group_indexes], dtype=int)
+
+        # One entry per distinct base frame, in first-seen order.
+        frames, rows, row_of_mobod = [], [], {}
+        for i, cache in enumerate(self.station_caches):
+            key = cache.mobod_index
+            if key not in row_of_mobod:
+                row_of_mobod[key] = len(frames)
+                frames.append(cache.base_frame)
+            rows.append(row_of_mobod[key])
+
+        reference_positions = (np.asarray(self.positions, dtype=float).reshape(-1, 3)
+                               if num_tasks else np.zeros((0, 3)))
+        single_weights = getattr(self, 'weights', None)
+        weights = (np.asarray(single_weights, dtype=float)
+                   if single_weights is not None else None)
+
+        return TaskArrays(
+            base_stations=base_stations, mobod_indexes=mobod_indexes,
+            scale_groups=scale_groups, offset_groups=offset_groups,
+            base_frames=frames, body_rows=np.array(rows, dtype=int),
+            reference_positions=reference_positions, weights=weights)
 
 
 class MarkerTasks(Tasks):
@@ -654,6 +772,7 @@ class MarkerTasks(Tasks):
         self.base_frames = []
         self.base_stations = []
         self.offset_group_indexes: list[int] = []
+        self._task_arrays: TaskArrays = None
 
     def add_marker(self, marker_path: str, position: osim.Vec3, weight: float = 1.0,
                    offset_group_index: int | None = None):
@@ -690,6 +809,7 @@ class MarkerTasks(Tasks):
         self.base_frames.append(cache.base_frame)
         self.base_stations.append(cache.base_station)
         self.offset_group_indexes.append(offset_group_index)
+        self.invalidate_task_arrays()
 
 
 class FrameTasks(Tasks):
@@ -709,6 +829,7 @@ class FrameTasks(Tasks):
         self.base_frames = []
         self.base_stations = []
         self.offset_group_indexes: list[int] = []
+        self._task_arrays: TaskArrays = None
 
     def add_frame(self, frame_path: str, position: osim.Vec3,
                   orientation: osim.Quaternion, position_weight: float = 1.0,
@@ -757,6 +878,7 @@ class FrameTasks(Tasks):
         self.base_frames.append(cache.base_frame)
         self.base_stations.append(cache.base_station)
         self.offset_group_indexes.append(offset_group_index)
+        self.invalidate_task_arrays()
 
 
 ##############
@@ -844,7 +966,8 @@ class FrameTrackingTerm(FrameTasks, TrackingTerm):
 
         # Calculate the frame (position and orientation) error Jacobian.
         Ju = osim.Vector(state.getNU(), 0.0)
-        self.mc.model.multiplyByFrameJacobianTranspose(Ju)
+        self.mc.model.multiplyByFrameJacobianTranspose(
+            state, self.mobod_indexes, self.stations, spatialError, Ju)
         Jq = osim.Vector(state.getNQ(), 0.0)
         self.mc.model.multiplyByNInv(state, True, Ju, Jq)
 
@@ -910,27 +1033,34 @@ class BilevelTerm(TrackingTerm):
     """
     def __init__(self):
         super().__init__()
+        self._station_array = None
 
-    def apply_scales(self, body_scales: np.ndarray) -> None:
-        for itask, cache in enumerate(self.station_caches):
-            s = cache.calc_scaled_base_station(body_scales)
-            self.stations.updElt(itask).set(0, float(s[0]))
-            self.stations.updElt(itask).set(1, float(s[1]))
-            self.stations.updElt(itask).set(2, float(s[2]))
-
-    def apply_offsets(self, offsets: np.ndarray) -> None:
-        for i, g in enumerate(self.offset_group_indexes):
-            if g is None:
-                continue
-            o = np.asarray(offsets[3*g : 3*g+3], dtype=float)
-            s = self.stations.getElt(i).to_numpy() + o
-            self.stations.updElt(i).set(0, float(s[0]))
-            self.stations.updElt(i).set(1, float(s[1]))
-            self.stations.updElt(i).set(2, float(s[2]))
+    @property
+    def station_array(self) -> np.ndarray:
+        cached = self._station_array
+        if cached is None or len(cached) != self.num_tasks:
+            cached = self._station_array = self.task_arrays.base_stations.copy()
+        return cached
 
     def apply_state(self, body_scales: np.ndarray, offsets: np.ndarray) -> None:
-        self.apply_scales(body_scales)
-        self.apply_offsets(offsets)
+        arrays = self.task_arrays
+        if len(arrays.scaled_rows) or len(arrays.shifted_rows):
+            stations = arrays.base_stations.copy()
+            if len(arrays.scaled_rows):
+                scales = np.asarray(body_scales, dtype=float).reshape(-1, 3)
+                stations[arrays.scaled_rows] *= scales[arrays.scaled_groups]
+            if len(arrays.shifted_rows):
+                shifts = np.asarray(offsets, dtype=float).reshape(-1, 3)
+                stations[arrays.shifted_rows] += shifts[arrays.shifted_groups]
+        else:
+            stations = arrays.base_stations
+        self._station_array = stations
+
+        for i in range(self.num_tasks):
+            element = self.stations.updElt(i)
+            element.set(0, float(stations[i, 0]))
+            element.set(1, float(stations[i, 1]))
+            element.set(2, float(stations[i, 2]))
 
 
 class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
@@ -951,13 +1081,15 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
         self.initialize_tasks()
 
     def calc_error(self, state, **kwargs) -> float:
-        error = 0.0
-        for i, (frame, position, weight) in enumerate(
-                zip(self.base_frames, self.positions, self.weights)):
-            p_model = frame.findStationLocationInGround(
+        if self.num_tasks == 0:
+            return 0.0
+        arrays = self.task_arrays
+        positions = np.array(
+            [self.base_frames[i].findStationLocationInGround(
                 state, self.stations.getElt(i)).to_numpy()
-            error += weight * np.square(np.linalg.norm(p_model - position))
-        return error
+             for i in range(self.num_tasks)])
+        residuals = positions - arrays.reference_positions
+        return float(np.sum(arrays.weights * np.sum(residuals * residuals, axis=1)))
 
     def calc_jacobian(self, state, **kwargs) -> list[np.ndarray]:
         Jq = np.zeros((1, len(self.mc.coordinate_q_indexes)))
@@ -968,21 +1100,32 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
         if self.num_tasks == 0:
             return [Jq, Js, Jo, Jr, Jl]
 
-        # Calculate the per-marker error gradient in Ground. This is a force-like term
-        # will be multiplied with (the transpose of) each position Jacobian below. Also,
-        # precompute the sensitivity of each marker's ground position to a shift from
-        # an offset variable.
+        # Compute each station's location in ground.
+        arrays = self.task_arrays
+        frames = arrays.base_frames
+        entries, frame_origins = [], []
+        for frame in frames:
+            get = frame.getRotationInGround(state).get
+            entries += [get(0, 0), get(0, 1), get(0, 2),
+                        get(1, 0), get(1, 1), get(1, 2),
+                        get(2, 0), get(2, 1), get(2, 2)]
+            frame_origins.append(frame.getPositionInGround(state).to_numpy())
+        rows = arrays.body_rows
+        # p_GB + R_GB @ station
+        R_GB = np.array(entries).reshape(len(frames), 3, 3)[rows]
+        p_GS = (np.array(frame_origins)[rows]
+                + (R_GB @ self.station_array[..., None])[..., 0])
+
+        # The per-marker error gradient in Ground.
+        gradient = arrays.double_weights_column * (p_GS - arrays.reference_positions)
         dp_GS = osim.VectorVec3(self.num_tasks, osim.Vec3(0))
-        doffset = np.zeros((self.num_tasks, 3))
-        for i, (frame, position, weight) in enumerate(
-                zip(self.base_frames, self.positions, self.weights)):
-            p_GS = frame.findStationLocationInGround(state, self.stations.getElt(i))
-            dp_GS.set(i, osim.Vec3(2.0 * weight * (p_GS[0] - position[0]),
-                                   2.0 * weight * (p_GS[1] - position[1]),
-                                   2.0 * weight * (p_GS[2] - position[2])))
-            rotation = frame.getRotationInGround(state)
-            R_GB = np.array([[rotation.get(r, c) for c in range(3)] for r in range(3)])
-            doffset[i] = dp_GS.get(i).to_numpy() @ R_GB
+        for i in range(self.num_tasks):
+            dp_GS.set(i, osim.Vec3(float(gradient[i, 0]), float(gradient[i, 1]),
+                                   float(gradient[i, 2])))
+
+        # The sensitivity of each marker's ground position to a shift from an offset
+        # variable.
+        doffset = (gradient[:, None, :] @ R_GB)[:, 0, :]
 
         # Calculate the Jacobian of the position error with respect to the coordinates.
         grad_u = osim.Vector(state.getNU(), 0.0)
@@ -999,11 +1142,14 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
         #
         #     dp_GB.get(k) += dp_GS.get(i)   # for each marker i on body k
         #
+        accumulated = np.zeros((self.mc.num_mobod, 3))
+        np.add.at(accumulated, arrays.mobod_indexes, gradient)
         dp_GB = osim.VectorVec3(self.mc.num_mobod, osim.Vec3(0))
-        for i in range(self.num_tasks):
-            k = int(self.mobod_indexes.getElt(i))
-            cur = dp_GB.get(k).to_numpy() + dp_GS.get(i).to_numpy()
-            dp_GB.set(k, osim.Vec3(float(cur[0]), float(cur[1]), float(cur[2])))
+        for k in arrays.unique_mobod_indexes:
+            k = int(k)
+            dp_GB.set(k, osim.Vec3(float(accumulated[k, 0]),
+                                   float(accumulated[k, 1]),
+                                   float(accumulated[k, 2])))
 
         # Calculate the position-error Jacobian with respect to body scales.
         Js = self.mc.calc_position_jacobian_wrt_body_scales(state, dp_GB)
@@ -1016,15 +1162,12 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
         # Assemble the marker offset Jacobian based on the offset sensitivities. Also,
         # include the contributions from the marker offsets to the Jacobian with respect
         # to body scales.
-        for i in range(self.num_tasks):
-            g_off = self.offset_group_indexes[i]
-            g_scale = self.station_caches[i].body_scale_group_index
-            if g_off is None and g_scale is None:
-                continue
-            if g_off is not None:
-                Jo[0, 3*g_off:3*g_off+3] += doffset[i]
-            if g_scale is not None:
-                Js[0, 3*g_scale:3*g_scale+3] += self.base_stations[i] * doffset[i]
+        if len(arrays.shifted_rows):
+            np.add.at(Jo.reshape(-1, 3), arrays.shifted_groups,
+                      doffset[arrays.shifted_rows])
+        if len(arrays.scaled_rows):
+            np.add.at(Js.reshape(-1, 3), arrays.scaled_groups,
+                      arrays.scaled_base_stations * doffset[arrays.scaled_rows])
 
         return [Jq, Js, Jo, Jr, Jl]
 
@@ -1335,7 +1478,6 @@ class BilevelCostRep(CallbackCostRep):
         Function.__init__(self, name, mc, enable_fd=enable_fd)
         self.marker_term = MarkerBilevelTerm(mc)
         self.frame_term = FrameBilevelTerm(mc)
-        self.mc.cache_body_scale_group_joints()
 
     def apply_state(self, arg):
         """
@@ -1484,7 +1626,6 @@ class AnthropometricRegularizationCostRep(CallbackCostRep):
         self.cost = cost
         mc.model.realizePosition(mc.state)
         self.default_q = mc.state.getQ().to_numpy().copy()
-        mc.cache_body_scale_group_joints()
         self.station_caches = []
         for measurement in cost.measurements:
             sc1 = StationCache.from_station(
