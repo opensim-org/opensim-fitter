@@ -191,6 +191,64 @@ class TrackingCostBase(CostBase):
             Index of the time sample within `trial` that the rep tracks.
         """
 
+    def create_trial_rep(self, name: str, mc: ModelCache, trial: Trial) -> CostRep:
+        """
+        Build a single rep covering an entire trial, for solvers that supply reference
+        data through the rep's reference input rather than baking one sample into it.
+
+        A trial's task topology (which markers and frames are tracked, with which
+        weights and offset groups) does not vary with the time sample; only the
+        reference values do. The rep is therefore registered against sample 0, whose
+        reference values become the rep's `default_reference`, and callers override
+        them per sample via `build_reference`.
+
+        Parameters
+        ----------
+        name: str
+            The name of the rep's callback function.
+        mc: ModelCache
+            The `ModelCache` to build against.
+        trial: Trial
+            The trial supplying the task topology.
+        """
+        return self.create_rep(name, mc, trial, 0)
+
+    def build_reference(self, trial: Trial) -> np.ndarray:
+        """
+        Build `trial`'s reference matrix: shape ``(reference_size, trial.num_times)``,
+        whose column ``i`` is the reference data for time sample ``i``.
+
+        The row layout is ``[marker positions, frame positions, frame orientations]``
+        with tasks in the order `create_rep` registers them, matching
+        `MarkerTasks.pack_reference` followed by `FrameTasks.pack_reference` and hence
+        the split performed by `CallbackCostRep._split_reference`.
+
+        Parameters
+        ----------
+        trial: Trial
+            The trial whose reference data to collect.
+        """
+        num_times = trial.num_times
+        marker_positions, frame_positions, frame_orientations = [], [], []
+        for data in trial.marker_data:
+            for imarker in range(len(data.labels)):
+                marker_positions.append(np.array(
+                    [data.positions.getRowAtIndex(i).getElt(0, imarker).to_numpy()
+                     for i in range(num_times)]))
+        for data in trial.frame_data:
+            for iframe in range(len(data.labels)):
+                frame_positions.append(np.array(
+                    [data.positions.getRowAtIndex(i).getElt(0, iframe).to_numpy()
+                     for i in range(num_times)]))
+                frame_orientations.append(np.array(
+                    [[data.orientations.getRowAtIndex(i).getElt(0, iframe).get(k)
+                      for k in range(4)] for i in range(num_times)]))
+
+        blocks = marker_positions + frame_positions + frame_orientations
+        if not blocks:
+            return np.zeros((0, num_times))
+        return np.hstack(blocks).T
+
 
 class SymbolicCost(Cost):
     """
