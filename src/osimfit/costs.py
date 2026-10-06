@@ -344,6 +344,10 @@ class CallbackCostRep(CostRep, Function):
     def _get_num_inputs(self):
         return len(CostInput.INPUT_ORDER)
 
+    # Set before Function.__init__ by a rep built in residual mode; CasADi freezes
+    # the callback's sparsity during construct(), so it cannot be changed later.
+    num_residuals = None
+
     def _get_num_outputs(self):
         return 1
 
@@ -363,7 +367,9 @@ class CallbackCostRep(CostRep, Function):
 
     def _get_output_size(self, i):
         if i == 0:
-            return 1
+            # `num_residuals` is None for the scalar objective path and an integer
+            # when the rep was built to expose its residual vector instead.
+            return 1 if self.num_residuals is None else self.num_residuals
         raise IndexError(f'Invalid output index {i} for {type(self).__name__}.')
 
 
@@ -1214,6 +1220,99 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
 
         return [Jq, Js, Jo, Jr, Jl]
 
+    def calc_residuals(self, state, **kwargs) -> np.ndarray:
+        """
+        Return this term's residual vector, length ``3 * num_tasks``, ordered marker
+        by marker with each marker's XYZ components adjacent.
+
+        Each marker's residual carries ``sqrt(weight)``, so the sum of squares of the
+        result equals `calc_error`. Exposing the residuals rather than their sum is
+        what lets a solver form a Gauss-Newton Hessian.
+        """
+        if self.num_tasks == 0:
+            return np.zeros(0)
+        arrays = self.task_arrays
+        poses = np.array([frame.getTransformInGround(state).to_numpy()
+                          for frame in arrays.base_frames])
+        rows = arrays.body_rows
+        R_GB = poses[:, :, :3][rows]
+        p_GS = poses[:, :, 3][rows] + (R_GB @ self.station_array[..., None])[..., 0]
+        return (np.sqrt(arrays.weights)[:, None]
+                * (p_GS - arrays.reference_positions)).ravel()
+
+    def calc_residual_jacobian(self, state, **kwargs) -> list[np.ndarray]:
+        """
+        Return the uncontracted residual Jacobian blocks, each shaped
+        ``(3 * num_tasks, n)`` and ordered to match `calc_residuals`.
+
+        `calc_jacobian` contracts the station Jacobian against the error gradient
+        before returning, which discards the per-residual structure a Gauss-Newton
+        Hessian needs. That contraction is linear in the gradient, so seeding it with
+        one unit vector per residual row recovers the full block. Cost is one pass
+        per residual row instead of one per evaluation.
+        """
+        widths = (len(self.mc.coordinate_q_indexes),
+                  3 * len(self.mc.body_scale_groups),
+                  3 * len(self.mc.marker_offset_groups),
+                  3 * len(self.mc.ellipsoid_radii_scale_groups),
+                  len(self.mc.beam_length_scale_groups))
+        num_residuals = 3 * self.num_tasks
+        blocks = [np.zeros((num_residuals, width)) for width in widths]
+        if self.num_tasks == 0:
+            return blocks
+
+        sqrt_weights = np.sqrt(self.task_arrays.weights)
+        for k in range(num_residuals):
+            itask, axis = divmod(k, 3)
+            seed = np.zeros((self.num_tasks, 3))
+            seed[itask, axis] = sqrt_weights[itask]
+            for block, row in zip(blocks, self._contract_seed(state, seed)):
+                block[k, :] = np.asarray(row).reshape(-1)
+        return blocks
+
+    def _contract_seed(self, state, gradient) -> list[np.ndarray]:
+        """
+        Contract the station Jacobian against `gradient`, an ``(num_tasks, 3)`` array
+        of per-marker sensitivities in Ground, returning one ``(1, n)`` row per
+        parameter block. Mirrors the body of `calc_jacobian`, which is this same
+        contraction applied to the error gradient.
+        """
+        Jq = np.zeros((1, len(self.mc.coordinate_q_indexes)))
+        Jo = np.zeros((1, 3 * len(self.mc.marker_offset_groups)))
+
+        arrays = self.task_arrays
+        poses = np.array([frame.getTransformInGround(state).to_numpy()
+                          for frame in arrays.base_frames])
+        R_GB = poses[:, :, :3][arrays.body_rows]
+        dp_GS = osim.VectorVec3.createFromMat(
+            np.ascontiguousarray(gradient, dtype=float).reshape(-1))
+        doffset = (gradient[:, None, :] @ R_GB)[:, 0, :]
+
+        grad_u = osim.Vector(state.getNU(), 0.0)
+        self.mc.model.multiplyByStationJacobianTranspose(
+            state, self.mobod_indexes, self.stations, dp_GS, grad_u)
+        grad_q = osim.Vector(state.getNQ(), 0.0)
+        self.mc.model.multiplyByNInv(state, True, grad_u, grad_q)
+        Jq[0, :] = grad_q.to_numpy()[self.mc.coordinate_q_indexes]
+
+        accumulated = np.zeros((self.mc.num_mobod, 3))
+        np.add.at(accumulated, arrays.mobod_indexes, gradient)
+        dp_GB = osim.VectorVec3.createFromMat(
+            np.ascontiguousarray(accumulated, dtype=float).reshape(-1))
+
+        Js = self.mc.calc_position_jacobian_wrt_body_scales(state, dp_GB)
+        Jr = self.mc.calc_position_jacobian_wrt_ellipsoid_radii_scales(state, dp_GB)
+        Jl = self.mc.calc_position_jacobian_wrt_beam_length_scales(state, dp_GB)
+
+        if len(arrays.shifted_rows):
+            np.add.at(Jo.reshape(-1, 3), arrays.shifted_groups,
+                      doffset[arrays.shifted_rows])
+        if len(arrays.scaled_rows):
+            np.add.at(Js.reshape(-1, 3), arrays.scaled_groups,
+                      arrays.scaled_base_stations * doffset[arrays.scaled_rows])
+
+        return [Jq, Js, Jo, Jr, Jl]
+
 
 class FrameBilevelTerm(FrameTasks, BilevelTerm):
     """
@@ -1377,7 +1476,12 @@ class TrackingCost(TrackingCostBase):
         self.orientation_weight = orientation_weight
 
     def create_rep(self, name: str, mc: ModelCache, trial: Trial,
-                   itime: int) -> 'TrackingCostRep':
+                   itime: int, residuals: bool = False) -> 'TrackingCostRep':
+        if residuals:
+            raise NotImplementedError(
+                'The residual path is implemented for BilevelCost only. Register '
+                'parameters so the solver builds a BilevelCost, or leave '
+                'use_gauss_newton False.')
         rep = TrackingCostRep(name, mc)
 
         for data in trial.frame_data:
@@ -1481,8 +1585,18 @@ class BilevelCost(TrackingCostBase):
         self.orientation_weight = orientation_weight
 
     def create_rep(self, name: str, mc: ModelCache, trial: Trial,
-                   itime: int) -> 'BilevelCostRep':
-        rep = BilevelCostRep(name, mc)
+                   itime: int, residuals: bool = False) -> 'BilevelCostRep':
+        if residuals:
+            # The residual path covers marker terms only, so refuse rather than
+            # silently drop a frame term's contribution.
+            if any(trial.frame_data):
+                raise ValueError(
+                    'The residual path does not support frame tracking terms yet; '
+                    'this trial registers frame data.')
+            num_residuals = 3 * sum(len(data.labels) for data in trial.marker_data)
+        else:
+            num_residuals = None
+        rep = BilevelCostRep(name, mc, num_residuals=num_residuals)
         # Map each offset target path to the index of the offset group that applies to
         # it; paths absent from a mapping are not offset.
         marker_index_of = {path: i for i, grp in enumerate(mc.marker_offset_groups)
@@ -1531,7 +1645,12 @@ class BilevelCostRep(CallbackCostRep):
         Jacobian. Default is ``False``.
     """
 
-    def __init__(self, name: str, mc: ModelCache, enable_fd: bool = False):
+    def __init__(self, name: str, mc: ModelCache, enable_fd: bool = False,
+                 num_residuals: int = None):
+        # Assigned before construct() runs, since that is when CasADi reads the
+        # output sparsity. `num_residuals` is the marker residual count, so the
+        # residual path currently supports marker terms only.
+        self.num_residuals = num_residuals
         Function.__init__(self, name, mc, enable_fd=enable_fd)
         self.marker_term = MarkerBilevelTerm(mc)
         self.frame_term = FrameBilevelTerm(mc)
@@ -1580,6 +1699,8 @@ class BilevelCostRep(CallbackCostRep):
 
     def _eval(self, arg):
         self.apply_state(arg)
+        if self.num_residuals is not None:
+            return [self.marker_term.calc_residuals(self.state).reshape(-1, 1)]
         error = 0
         error += self.marker_term.calc_error(self.state)
         error += self.frame_term.calc_error(self.state)
@@ -1587,6 +1708,11 @@ class BilevelCostRep(CallbackCostRep):
 
     def _jac_eval(self, arg):
         self.apply_state(arg)
+        if self.num_residuals is not None:
+            Jq, Js, Jmo, Jr, Jl = self.marker_term.calc_residual_jacobian(self.state)
+            Jfo = np.zeros((self.num_residuals,
+                            3 * len(self.mc.frame_offset_groups)))
+            return [Jq, Js, Jmo, Jfo, Jr, Jl]
         Jq_m, Js_m, Jmo, Jr_m, Jl_m = self.marker_term.calc_jacobian(self.state)
         Jq_f, Js_f, Jfo, Jr_f, Jl_f = self.frame_term.calc_jacobian(self.state)
         return [Jq_m + Jq_f, Js_m + Js_f, Jmo, Jfo, Jr_m + Jr_f, Jl_m + Jl_f]

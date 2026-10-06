@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import casadi as ca
 import opensim as osim
@@ -183,6 +185,16 @@ class Solver(ABC):
 
         # Optimization settings.
         self.convergence_tolerance = convergence_tolerance
+        # NLP backend: 'ipopt', or 'sqpmethod' (an SQP whose QP subproblems are
+        # solved by `qp_solver`). Set these before calling solve().
+        self.nlp_solver = 'ipopt'
+        self.qp_solver = 'qpoases'
+        # When True, the tracking cost exposes its residual vector so the solver can
+        # build a Gauss-Newton Hessian (J'J) instead of a quasi-Newton approximation.
+        self.use_gauss_newton = False
+        # IPOPT defaults to 3000 iterations but sqpmethod to only 50, so pin it for
+        # both rather than letting the backend decide.
+        self.max_iterations = 3000
 
         # Additional user-registered costs (e.g., regularization).
         self.costs: list[Cost] = []
@@ -270,10 +282,77 @@ class Solver(ABC):
         ipopt_options['acceptable_dual_inf_tol'] = self.convergence_tolerance
         ipopt_options['acceptable_compl_inf_tol'] = self.convergence_tolerance
         ipopt_options['print_level'] = print_level
+        ipopt_options['max_iter'] = self.max_iterations
         # Avoids crashes in CasADi for larger problems.
         ipopt_options['mumps_pivot_order'] = 0
 
         return ipopt_options
+
+    def get_sqpmethod_options(self, print_level=0):
+        """
+        Get a dictionary of CasADi `sqpmethod` options for use with CasADi's
+        nlpsolver, with the QP subproblems solved by `self.qp_solver`.
+
+        The Hessian is L-BFGS for the same reason IPOPT's is: the cost callbacks
+        provide first derivatives only, so `hessian_approximation='exact'` fails at
+        construction. `sqpmethod` has no analogue of IPOPT's acceptable-tolerance or
+        barrier options, so only the primal and dual tolerances carry over.
+        """
+        verbose = print_level > 0
+        qpsol_options = {
+            # qrqp and ipqp print per QP solve unless both of these are off; the
+            # other plugins ignore them.
+            'print_iter': False,
+            'print_header': False,
+        }
+        if self.qp_solver == 'qpoases':
+            # qpOASES is an active-set solver and needs a working-set recalculation
+            # budget. It cannot run in sparse mode here: these NLPs are bound
+            # constrained with no 'g', and qpOASES rejects sparse mode when there
+            # are no linear constraints, so the QP is always dense in n.
+            qpsol_options = {'printLevel': 'none', 'nWSR': 10000}
+        elif self.qp_solver == 'osqp':
+            qpsol_options = {'osqp': {'verbose': False}}
+        elif self.qp_solver == 'highs':
+            qpsol_options = {'highs': {'output_flag': False}}
+
+        return {
+            'hessian_approximation': 'limited-memory',
+            'qpsol': self.qp_solver,
+            'qpsol_options': qpsol_options,
+            'tol_pr': self.convergence_tolerance,
+            'tol_du': self.convergence_tolerance,
+            'max_iter': self.max_iterations,
+            'print_header': verbose,
+            'print_iteration': verbose,
+            'print_status': verbose,
+        }
+
+    def get_solver_options(self, print_level=0) -> tuple[str, dict]:
+        """
+        Return the `nlpsol` plugin name and option dictionary for the configured
+        backend. The option *shape* differs between backends: IPOPT's options nest
+        under an 'ipopt' key, while `sqpmethod`'s sit at the top level.
+        """
+        if self.nlp_solver == 'ipopt':
+            return 'ipopt', {'ipopt': self.get_ipopt_options(print_level)}
+        if self.nlp_solver == 'sqpmethod':
+            return 'sqpmethod', self.get_sqpmethod_options(print_level)
+        raise ValueError(
+            f"Unsupported nlp_solver {self.nlp_solver!r}; expected 'ipopt' or "
+            f"'sqpmethod'.")
+
+    def _warn_if_not_converged(self, solver):
+        """
+        Warn if the backend did not report success. `sqpmethod` can stop at a point
+        far from the optimum, so a solve that is not flagged here is not necessarily
+        a good one, but a solve that is flagged is definitely not.
+        """
+        stats = solver.stats()
+        if not stats.get('success', True):
+            warnings.warn(
+                f'{type(self).__name__}: {self.nlp_solver} did not converge '
+                f'({stats.get("return_status")}).', RuntimeWarning)
 
     def _validate_guess(self, guess: Solution):
         """
@@ -356,13 +435,22 @@ class Solver(ABC):
         ca.MX
             Scalar time-averaged error expression.
         """
+        weights = Solver.compute_trapezoidal_weights(times)
+        return ca.dot(ca.DM(weights), errors)
+
+    @staticmethod
+    def compute_trapezoidal_weights(times):
+        """
+        Return the per-timestep trapezoidal quadrature weights, already divided by
+        the total duration, so that ``dot(weights, errors)`` is the time-averaged
+        error and ``sqrt(weights)`` scales a residual vector equivalently.
+        """
         times = np.asarray(times, dtype=float)
         dt = np.diff(times)
         weights = np.zeros(len(times))
         weights[:-1] += 0.5 * dt
-        weights[1:]  += 0.5 * dt
-        duration = times[-1] - times[0]
-        return ca.dot(ca.DM(weights), errors) / duration
+        weights[1:] += 0.5 * dt
+        return weights / (times[-1] - times[0])
 
     @abstractmethod
     def solve(self, guess=None) -> Solution:
@@ -471,9 +559,8 @@ class InverseKinematicsSolver(TrackingSolver):
         if self.damping_weight > 0:
             f += self.damping_weight * ca.dot(x - x_prev, x - x_prev) / x.numel()
         nlp = {'x': x, 'f': f}
-        opts = {}
-        opts['ipopt'] = self.get_ipopt_options()
-        solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
+        plugin, opts = self.get_solver_options()
+        solver = ca.nlpsol('solver', plugin, nlp, opts)
         return tracking_rep, solver
 
     def solve(self, guess: Solution = None) -> Solution:
@@ -533,6 +620,7 @@ class InverseKinematicsSolver(TrackingSolver):
                 tracking_rep, solver = self.create_tracking_solver(
                     trial, itime, tracking_cost, cost_reps, x_prev, guess_q)
                 sol = solver(x0=x0, lbx=lbx, ubx=ubx)
+                self._warn_if_not_converged(solver)
 
                 q_traj[itime, :] = np.squeeze(sol['x'].full())
 
@@ -923,6 +1011,7 @@ class SplinedKinematicsSolver(TrackingSolver):
                                if 'coordinates' not in cost.required_inputs]
 
         f = 0
+        residual_blocks = []
         tracking_reps = []
         cost_type = BilevelCost if num_params > 0 else TrackingCost
         tracking_cost = cost_type(self.position_weight, self.orientation_weight)
@@ -934,17 +1023,29 @@ class SplinedKinematicsSolver(TrackingSolver):
             # spline basis matrix.
             q = trial_B[itrial] @ coeffs[itrial]
 
-            # Compute the tracking cost at each time step via a callback rep.
+            # Compute the tracking cost at each time step via a callback rep. Under
+            # Gauss-Newton the rep returns residuals instead of their sum, which are
+            # collected separately; the trapezoidal time weights then fold in as
+            # their square roots so that sumsqr of the collected vector reproduces
+            # the time-averaged tracking error exactly.
+            if self.use_gauss_newton:
+                trapezoid = self.compute_trapezoidal_weights(times)
+                trapezoid = trapezoid / len(self.trials)
             errors = ca.MX(num_times, 1)
             for itime in range(num_times):
                 tracking_rep = tracking_cost.create_rep(
                     f'tracking_cost_trial_{itrial}_time_{itime}', self.mc, trial,
-                    itime)
+                    itime, residuals=self.use_gauss_newton)
                 tracking_reps.append(tracking_rep)
                 cost_input = CostInput(coordinates=q[itime, :].T, body_scales=s,
                                        marker_offsets=mo, frame_offsets=fo,
                                        ellipsoid_radii_scales=er, beam_length_scales=bl)
-                error = tracking_rep(cost_input)
+                if self.use_gauss_newton:
+                    residual_blocks.append(
+                        np.sqrt(trapezoid[itime]) * tracking_rep(cost_input))
+                    error = 0
+                else:
+                    error = tracking_rep(cost_input)
                 for cost_rep in coordinate_cost_reps:
                     error += cost_rep(cost_input)
                 errors[itime] = error
@@ -970,11 +1071,33 @@ class SplinedKinematicsSolver(TrackingSolver):
 
         # Solve.
         x = ca.vertcat(*[ca.vec(c) for c in coeffs], s, mo, fo, er, bl)
-        nlp = {'x': x, 'f': f}
-        opts = {}
-        opts['ipopt'] = self.get_ipopt_options(print_level=5)
-        solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
+        plugin, opts = self.get_solver_options(print_level=5)
+        if residual_blocks:
+            # f = sumsqr(r) + f_other, so the Hessian is 2 J'J for the tracking part
+            # plus the exact Hessian of the symbolic remainder, which CasADi can
+            # differentiate to second order on its own.
+            residuals = ca.vertcat(*residual_blocks)
+            nlp = {'x': x, 'f': f + ca.sumsqr(residuals)}
+            jacobian = ca.jacobian(residuals, x)
+            hessian = 2.0 * (jacobian.T @ jacobian) + ca.hessian(f, x)[0]
+            # IPOPT requires the upper triangle and sqpmethod the full symmetric
+            # matrix; each rejects the other outright.
+            if plugin == 'ipopt':
+                hessian = ca.triu(hessian)
+                opts['ipopt'].pop('hessian_approximation', None)
+            else:
+                opts['hessian_approximation'] = 'exact'
+            sigma = ca.MX.sym('sigma')
+            opts['hess_lag'] = ca.Function(
+                'nlp_hess_l',
+                {'x': x, 'p': ca.MX.sym('p', 0), 'lam_f': sigma,
+                 'hess_gamma_x_x': sigma * hessian},
+                ['x', 'p', 'lam_f', 'lam_g'], ['hess_gamma_x_x'])
+        else:
+            nlp = {'x': x, 'f': f}
+        solver = ca.nlpsol('solver', plugin, nlp, opts)
         sol = solver(x0=x0, lbx=lbx, ubx=ubx)
+        self._warn_if_not_converged(solver)
 
         # Reconstruct each trial's optimal trajectory by evaluating its spline at that
         # trial's input data time points.
@@ -1161,10 +1284,10 @@ class MarkerPlacer(Solver):
 
         # Solve.
         nlp = {'x': ca.vertcat(*poses, s, mo, fo), 'f': f}
-        opts = {}
-        opts['ipopt'] = self.get_ipopt_options(print_level=5)
-        solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
+        plugin, opts = self.get_solver_options(print_level=5)
+        solver = ca.nlpsol('solver', plugin, nlp, opts)
         sol = solver(x0=x0, lbx=lbx, ubx=ubx)
+        self._warn_if_not_converged(solver)
 
         # Slice each trial's optimized pose from the flat solution vector, storing it as
         # a one-row states table stamped with that trial's first time.
