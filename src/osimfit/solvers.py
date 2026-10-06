@@ -149,7 +149,12 @@ class Solver(ABC):
     Reference data is organized into `Trial` objects, one per motion, each bundling the
     data sources collected together for that motion. A trial can be registered with
     `add_trial`. Each concrete solver determines how to optimize over the registered
-    (e.g., sequentially, simultaneously, etc.).
+    trials (e.g., sequentially, simultaneously, etc.).
+
+    Users can register additional `Cost` objects to include in the solver's objective
+    via `add_cost`. Solvers may only support a subset of available costs, and will raise
+    a ValueError if a cost is registered that depends on unsupported inputs (e.g., a
+    time-stepping inverse kinematics solver does not support optimizing body scales).
 
     Parameters
     ----------
@@ -422,17 +427,22 @@ class InverseKinematicsSolver(TrackingSolver):
         See `TrackingSolver`.
     orientation_weight: float, optional
         See `TrackingSolver`.
+    damping_weight: float, optional
+        The weight to use for a quadratic damping term that penalizes large changes in
+        the coordinate values between consecutive time steps. Default is 0 (no damping).
     """
 
     SUPPORTED_INPUTS = frozenset({'coordinates'})
 
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
-                 orientation_weight=1.0):
+                 orientation_weight=1.0, damping_weight=0):
         super().__init__(model, convergence_tolerance, position_weight,
                          orientation_weight)
+        self.damping_weight = damping_weight
 
     def create_tracking_solver(self, trial: Trial, itime: int,
-                               tracking_cost: TrackingCost, cost_reps: list[CostRep]):
+                               tracking_cost: TrackingCost, cost_reps: list[CostRep],
+                               x_prev: list[float], guess_q: list[float]):
         """
         A helper function to create a CasADi solver for the tracking problem at a
         given time step of a given trial.
@@ -447,6 +457,10 @@ class InverseKinematicsSolver(TrackingSolver):
             The tracking cost description, built once per solve.
         cost_reps: list[CostRep]
             Reps of the solver's registered costs, built once per solve.
+        x_prev: list[float]
+            The solution from the previous time step.
+        guess_q: list[float]
+            The initial guess for the current time step.
         """
         x = ca.SX.sym('x', len(self.coordinate_q_indexes))
         tracking_rep = tracking_cost.create_rep('tracking_cost', self.mc, trial, itime)
@@ -454,6 +468,8 @@ class InverseKinematicsSolver(TrackingSolver):
         f = tracking_rep(cost_input)
         for cost_rep in cost_reps:
             f += cost_rep(cost_input)
+        if self.damping_weight > 0:
+            f += self.damping_weight * ca.dot(x - x_prev, x - x_prev) / x.numel()
         nlp = {'x': x, 'f': f}
         opts = {}
         opts['ipopt'] = self.get_ipopt_options()
@@ -462,6 +478,11 @@ class InverseKinematicsSolver(TrackingSolver):
 
     def solve(self, guess: Solution = None) -> Solution:
         self._assert_has_trials()
+
+        if self.damping_weight < 0:
+            raise ValueError(
+                f'{type(self).__name__} damping_weight must be non-negative, but got '
+                f'{self.damping_weight}.')
 
         if guess is not None:
             self._validate_guess(guess)
@@ -497,17 +518,20 @@ class InverseKinematicsSolver(TrackingSolver):
             # Iterate over all of the time steps in the tracking data and solve the
             # optimization problem at each time step.
             x0 = list(default_x0)
+            x_prev = list(default_x0)
             statesTraj = osim.StatesTrajectory()
             q_traj = np.zeros((num_times, len(self.coordinate_q_indexes)))
             for itime, time in enumerate(times):
                 print(f"Trial '{trial.name}': solving time {itime+1} of {num_times} "
                       f'(t={time:.3f} s)...')
 
-                if guess_q is not None:
+                if guess_q is None:
+                    x0 = x_prev
+                else:
                     x0 = guess_q[itime, :].tolist()
 
                 tracking_rep, solver = self.create_tracking_solver(
-                    trial, itime, tracking_cost, cost_reps)
+                    trial, itime, tracking_cost, cost_reps, x_prev, guess_q)
                 sol = solver(x0=x0, lbx=lbx, ubx=ubx)
 
                 q_traj[itime, :] = np.squeeze(sol['x'].full())
@@ -518,9 +542,7 @@ class InverseKinematicsSolver(TrackingSolver):
                 q[self.coordinate_q_indexes] = q_traj[itime, :]
                 tracking_rep.state.setQ(osim.Vector.createFromMat(q))
                 statesTraj.append(tracking_rep.state)
-
-                if guess_q is None:
-                    x0 = sol['x']
+                x_prev = sol['x']
 
             states_tables[trial.name] = statesTraj.exportToTable(self.mc.model)
 
@@ -562,22 +584,25 @@ class SplinedKinematicsSolver(TrackingSolver):
         The degree of the B-spline basis functions. Default is 3 (i.e., cubic splines).
     knot_interval: float, optional
         The spacing between consecutive knots in the B-spline basis, in seconds. Default
-        is 0.05. Each trial is divided into ``round(duration / knot_interval)`` knot
-        intervals of equal width, so the realized spacing matches ``knot_interval`` up
-        to that rounding. Every registered trial must span at least one knot interval.
+        is 0.05.
+    damping_weight: float, optional
+        The weight multiplied with the coordinate derivatives to apply a quadratic
+        damping penalty to the cost function. Default is 0 (no damping).
     """
     SUPPORTED_INPUTS = frozenset({'coordinates', 'body_scales', 'marker_offsets',
                                   'frame_offsets', 'ellipsoid_radii_scales',
                                   'beam_length_scales'})
 
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
-                 orientation_weight=1.0, degree=3, knot_interval=0.05):
+                 orientation_weight=1.0, degree=3, knot_interval=0.05,
+                 damping_weight=0.0):
         super().__init__(model, convergence_tolerance=convergence_tolerance,
                          position_weight=position_weight,
                          orientation_weight=orientation_weight)
         self._parameters_by_input: dict[str, list[Parameter]] = {}
         self.degree = degree
         self.knot_interval = knot_interval
+        self.damping_weight = damping_weight
 
     def build_knots_vector(self, times, num_intervals):
         """
@@ -925,6 +950,10 @@ class SplinedKinematicsSolver(TrackingSolver):
                 errors[itime] = error
 
             f += self.compute_average_trapezoidal_error(errors, times)
+            if self.damping_weight > 0:
+                qdot = trial_dB[itrial] @ coeffs[itrial]
+                f += self.damping_weight * self.compute_average_trapezoidal_error(
+                    ca.sum1(qdot**2), times)
 
         # Average across trials.
         f /= len(self.trials)
