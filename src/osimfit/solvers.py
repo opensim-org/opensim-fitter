@@ -953,7 +953,7 @@ class SplinedKinematicsSolver(TrackingSolver):
             if self.damping_weight > 0:
                 qdot = trial_dB[itrial] @ coeffs[itrial]
                 f += self.damping_weight * self.compute_average_trapezoidal_error(
-                    ca.sum1(qdot**2), times)
+                    ca.sum2(qdot**2), times)
 
         # Average across trials.
         f /= len(self.trials)
