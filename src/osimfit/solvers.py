@@ -12,6 +12,7 @@ from .costs import (BilevelCost, BilevelCostRep, Cost, CostInput, CostRep,
 from .model import (ModelCache, Parameter, BodyScale, MarkerOffset, FrameOffset,
                     EllipsoidRadiiScale, BeamLengthScale)
 from .scaling import Axis, Scaler, ManualBodyScale
+from .utilities import set_model_mass
 
 
 ############
@@ -756,7 +757,8 @@ class SplinedKinematicsSolver(TrackingSolver):
         assert_used(used_markers, self.mc.marker_offset_groups, 'marker')
         assert_used(used_frames, self.mc.frame_offset_groups, 'frame')
 
-    def update_model(self, model: osim.Model, solution: Solution) -> osim.Model:
+    def update_model(self, model: osim.Model, solution: Solution,
+                     mass: float = None) -> osim.Model:
         """
         Apply the solution's optimized parameters to `model` and return it.
         """
@@ -792,6 +794,10 @@ class SplinedKinematicsSolver(TrackingSolver):
         for parameter in solution.parameters:
             if not isinstance(parameter, BodyScale):
                 parameter.apply_to_model(model)
+
+        # Update the model mass.
+        if mass is not None:
+            set_model_mass(model, mass)
 
         # Finalize the system and return.
         model.finalizeConnections()
