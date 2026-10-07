@@ -18,9 +18,9 @@ from osimfit.costs import (AnthropometricRegularizationCostRep, CostInput,
                            CostRep, SymbolicCost, SymbolicCostRep,
                            BodyScaleRegularizationCost, BodyScaleIsotropyCost,
                            OffsetRegularizationCost, BilevelCostRep,
-                           TrackingCost, TrackingCostRep,
+                           TrackingCost, TrackingCostRep, BilevelCost,
                            AnthropometricRegularizationCost,
-                           CoordinateStiffnessCost, CoordinateStiffnessCostRep,
+                           CoordinateStiffnessCost,
                            EllipsoidRadiiScaleRegularizationCost,
                            BeamLengthScaleRegularizationCost)
 from osimfit.scaling import Axis, AnthropometricMeasurement
@@ -1941,3 +1941,89 @@ def test_orientation_error_matches_the_quaternion_definition():
 
     assert term.calc_error(mc.state) == pytest.approx(
         quaternion_error, rel=1e-12, abs=1e-14)
+
+
+#########################
+# PER-COMPONENT WEIGHTS #
+#########################
+
+def test_per_component_weights_multiply_the_overall_weights():
+    cost = TrackingCost(position_weight=2.0, orientation_weight=3.0,
+                        marker_weights={'/markerset/m0': 7.0},
+                        frame_position_weights={'/bodyset/b0': 5.0},
+                        frame_orientation_weights={'/bodyset/b1': 9.0})
+    assert cost.get_marker_weight('/markerset/m0') == 2.0 * 7.0
+    assert cost.get_frame_weights('/bodyset/b0') == (2.0 * 5.0, 3.0)
+    assert cost.get_frame_weights('/bodyset/b1') == (2.0, 3.0 * 9.0)
+    assert cost.get_marker_weight('/markerset/other') == 2.0
+    assert cost.get_frame_weights('/bodyset/other') == (2.0, 3.0)
+
+
+def test_a_unit_per_component_weight_changes_nothing():
+    plain = TrackingCost(position_weight=2.0, orientation_weight=3.0)
+    unit = TrackingCost(position_weight=2.0, orientation_weight=3.0,
+                        marker_weights={'/markerset/m0': 1.0},
+                        frame_position_weights={'/bodyset/b0': 1.0},
+                        frame_orientation_weights={'/bodyset/b0': 1.0})
+    assert unit.get_marker_weight('/markerset/m0') == plain.get_marker_weight(
+        '/markerset/m0')
+    assert unit.get_frame_weights('/bodyset/b0') == plain.get_frame_weights(
+        '/bodyset/b0')
+
+
+def test_weight_mappings_are_copied_at_construction():
+    weights = {'/markerset/m0': 7.0}
+    cost = TrackingCost(marker_weights=weights)
+    weights['/markerset/m0'] = 99.0
+    assert cost.get_marker_weight('/markerset/m0') == 7.0
+
+
+def test_bilevel_cost_shares_the_weight_behavior():
+    cost = BilevelCost(position_weight=2.0, orientation_weight=3.0,
+                       marker_weights={'/markerset/m0': 7.0})
+    assert cost.get_marker_weight('/markerset/m0') == 2.0 * 7.0
+    assert cost.get_frame_weights('/bodyset/other') == (2.0, 3.0)
+
+
+def test_set_marker_weight_rejects_bad_input(tmp_path):
+    model = create_beam_model()
+    model.initSystem()
+    solver = SplinedKinematicsSolver(model, knot_interval=0.1)
+    with pytest.raises(ValueError, match='non-negative'):
+        solver.set_marker_weight('/markerset/marker1', -1.0)
+    with pytest.raises(ValueError, match='no component at that path'):
+        solver.set_marker_weight('/markerset/not_a_marker', 1.0)
+
+
+def test_set_frame_weights_scales_position_and_orientation():
+    model = create_beam_model()
+    model.initSystem()
+    solver = SplinedKinematicsSolver(model, knot_interval=0.1,
+                                     position_weight=2.0, orientation_weight=3.0)
+    frame = '/bodyset/torso'
+    solver.set_frame_weights(frame, frame_position_weight=5.0,
+                             frame_orientation_weight=9.0)
+
+    cost = TrackingCost(solver.position_weight, solver.orientation_weight,
+                        solver.marker_weights, solver.frame_position_weights,
+                        solver.frame_orientation_weights)
+    assert cost.get_frame_weights(frame) == (2.0 * 5.0, 3.0 * 9.0)
+
+
+def test_set_frame_weights_requires_both_weights():
+    model = create_beam_model()
+    model.initSystem()
+    solver = SplinedKinematicsSolver(model, knot_interval=0.1)
+    with pytest.raises(TypeError):
+        solver.set_frame_weights('/bodyset/torso')
+    with pytest.raises(TypeError):
+        solver.set_frame_weights('/bodyset/torso', frame_position_weight=1.0)
+    with pytest.raises(ValueError, match='non-negative'):
+        solver.set_frame_weights('/bodyset/torso', frame_position_weight=1.0,
+                                 frame_orientation_weight=-1.0)
+    with pytest.raises(ValueError, match='non-negative'):
+        solver.set_frame_weights('/bodyset/torso', frame_position_weight=-1.0,
+                                 frame_orientation_weight=1.0)
+    with pytest.raises(ValueError, match='no component at that path'):
+        solver.set_frame_weights('/bodyset/not_a_body', frame_position_weight=1.0,
+                                 frame_orientation_weight=1.0)

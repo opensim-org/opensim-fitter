@@ -4,6 +4,7 @@ import opensim as osim
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
+from sys import path
 
 from .bounds import Bounds
 from .data_sources import Trial
@@ -394,6 +395,75 @@ class TrackingSolver(Solver):
         # Cost function weights.
         self.position_weight = position_weight
         self.orientation_weight = orientation_weight
+        self.marker_weights: dict[str, float] = {}
+        self.frame_position_weights: dict[str, float] = {}
+        self.frame_orientation_weights: dict[str, float] = {}
+
+    def set_marker_weight(self, marker_path: str, marker_weight: float) -> None:
+        """
+        Set a marker's position error weight. This weight multiplies with the overall
+        position weight used by the tracking cost so that the total weight applied to
+        the marker is `position_weight * marker_weight`.
+
+        Parameters
+        ----------
+        marker_path: str
+            The osim.Model path to the marker to weight.
+        marker_weight: float
+            The marker weight. Must be non-negative.
+
+        Raises
+        ------
+        ValueError
+            If `weight` is negative, or the model has no component at `marker_path`.
+        """
+        if marker_weight < 0:
+            raise ValueError(
+                f'Expected the marker weight for {marker_path!r} to be non-negative, '
+                f'but got {marker_weight}.')
+        if not self.mc.model.hasComponent(marker_path):
+            raise ValueError(
+                f'Cannot weight marker {marker_path!r}: model '
+                f"'{self.mc.model.getName()}' has no component at that path.")
+        self.marker_weights[marker_path] = marker_weight
+
+    def set_frame_weights(self, frame_path: str, frame_position_weight: float,
+                         frame_orientation_weight: float) -> None:
+        """
+        Set a frame's position and orientation error weights. These weights multiply
+        with the overall position and orientation weights used by the tracking cost so
+        that the total weights applied to the frame are
+        `position_weight * frame_position_weight` and
+        `orientation_weight * frame_orientation_weight`.
+
+        Parameters
+        ----------
+        frame_path: str
+            The osim.Model path to the frame to weight.
+        frame_position_weight: float
+            The frame position weight. Must be non-negative.
+        frame_orientation_weight: float
+            The frame orientation weight. Must be non-negative.
+
+        Raises
+        ------
+        ValueError
+            If either weight is negative, or the model has no component at `frame_path`.
+        """
+        if frame_position_weight < 0:
+            raise ValueError(
+                f'Expected the position weight for {frame_path!r} to be non-negative, '
+                f'but got {frame_position_weight}.')
+        if frame_orientation_weight < 0:
+            raise ValueError(
+                f'Expected the orientation weight for {frame_path!r} to be '
+                f'non-negative, but got {frame_orientation_weight}.')
+        if not self.mc.model.hasComponent(frame_path):
+            raise ValueError(
+                f'Cannot weight frame {frame_path!r}: model '
+                f"'{self.mc.model.getName()}' has no component at that path.")
+        self.frame_position_weights[frame_path] = frame_position_weight
+        self.frame_orientation_weights[frame_path] = frame_orientation_weight
 
     def _validate_guess(self, guess: Solution):
         super()._validate_guess(guess)
@@ -501,7 +571,9 @@ class InverseKinematicsSolver(TrackingSolver):
         # Solve each trial sequentially, restarting the warm start from the default
         # coordinate values (or that trial's guess) at each trial's first time step.
         cost_reps = [cost.create_rep(self.mc) for cost in self.costs]
-        tracking_cost = TrackingCost(self.position_weight, self.orientation_weight)
+        tracking_cost = TrackingCost(
+            self.position_weight, self.orientation_weight, self.marker_weights,
+            self.frame_position_weights, self.frame_orientation_weights)
         states_tables: dict[str, osim.TimeSeriesTable] = {}
         for trial in self.trials:
             times = trial.times
@@ -925,7 +997,9 @@ class SplinedKinematicsSolver(TrackingSolver):
         f = 0
         tracking_reps = []
         cost_type = BilevelCost if num_params > 0 else TrackingCost
-        tracking_cost = cost_type(self.position_weight, self.orientation_weight)
+        tracking_cost = cost_type(
+            self.position_weight, self.orientation_weight, self.marker_weights,
+            self.frame_position_weights, self.frame_orientation_weights)
         for itrial, trial in enumerate(self.trials):
             times = trial_times[itrial]
             num_times = len(times)
