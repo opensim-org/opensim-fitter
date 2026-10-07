@@ -168,7 +168,46 @@ class TrackingCostBase(CostBase):
     """
     A cost evaluated at a single time sample of a single trial, whose rep therefore
     needs that trial and sample index at construction.
+
+    Parameters
+    ----------
+    position_weight: float, optional
+        Overall weight on marker and frame-origin position errors. Default is 1.0.
+    orientation_weight: float, optional
+        Overall weight on frame orientation errors. Default is 1.0.
+    marker_weights: dict[str, float], optional
+        Per-marker factors on the position error, keyed by the marker label (i.e., the
+        osim.Model component path) model component path. Each multiplies with the
+        overall `position_weight`. Absent markers use a weight of 1.0.
+    frame_position_weights: dict[str, float], optional
+        Per-frame factors on the frame position error, keyed by the frame label (i.e.,
+        the osim.Model component path) model component path. Each multiplies with the
+        overall `position_weight`. Absent frames use a weight of 1.0.
+    frame_orientation_weights: dict[str, float], optional
+        Per-frame factors on the frame orientation error, keyed by the frame label
+        (i.e., the osim.Model component path) model component path. Each multiplies with
+        the overall `orientation_weight`. Absent frames use a weight of 1.0.
     """
+
+    def __init__(self, position_weight: float = 1.0,
+                 orientation_weight: float = 1.0,
+                 marker_weights: dict[str, float] = None,
+                 frame_position_weights: dict[str, float] = None,
+                 frame_orientation_weights: dict[str, float] = None):
+        self.position_weight = position_weight
+        self.orientation_weight = orientation_weight
+        self.marker_weights = dict(marker_weights or {})
+        self.frame_position_weights = dict(frame_position_weights or {})
+        self.frame_orientation_weights = dict(frame_orientation_weights or {})
+
+    def get_marker_weight(self, marker_path: str) -> float:
+        return self.position_weight * self.marker_weights.get(marker_path, 1.0)
+
+    def get_frame_weights(self, frame_path: str) -> tuple[float, float]:
+        return (self.position_weight
+                * self.frame_position_weights.get(frame_path, 1.0),
+                self.orientation_weight
+                * self.frame_orientation_weights.get(frame_path, 1.0))
 
     @abstractmethod
     def create_rep(self, name: str, mc: ModelCache, trial: Trial,
@@ -1364,17 +1403,11 @@ class TrackingCost(TrackingCostBase):
 
     Parameters
     ----------
-    position_weight: float, optional
-        Weight applied to marker and frame-origin position errors. Default is 1.0.
-    orientation_weight: float, optional
-        Weight applied to frame orientation errors. Default is 1.0.
+    position_weight, orientation_weight, marker_weights, frame_position_weights,
+    frame_orientation_weights
+        See `TrackingCostBase`, which defines the weighting these costs apply.
     """
     required_inputs = frozenset({'coordinates'})
-
-    def __init__(self, position_weight: float = 1.0,
-                 orientation_weight: float = 1.0):
-        self.position_weight = position_weight
-        self.orientation_weight = orientation_weight
 
     def create_rep(self, name: str, mc: ModelCache, trial: Trial,
                    itime: int) -> 'TrackingCostRep':
@@ -1382,19 +1415,21 @@ class TrackingCost(TrackingCostBase):
 
         for data in trial.frame_data:
             for iframe, frame_path in enumerate(data.labels):
+                frame_position_weight, frame_orientation_weight = \
+                    self.get_frame_weights(frame_path)
                 rep.add_frame_tracking_cost_term(
                     frame_path,
                     data.positions.getRowAtIndex(itime).getElt(0, iframe),
                     data.orientations.getRowAtIndex(itime).getElt(0, iframe),
-                    position_weight=self.position_weight,
-                    orientation_weight=self.orientation_weight)
+                    position_weight=frame_position_weight,
+                    orientation_weight=frame_orientation_weight)
 
         for data in trial.marker_data:
             for imarker, marker_path in enumerate(data.labels):
                 rep.add_marker_tracking_cost_term(
                     marker_path,
                     data.positions.getRowAtIndex(itime).getElt(0, imarker),
-                    weight=self.position_weight)
+                    weight=self.get_marker_weight(marker_path))
 
         return rep
 
@@ -1466,25 +1501,17 @@ class BilevelCost(TrackingCostBase):
 
     Parameters
     ----------
-    position_weight: float, optional
-        Weight applied to marker and frame-origin position errors. Default is 1.0.
-    orientation_weight: float, optional
-        Weight applied to frame orientation errors. Default is 1.0.
+    position_weight, orientation_weight, marker_weights, frame_position_weights,
+    frame_orientation_weights
+        See `TrackingCostBase`, which defines the weighting these costs apply.
     """
     required_inputs = frozenset(
         {'coordinates', 'body_scales', 'marker_offsets', 'frame_offsets',
          'ellipsoid_radii_scales', 'beam_length_scales'})
 
-    def __init__(self, position_weight: float = 1.0,
-                 orientation_weight: float = 1.0):
-        self.position_weight = position_weight
-        self.orientation_weight = orientation_weight
-
     def create_rep(self, name: str, mc: ModelCache, trial: Trial,
                    itime: int) -> 'BilevelCostRep':
         rep = BilevelCostRep(name, mc)
-        # Map each offset target path to the index of the offset group that applies to
-        # it; paths absent from a mapping are not offset.
         marker_index_of = {path: i for i, grp in enumerate(mc.marker_offset_groups)
                            for path in grp.component_paths}
         frame_index_of = {path: i for i, grp in enumerate(mc.frame_offset_groups)
@@ -1492,12 +1519,14 @@ class BilevelCost(TrackingCostBase):
 
         for data in trial.frame_data:
             for iframe, frame_path in enumerate(data.labels):
+                frame_position_weight, frame_orientation_weight = \
+                    self.get_frame_weights(frame_path)
                 rep.add_frame_bilevel_cost_term(
                     frame_path,
                     data.positions.getRowAtIndex(itime).getElt(0, iframe),
                     data.orientations.getRowAtIndex(itime).getElt(0, iframe),
-                    position_weight=self.position_weight,
-                    orientation_weight=self.orientation_weight,
+                    position_weight=frame_position_weight,
+                    orientation_weight=frame_orientation_weight,
                     offset_group_index=frame_index_of.get(frame_path))
 
         for data in trial.marker_data:
@@ -1505,7 +1534,7 @@ class BilevelCost(TrackingCostBase):
                 rep.add_marker_bilevel_cost_term(
                     marker_path,
                     data.positions.getRowAtIndex(itime).getElt(0, imarker),
-                    weight=self.position_weight,
+                    weight=self.get_marker_weight(marker_path),
                     offset_group_index=marker_index_of.get(marker_path))
 
         return rep
