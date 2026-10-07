@@ -376,3 +376,61 @@ def compute_knot_interval(coordinates: osim.TimeSeriesTable, cutoff_frequency: f
         f'{max_intervals} intervals supported by {num_times} time points. Either '
         f'lower cutoff_frequency, raise allowed_error, or provide more densely '
         f'sampled data.')
+
+
+def set_model_mass(model: osim.Model, mass: float) -> osim.Model:
+    """
+    Scale every body's mass so that the model's total mass equals `mass`, keeping the
+    model's existing mass distribution.
+
+    The model's system is reinitialized before returning, so the new mass is visible
+    to subsequent calls. Any `osim.State` obtained from `model` before this call is
+    invalidated.
+
+    Parameters
+    ----------
+    model : osim.Model
+        The model to update. Modified in place.
+    mass : float
+        The desired total mass, in the model's mass units.
+
+    Returns
+    -------
+    osim.Model
+        The updated model.
+
+    Raises
+    ------
+    ValueError
+        If `mass` is not positive, or if the model currently has no mass, in which
+        case there is no distribution to preserve.
+    RuntimeError
+        If the scaled model's total mass does not match `mass`, which means some of
+        the model's mass is not carried by its bodies.
+    """
+    if mass <= 0.0:
+        raise ValueError(f'Expected mass to be positive, but got {mass}.')
+
+    state = model.initSystem()
+    total_mass = model.getTotalMass(state)
+    if total_mass <= 0.0:
+        raise ValueError(
+            f"Cannot set the mass of model '{model.getName()}' to {mass}: its total "
+            f'mass is {total_mass}, so there is no mass distribution to preserve.')
+
+    factor = mass / total_mass
+    for body in model.getBodyList():
+        body.scaleMass(factor)
+
+    # Recreate the system and update the state after updating masses.
+    state = model.initSystem()
+
+    # Ensure the final model mass is correct.
+    final_mass = model.getTotalMass(state)
+    if abs(mass - final_mass) / mass > np.finfo(float).eps ** 0.875:
+        raise RuntimeError(
+            f"Scaled mass of model '{model.getName()}' is {final_mass}, but {mass} "
+            f'was requested. Scaling the bodies did not account for all of the '
+            f"model's mass.")
+
+    return model
