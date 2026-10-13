@@ -116,9 +116,8 @@ solver.add_parameter(BodyScale('/bodyset/b1', Bounds(0.5, 2.0), np.ones(3)))
 solution = solver.solve()
 states_table = solution.states_tables['pendulum']
 
-# Write the solution to a .sto file.
-sto = osim.STOFileAdapter()
-sto.write(states_table, 'double_pendulum_ik_solution.sto')
+# Write every result to the results directory and report the solve.
+solution.print(os.path.join('results', 'bilevel'), prefix='bilevel')
 
 # Print the optimized body lengths.
 print("\nOptimized body lengths")

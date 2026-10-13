@@ -3,3 +3,4 @@
 *.c3d
 *.png
 /Geometry
+results/

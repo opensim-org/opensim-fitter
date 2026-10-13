@@ -8,7 +8,8 @@ import numpy as np
 import opensim as osim
 
 from osimfit.data_sources import MarkerSource, Trial
-from osimfit.solvers import SplinedKinematicsSolver, Solution
+from osimfit.solution import Solution
+from osimfit.solvers import SplinedKinematicsSolver
 from osimfit.model import MarkerOffsetGroup, MarkerOffset, FrameOffset
 from osimfit.costs import OffsetRegularizationCost
 from osimfit.bounds import Bounds

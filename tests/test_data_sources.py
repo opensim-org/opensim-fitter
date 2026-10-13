@@ -53,7 +53,7 @@ class PositionsSource(DataSource):
 
     def _create_orientations_table(self):
         raise NotImplementedError(
-            f"PositionsSource does not provide orientation data.")
+            "PositionsSource does not provide orientation data.")
 
 
 class OrientationsSource(DataSource):
@@ -71,7 +71,7 @@ class OrientationsSource(DataSource):
 
     def _create_positions_table(self):
         raise NotImplementedError(
-            f"OrientationsSource does not provide position data.")
+            "OrientationsSource does not provide position data.")
 
     def _create_orientations_table(self):
         return create_Quaternion_table([0.0, 0.1], ['a', 'b'])
@@ -112,11 +112,11 @@ class NoSource(DataSource):
 
     def _create_positions_table(self):
         raise NotImplementedError(
-            f"NoSource does not provide position data.")
+            "NoSource does not provide position data.")
 
     def _create_orientations_table(self):
         raise NotImplementedError(
-            f"NoSource does not provide orientation data.")
+            "NoSource does not provide orientation data.")
 
 
 #########################
@@ -201,10 +201,9 @@ def test_trim_table_to_range_keeps_inclusive_window():
     assert list(table.getIndependentColumn()) == [0.5, 1.0, 1.5]
 
 
-def test_assert_position_orientation_consistent_raises_on_label_mismatch():
-    table = create_Vec3_table([0.0, 0.5, 1.0, 1.5, 2.0], ['a'])
+def test_init_raises_for_reversed_trim_to_range():
     with pytest.raises(ValueError, match='end time in trim_to_range'):
-        DataSource.trim_table_to_range(table, (1.5, 0.5))
+        NoSource(trim_to_range=(1.5, 0.5))
 
 
 def test_init_raises_for_non_tuple_trim_to_range():

@@ -3,3 +3,5 @@ run*
 *_run.osim
 unscaled_generic.osim
 Geometry/
+
+results/

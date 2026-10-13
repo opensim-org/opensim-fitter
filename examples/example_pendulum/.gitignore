@@ -2,3 +2,5 @@
 *.trc
 *.sto
 /Geometry
+
+results/

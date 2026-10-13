@@ -16,3 +16,9 @@ dependencies/opensim
 
 # VS Code
 .vscode/
+
+# Python virtual environments
+.venv/
+
+# uv lock file
+uv.lock

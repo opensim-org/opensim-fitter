@@ -45,7 +45,7 @@ class PositionsOnlySource(DataSource):
 
     def _create_orientations_table(self):
         raise NotImplementedError(
-            f"PositionsSource does not provide orientation data.")
+            "PositionsSource does not provide orientation data.")
 
 
 def load_full_body_model():

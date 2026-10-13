@@ -3,15 +3,16 @@ A Python library for fitting OpenSim model geometry and kinematics to motion cap
 
 ## Create the Python environment
 
-    conda create -n opensim_fitter python=3.13
-    conda activate opensim_fitter
-    pip install -r dependencies/requirements.txt
+    uv venv
+    uv python install 3.13
+    uv pip install -r dependencies/requirements.txt
+    uv pip install pip
 
 ## OpenSim installation
 
 For now, OpenSim Fitter requires installing a custom branch of OpenSim that disables the installation of the CasADi dependency that would conflict with the CasADi installed in the Python package we just created. Run the following command from the root directory to install a custom OpenSim Python wheel that has CasADi disabled (plus some other in-developement changes):
 
-    python dependencies/install_opensim.py
+    uv run dependencies/install_opensim.py
 
 Wheels are currently available for the following platforms and Python versions:
 
@@ -27,11 +28,11 @@ If no wheel matches your interpreter and platform, build OpenSim from source ins
 
 To install the OpenSim Fitter Python package,
 
-    pip install .
+    uv pip install .
 
 Or, if you're a developer, install in "editable" mode,
 
-    pip install -e .
+    uv pip install -e .
 
 ### Building OpenSim from source
 
@@ -54,8 +55,10 @@ Consult [the OpenSim build scripts](https://github.com/opensim-org/opensim-core/
 
 ### Create the `config.yaml` file
 
-Create a file named `config.yaml` in the root directory of the repository with the field `python_root_dir`, which is a full path to a Python installation directory, e.g.,
+Create a file named `config.yaml` in the root directory of the repository with the field `python_root_dir`, which is a full path to a Python installation directory that matches the Python version in your installation environment, e.g.,
 
     python_root_dir: '/Users/nbianco/miniconda3/envs/opensim_dev'
 
-Note: make sure that the Python version in `python_root_dir` matches the Python version in your installation environment.
+Then, run the install script with the `--from-source` flag:
+
+    uv run dependencies/install_opensim.py --from-source

@@ -1,4 +1,3 @@
-import os
 import copy
 import numpy as np
 import opensim as osim
