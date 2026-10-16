@@ -47,8 +47,7 @@ solver = InverseKinematicsSolver(model,
                                  position_weight=1.0)
 solver.add_trial(Trial('sprint', [marker_source]))
 ik_solution = solver.solve()
-sto = osim.STOFileAdapter()
-sto.write(ik_solution.states_tables['sprint'], 'sprint_ik_solution.sto')
+ik_solution.print(os.path.join('results', 'ik'), prefix='ik')
 
 # Spline-based inverse kinematics
 # -------------------------------
@@ -63,9 +62,9 @@ for knot_interval in knot_intervals:
                                      knot_interval=knot_interval)
     solver.add_trial(Trial('sprint', [marker_source]))
     spline_ik_solution = solver.solve(ik_solution)
-    sto = osim.STOFileAdapter()
-    sto.write(spline_ik_solution.states_tables['sprint'],
-              f'sprint_spline_based_ik_solution_knot{int(knot_interval*1000)}.sto')
+    spline_ik_solution.print(
+        os.path.join('results', 'ik'),
+        prefix=f'spline_knot{int(knot_interval*1000)}')
 
 # Plot joint kinematics
 # ---------------------
@@ -76,7 +75,8 @@ ylabels = ['pelvis list (deg)', 'hip adduction (deg)', 'subtalar angle (deg)']
 fig, axes = plt.subplots(3, 1, figsize=(6, 2.5 * len(coordinates)), sharex=True)
 
 # Plot frame-by-frame IK solution.
-solution = osim.TimeSeriesTable('sprint_ik_solution.sto')
+solution = osim.TimeSeriesTable(
+    os.path.join('results', 'ik', 'ik_sprint_states.sto'))
 for ax, coord in zip(axes.flatten(), coordinates):
     t = np.array(solution.getIndependentColumn())
     ax.plot(solution.getIndependentColumn(),
@@ -89,7 +89,8 @@ for ax, coord in zip(axes.flatten(), coordinates):
 cmap = plt.get_cmap('viridis')
 for i, knot_interval in enumerate(knot_intervals):
     solution = osim.TimeSeriesTable(
-        f'sprint_spline_based_ik_solution_knot{int(knot_interval*1000)}.sto')
+        os.path.join('results', 'ik',
+                     f'spline_knot{int(knot_interval*1000)}_sprint_states.sto'))
     for ax, coord in zip(axes.flatten(), coordinates):
         ax.plot(solution.getIndependentColumn(),
                 np.rad2deg(solution.getDependentColumn(coord).to_numpy()),
@@ -110,7 +111,8 @@ time_range = [1.575, 2.075]
 # Load the frame-by-frame IK solution and apply a low-pass filter to smooth the
 # kinematics. Then, use a spline fit to compute the derivatives of the coordinate
 # values.
-tableProcessor = osim.TableProcessor('sprint_ik_solution.sto')
+tableProcessor = osim.TableProcessor(
+    os.path.join('results', 'ik', 'ik_sprint_states.sto'))
 tableProcessor.append(osim.TabOpLowPassFilter(10))
 tableProcessor.append(osim.TabOpAppendCoordinateValueDerivativesAsSpeeds())
 ik_states_table = tableProcessor.process(model)
@@ -121,7 +123,7 @@ ik_states = osim.StatesTrajectory.createFromStatesTable(
 
 # Load the spline-based IK solution.
 spline_based_ik_solution = osim.TimeSeriesTable(
-    'sprint_spline_based_ik_solution_knot80.sto')
+    os.path.join('results', 'ik', 'spline_knot80_sprint_states.sto'))
 spline_based_ik_solution.addTableMetaDataString('inDegrees', 'no')
 spline_based_ik_solution.trim(time_range[0], time_range[1])
 spline_based_ik_states = osim.StatesTrajectory.createFromStatesTable(

@@ -73,7 +73,7 @@ scale_map = {
 model = osim.Model('unscaled_generic.osim')
 model.initSystem()
 
-# Save a clone of the unscaled model for the bilevel optimization below.
+# Save a clone of the unscaled model for the spline-based IK below.
 unscaled_model = osim.Model(model)
 
 c3d_source = TheiaFrameSource('pose_0_frames', 'pose_0.c3d')
@@ -180,13 +180,12 @@ solver = InverseKinematicsSolver(anthro_scaled_model,
                                  orientation_weight=2.0)
 solver.add_trial(Trial('jump_1', [theia_frame_source]))
 ik_solution = solver.solve()
-sto = osim.STOFileAdapter()
-sto.write(ik_solution.states_tables['jump_1'], 'jump_1_ik_solution.sto')
+ik_solution.print(os.path.join('results', 'ik'), prefix='ik')
 
-# Spline-based bilevel optimization
-# ----------------------------------
-# Construct a SplinedKinematicsSolver to solve for the model kinematics and body
-# scales that best match the Theia frame data, initialized from the unscaled model.
+# Spline-based inverse kinematics
+# -------------------------------
+# Construct a SplinedKinematicsSolver to solve for the model kinematics that best
+# match the Theia frame data, initialized with the frame-by-frame solution above.
 # Use a knot interval that matches a 10 Hz lowpass cutoff filter frequency of the
 # inverse kinematics coordinates data.
 cutoff_frequency = 10
@@ -201,9 +200,7 @@ solver = SplinedKinematicsSolver(unscaled_model,
                                  orientation_weight=5.0)
 solver.add_trial(Trial('jump_1', [theia_frame_source]))
 spline_ik_solution = solver.solve(ik_solution)
-sto = osim.STOFileAdapter()
-sto.write(spline_ik_solution.states_tables['jump_1'],
-          'jump_1_spline_ik_solution.sto')
+spline_ik_solution.print(os.path.join('results', 'ik'), prefix='spline_ik')
 
 # Visualization
 # -------------
@@ -212,7 +209,8 @@ modelProcessor.append(osim.ModOpRemoveMuscles())
 model = modelProcessor.process()
 model.initSystem()
 
-states = osim.TimeSeriesTable('jump_1_spline_ik_solution.sto')
+states = osim.TimeSeriesTable(
+    os.path.join('results', 'ik', 'spline_ik_jump_1_states.sto'))
 states.addTableMetaDataString('inDegrees', 'no')
 osim.VisualizerUtilities.showMotion(model, states)
 
@@ -224,7 +222,8 @@ fig = plt.figure(figsize=(6.5, 4))
 ax = fig.subplots(1, 1)
 
 # Plot frame-by-frame IK solution.
-solution = osim.TimeSeriesTable('jump_1_ik_solution.sto')
+solution = osim.TimeSeriesTable(
+    os.path.join('results', 'ik', 'ik_jump_1_states.sto'))
 t = np.array(solution.getIndependentColumn())
 ax.plot(solution.getIndependentColumn(),
         np.rad2deg(solution.getDependentColumn(coordinate).to_numpy()),
@@ -233,14 +232,14 @@ ax.plot(solution.getIndependentColumn(),
 ax.set_ylabel(ylabel)
 ax.grid(True, which='both', ls='--', lw=0.5, alpha=0.75)
 
-# Plot the bilevel optimization solution.
+# Plot the spline-based IK solution.
 solution = osim.TimeSeriesTable(
-    f'jump_1_spline_ik_solution.sto')
-t_bilevel = np.array(solution.getIndependentColumn())
-y_bilevel = np.rad2deg(solution.getDependentColumn(coordinate).to_numpy())
-ax.plot(t_bilevel, y_bilevel,
+    os.path.join('results', 'ik', 'spline_ik_jump_1_states.sto'))
+t_spline = np.array(solution.getIndependentColumn())
+y_spline = np.rad2deg(solution.getDependentColumn(coordinate).to_numpy())
+ax.plot(t_spline, y_spline,
         color='darkorange', lw=3.5,
-        label=f'Spline-based IK optimization')
+        label='Spline-based IK optimization')
 ax.set_ylim(-5, 85)
 ax.set_xlabel('time (s)')
 ax.legend(loc='upper left', fontsize=11)

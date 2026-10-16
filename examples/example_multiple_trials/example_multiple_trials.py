@@ -224,10 +224,7 @@ solver = InverseKinematicsSolver(scaled_model,
 for trial in trials:
     solver.add_trial(trial)
 ik_solution = solver.solve()
-sto = osim.STOFileAdapter()
-for trial in trials:
-    sto.write(ik_solution.states_tables[trial.name],
-              os.path.join('results', f'{trial.name}_ik_solution.sto'))
+ik_solution.print(os.path.join('results', 'ik'), prefix='ik')
 
 # Spline-based inverse kinematics
 # -------------------------------
@@ -302,9 +299,7 @@ for scale in parameters_guess:
 guess = Solution(states_tables=ik_solution.states_tables,
                  parameters=parameters_guess)
 bilevel_solution = solver.solve(guess)
-for trial in trials:
-    sto.write(bilevel_solution.states_tables[trial.name],
-              os.path.join('results', f'{trial.name}_bilevel_solution.sto'))
+bilevel_solution.print(os.path.join('results', 'bilevel'), prefix='bilevel')
 bilevel_scaled_model = solver.update_model(unscaled_model, bilevel_solution)
 bilevel_scaled_model.printToXML(os.path.join('results', 'subject_bilevel_scaled.osim'))
 
@@ -337,7 +332,8 @@ bilevel_scaled_model.initSystem();
 # Convert the solution to a StatesTrajectory for computing marker errors.
 for trial in trials:
     states_table = osim.TimeSeriesTable(
-        os.path.join('results', f'{trial.name}_bilevel_solution.sto'))
+        os.path.join('results', 'bilevel',
+                     f'bilevel_{trial.name}_states.sto'))
     states_table.addTableMetaDataString('inDegrees', 'no')
     states_traj = osim.StatesTrajectory.createFromStatesTable(bilevel_scaled_model,
                                                               states_table, True)

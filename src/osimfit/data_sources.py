@@ -357,7 +357,7 @@ class MarkerSource(DataSource):
 
     def _create_orientations_table(self) -> osim.TimeSeriesTableQuaternion:
         raise NotImplementedError(
-            f"MarkerSource does not provide orientation data.")
+            "MarkerSource does not provide orientation data.")
 
     def validate_marker_paths(self, model: osim.Model):
         """

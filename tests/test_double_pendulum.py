@@ -414,7 +414,7 @@ def test_knot_interval_matches_requested_spacing():
     solver = SplinedKinematicsSolver(model, knot_interval=0.05, degree=3)
 
     times = np.linspace(0.0, 1.0, 101)
-    knots = solver.build_knots_vector(times, num_intervals=20)
+    knots = solver._build_knots_vector(times, num_intervals=20)
 
     # Interior (non-repeated) knots are spaced exactly one knot interval apart.
     interior = knots[solver.degree:len(knots) - solver.degree]
@@ -423,7 +423,7 @@ def test_knot_interval_matches_requested_spacing():
 
     # n + p + 1 knots for n control points of degree p.
     assert len(knots) == 20 + 3 + 1 + 3
-    B, _ = solver.build_spline_basis_matrix(times, knots)
+    B, _ = solver._build_spline_basis_matrix(times, knots)
     assert B.shape == (101, 23)
 
 
