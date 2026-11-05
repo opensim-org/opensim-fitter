@@ -6,7 +6,6 @@ A Python library for fitting OpenSim model geometry and kinematics to motion cap
     uv venv
     uv python install 3.13
     uv pip install -r dependencies/requirements.txt
-    uv pip install pip
 
 ## OpenSim installation
 
