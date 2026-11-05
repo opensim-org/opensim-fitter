@@ -153,7 +153,6 @@ class Cost(CostBase):
     user can register on a solver via `Solver.add_cost`.
     """
 
-    @abstractmethod
     def create_rep(self, mc: ModelCache) -> CostRep:
         """
         Build one of this cost's representations against `mc`. Solvers call this once
@@ -166,6 +165,8 @@ class Cost(CostBase):
             The solver's `ModelCache`, from which the rep initializes any model-derived
             quantities.
         """
+        # TODO: Transitional. Removed once every cost implements `expression`.
+        raise NotImplementedError
 
     def expression(self, cache: 'SolveCache', input: CostInput) -> ca.MX:
         """
@@ -281,8 +282,9 @@ class TrackingCostBase(CostBase):
 
 class SymbolicCost(Cost):
     """
-    A `Cost` whose rep is a plain CasADi expression, requiring no OpenSim evaluation.
-    It is differentiated symbolically by CasADi and incurs no callback overhead.
+    A `Cost` that is a plain CasADi expression over the optimization variables,
+    requiring neither OpenSim evaluation nor anything from the `SolveCache`. It is
+    differentiated symbolically by CasADi and incurs no callback overhead.
     """
 
     @abstractmethod
@@ -291,27 +293,8 @@ class SymbolicCost(Cost):
         Return this cost's CasADi expression for `input`.
         """
 
-    def create_rep(self, mc: ModelCache) -> 'SymbolicCostRep':
-        return SymbolicCostRep(self)
-
-
-class SymbolicCostRep(CostRep):
-    """
-    The rep of a `SymbolicCost`. It holds no model-derived state, since the cost is a
-    pure expression over the optimization variables, and simply defers to
-    `SymbolicCost.evaluate`.
-
-    Parameters
-    ----------
-    cost: SymbolicCost
-        The cost this rep represents.
-    """
-
-    def __init__(self, cost: SymbolicCost):
-        self.cost = cost
-
-    def __call__(self, input: CostInput) -> ca.MX:
-        return self.cost.evaluate(input)
+    def expression(self, cache: 'SolveCache', input: CostInput) -> ca.MX:
+        return self.evaluate(input)
 
 
 class Function(ca.Callback, ABC):

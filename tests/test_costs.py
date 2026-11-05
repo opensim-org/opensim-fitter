@@ -12,7 +12,7 @@ from osimfit.model import ModelCache, BodyScale, StationCache, BeamLengthScale
 from osimfit.bounds import Bounds
 from osimfit.solvers import InverseKinematicsSolver, SplinedKinematicsSolver
 from osimfit.costs import (AnthropometricRegularizationCostRep, CostInput, CostRep,
-                           SymbolicCost, SymbolicCostRep, BodyScaleRegularizationCost,
+                           SymbolicCost, BodyScaleRegularizationCost,
                            BodyScaleIsotropyCost, OffsetRegularizationCost,
                            TrackingCost, AnthropometricRegularizationCost,
                            CoordinateStiffnessCost,
@@ -368,6 +368,15 @@ def create_two_link_model():
     return model
 
 
+def bind_cost(cost, mc):
+    """
+    Return a function evaluating `cost`'s expression through one `SolveCache` over
+    `mc`, i.e. the cost as a solver sees it during a single solve.
+    """
+    cache = SolveCache(mc)
+    return lambda input: cost.expression(cache, input)
+
+
 def register_body_scales(mc, body_paths):
     """Register one BodyScale group per body on the ModelCache, in order."""
     for path in body_paths:
@@ -544,16 +553,12 @@ def test_creating_a_rep_twice_yields_independent_reps():
         np.testing.assert_allclose(value, _manual_cost(rep, s), rtol=1e-9)
 
 
-def test_symbolic_cost_rep_delegates_to_its_cost():
+def test_symbolic_cost_expression_is_its_evaluation():
     cost = BodyScaleRegularizationCost(2.0, target=1.1)
-    mc = ModelCache(create_two_link_model())
-    rep = cost.create_rep(mc)
-
-    assert isinstance(rep, SymbolicCostRep)
-    assert rep.cost is cost
+    cache = SolveCache(ModelCache(create_two_link_model()))
 
     s = ca.DM([1.2, 0.9, 1.0])
-    assert float(rep(CostInput(body_scales=s))) == pytest.approx(
+    assert float(cost.expression(cache, CostInput(body_scales=s))) == pytest.approx(
         float(cost.evaluate(CostInput(body_scales=s))))
 
 
@@ -638,9 +643,10 @@ def test_stiffness_rejects_empty_stiffnesses():
 
 
 def test_stiffness_rejects_unknown_coordinate(pendulum):
-    cost = CoordinateStiffnessCost({'/jointset/j0/nope': 1.0})
+    penalty = bind_cost(CoordinateStiffnessCost({'/jointset/j0/nope': 1.0}),
+                        ModelCache(pendulum))
     with pytest.raises(ValueError, match='not a coordinate in the model'):
-        cost.create_rep(ModelCache(pendulum))
+        penalty(CostInput(coordinates=ca.DM.zeros(2)))
 
 
 def test_stiffness_requires_coordinates():
@@ -650,18 +656,19 @@ def test_stiffness_requires_coordinates():
 
 def test_stiffness_penalizes_only_the_named_coordinates(pendulum):
     mc = ModelCache(pendulum)
-    rep = CoordinateStiffnessCost({Q1: 2.0}).create_rep(mc)
+    penalty = bind_cost(CoordinateStiffnessCost({Q1: 2.0}), mc)
     order = list(mc.coordinate_q_map)
 
     # Moving the unpenalized coordinate leaves the cost at zero; moving the penalized
     # one gives stiffness * deviation^2.
     q = np.zeros(len(order))
     q[order.index(Q0)] = 0.5
-    assert float(rep(CostInput(coordinates=ca.DM(q)))) == pytest.approx(0.0)
+    assert float(penalty(CostInput(coordinates=ca.DM(q)))) == pytest.approx(0.0)
 
     q = np.zeros(len(order))
     q[order.index(Q1)] = 0.5
-    assert float(rep(CostInput(coordinates=ca.DM(q)))) == pytest.approx(2.0 * 0.25)
+    assert float(penalty(CostInput(coordinates=ca.DM(q)))) == pytest.approx(
+        2.0 * 0.25)
 
 
 def test_stiffness_weight_scales_the_penalty(pendulum):
@@ -670,8 +677,8 @@ def test_stiffness_weight_scales_the_penalty(pendulum):
     q = np.zeros(len(order))
     q[order.index(Q0)] = 0.3
 
-    plain = CoordinateStiffnessCost({Q0: 1.0}).create_rep(mc)
-    scaled = CoordinateStiffnessCost({Q0: 1.0}, weight=5.0).create_rep(mc)
+    plain = bind_cost(CoordinateStiffnessCost({Q0: 1.0}), mc)
+    scaled = bind_cost(CoordinateStiffnessCost({Q0: 1.0}, weight=5.0), mc)
     assert float(scaled(CostInput(coordinates=ca.DM(q)))) == pytest.approx(
         5.0 * float(plain(CostInput(coordinates=ca.DM(q)))))
 
@@ -686,25 +693,25 @@ def test_stiffness_target_defaults_to_the_model_default_value(pendulum):
     pendulum.finalizeConnections()
 
     mc = ModelCache(pendulum)
-    rep = CoordinateStiffnessCost({Q0: 3.0}).create_rep(mc)
+    penalty = bind_cost(CoordinateStiffnessCost({Q0: 3.0}), mc)
     order = list(mc.coordinate_q_map)
 
     q = np.zeros(len(order))
     q[order.index(Q0)] = 0.4
-    assert float(rep(CostInput(coordinates=ca.DM(q)))) == pytest.approx(0.0)
+    assert float(penalty(CostInput(coordinates=ca.DM(q)))) == pytest.approx(0.0)
 
     q[order.index(Q0)] = 0.5
-    assert float(rep(CostInput(coordinates=ca.DM(q)))) == pytest.approx(
+    assert float(penalty(CostInput(coordinates=ca.DM(q)))) == pytest.approx(
         3.0 * (0.5 - 0.4)**2)
 
 
 def test_stiffness_explicit_target_overrides_the_model_default(pendulum):
     mc = ModelCache(pendulum)
-    rep = CoordinateStiffnessCost({Q0: 1.0}, targets={Q0: 0.25}).create_rep(mc)
+    penalty = bind_cost(CoordinateStiffnessCost({Q0: 1.0}, targets={Q0: 0.25}), mc)
     order = list(mc.coordinate_q_map)
     q = np.zeros(len(order))
     q[order.index(Q0)] = 0.25
-    assert float(rep(CostInput(coordinates=ca.DM(q)))) == pytest.approx(0.0)
+    assert float(penalty(CostInput(coordinates=ca.DM(q)))) == pytest.approx(0.0)
 
 
 def test_stiffness_gradient_matches_the_analytic_spring(pendulum):
@@ -714,11 +721,11 @@ def test_stiffness_gradient_matches_the_analytic_spring(pendulum):
     """
     mc = ModelCache(pendulum)
     order = list(mc.coordinate_q_map)
-    rep = CoordinateStiffnessCost({Q0: 2.0, Q1: 0.5}, weight=3.0).create_rep(mc)
+    penalty = bind_cost(CoordinateStiffnessCost({Q0: 2.0, Q1: 0.5}, weight=3.0), mc)
 
     x = ca.SX.sym('x', len(order))
     gradient = ca.Function('g', [x],
-                           [ca.jacobian(rep(CostInput(coordinates=x)), x)])
+                           [ca.jacobian(penalty(CostInput(coordinates=x)), x)])
     q = np.zeros(len(order))
     q[order.index(Q0)] = 0.3
     q[order.index(Q1)] = -0.2
@@ -748,11 +755,11 @@ def test_stiffness_pulls_an_underdetermined_coordinate_toward_its_target(pendulu
     """
     mc = ModelCache(pendulum)
     order = list(mc.coordinate_q_map)
-    rep = CoordinateStiffnessCost({Q0: 1.0, Q1: 1.0},
-                                  targets={Q0: 0.2, Q1: -0.3}).create_rep(mc)
+    penalty = bind_cost(CoordinateStiffnessCost({Q0: 1.0, Q1: 1.0},
+                                                targets={Q0: 0.2, Q1: -0.3}), mc)
 
     x = ca.SX.sym('x', len(order))
-    nlp = {'x': x, 'f': rep(CostInput(coordinates=x))}
+    nlp = {'x': x, 'f': penalty(CostInput(coordinates=x))}
     solver = ca.nlpsol('solver', 'ipopt', nlp,
                        {'ipopt': {'print_level': 0}, 'print_time': False})
     optimal = np.squeeze(solver(x0=np.zeros(len(order)))['x'].full())
