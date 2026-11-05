@@ -2,7 +2,8 @@ import numpy as np
 import casadi as ca
 import opensim as osim
 
-from ..costs import BilevelCost, BilevelCostRep, CostInput, TrackingCost
+from ..costs import (BilevelCost, CostInput, CostCache, CostWorkspace,
+                     TrackingCost, CostEvaluation, CostTerm, TrialSample)
 from ..model import (ModelCache, Parameter, BodyScale, MarkerOffset, FrameOffset,
                      EllipsoidRadiiScale, BeamLengthScale)
 from ..scaling import Axis, Scaler, ManualBodyScale
@@ -25,8 +26,8 @@ class SplinedKinematicsSolver(TrackingSolver):
     contributes its own block of spline control points, with its own knot vector sized
     from its own duration, while the bilevel parameters are shared across every trial.
     The tracking objective uses the mean over trials of each trial's time-averaged
-    error. Registered `Cost` terms that depend only on the shared parameters are
-    evaluated once, not per trial.
+    error. Costs with global scope, including parameter regularizers, are evaluated
+    once using the shared parameters.
 
     Parameters
     ----------
@@ -50,6 +51,9 @@ class SplinedKinematicsSolver(TrackingSolver):
     SUPPORTED_INPUTS = frozenset({'coordinates', 'body_scales', 'marker_offsets',
                                   'frame_offsets', 'ellipsoid_radii_scales',
                                   'beam_length_scales'})
+
+    SUPPORTED_SCOPES = frozenset({'sample', 'global'})
+    GLOBAL_INPUTS = SUPPORTED_INPUTS - {'coordinates'}
 
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
                  orientation_weight=1.0, degree=3, knot_interval=0.05,
@@ -216,75 +220,42 @@ class SplinedKinematicsSolver(TrackingSolver):
         for p in self.parameters:
             p.append_guess_and_bounds(x0, lbx, ubx)
 
-        # Accumulate the tracking cost for each trial. Reps are held in a list for the
-        # lifetime of the solve so CasADi's references to them stay valid. Each rep is
-        # paired with its label so the objective can be reported term by term.
-        named_reps = [(type(cost).__name__, cost.create_rep(self.mc))
-                      for cost in self.costs]
-        coordinate_cost_reps = [(name, rep) for (name, rep), cost
-                                in zip(named_reps, self.costs)
-                                if 'coordinates' in cost.required_inputs]
-        parameter_cost_reps = [(name, rep) for (name, rep), cost
-                               in zip(named_reps, self.costs)
-                               if 'coordinates' not in cost.required_inputs]
-
-        # The labels of the terms evaluated at every time sample, which therefore need
-        # a per-timestep error vector within each trial.
-        timestep_term_names = ['tracking'] + [name for name, _
-                                              in coordinate_cost_reps]
+        # Tracking and user costs use the same evaluation and accumulation path.
+        # The workspace retains callbacks through solving and objective reporting.
+        workspace = CostWorkspace(CostCache(self.mc))
         terms = ObjectiveTerms()
-        tracking_reps = []
         cost_type = BilevelCost if num_params > 0 else TrackingCost
         tracking_cost = cost_type(
             self.position_weight, self.orientation_weight, self.marker_weights,
             self.frame_position_weights, self.frame_orientation_weights)
+        named_costs = [CostTerm('tracking', tracking_cost), *self.costs]
         for itrial, trial in enumerate(self.trials):
             times = trial_times[itrial]
-            num_times = len(times)
 
             # Map this trial's control points to its full predicted trajectory via its
             # spline basis matrix.
             q = trial_B[itrial] @ coeffs[itrial]
 
-            # Compute the tracking cost at each time step via a callback rep. Each
-            # term gets its own per-timestep error vector; the trapezoidal time
-            # average below is linear, so averaging the terms separately and summing
-            # them is equivalent to averaging their sum.
-            errors = {name: ca.MX(num_times, 1) for name in timestep_term_names}
-            for itime in range(num_times):
-                tracking_rep = tracking_cost.create_rep(
-                    f'tracking_cost_trial_{itrial}_time_{itime}', self.mc, trial,
-                    itime)
-                tracking_reps.append(tracking_rep)
+            # Time average within each trial, then equal weighting across trials.
+            weights = self._compute_average_trapezoidal_weights(times) / len(self.trials)
+            for itime, weight in enumerate(weights):
                 cost_input = CostInput(coordinates=q[itime, :].T, body_scales=s,
                                        marker_offsets=mo, frame_offsets=fo,
                                        ellipsoid_radii_scales=er, beam_length_scales=bl)
-                errors['tracking'][itime] = tracking_rep(cost_input)
-                for name, cost_rep in coordinate_cost_reps:
-                    errors[name][itime] = cost_rep(cost_input)
+                evaluation = CostEvaluation(cost_input, TrialSample(trial, itime))
+                terms.add_costs(named_costs, evaluation, workspace, weight)
 
-            for name, term_errors in errors.items():
-                terms.add(name, self._compute_average_trapezoidal_error(
-                    term_errors, times))
             if self.damping_weight > 0:
                 qdot = trial_dB[itrial] @ coeffs[itrial]
-                terms.add('damping',
-                          self.damping_weight
-                          * self._compute_average_trapezoidal_error(
-                              ca.sum2(qdot**2), times))
-
-        # Average across trials.
-        terms.scale(1.0 / len(self.trials))
-
-        # Every offset group must be tracked in at least one trial.
-        if num_params > 0:
-            self._assert_offset_groups_used(tracking_reps)
+                terms.add('damping', self.damping_weight
+                          * ca.dot(ca.DM(weights), ca.sum2(qdot**2)))
 
         # Add the cost terms on the parameters shared across all trials. These are
         # evaluated once, and so bypass the per-trial averaging above.
         parameter_input = CostInput(body_scales=s, marker_offsets=mo, frame_offsets=fo,
                                     ellipsoid_radii_scales=er, beam_length_scales=bl)
-        terms.add_costs(parameter_cost_reps, parameter_input)
+        terms.add_costs(named_costs, CostEvaluation(parameter_input), workspace)
+        workspace.validate(named_costs)
 
         # Solve.
         x = ca.vertcat(*[ca.vec(c) for c in coeffs], s, mo, fo, er, bl)
@@ -330,34 +301,6 @@ class SplinedKinematicsSolver(TrackingSolver):
                 'cost_terms': terms.summarize(x, sol['x']),
             },
         )
-
-    def _assert_offset_groups_used(self, reps: list[BilevelCostRep]):
-        """
-        Verify that every registered offset group is tracked by at least one task in at
-        least one of `reps`, ensuring that the offset is properly constrained in
-        the bilevel optimization problem.
-
-        Raises
-        ------
-        ValueError
-            If any registered marker or frame offset group is tracked by no task.
-        """
-        def assert_used(used, offset_groups, label):
-            for i, group in enumerate(offset_groups):
-                if i not in used:
-                    raise ValueError(
-                        f'{label.capitalize()} offset group {group.component_paths} is '
-                        f'not tracked by any registered {label} in any trial; its '
-                        f'offset would be unconstrained.')
-
-        used_markers = {g for rep in reps
-                        for g in rep.marker_term.offset_group_indexes
-                        if g is not None}
-        used_frames = {g for rep in reps
-                       for g in rep.frame_term.offset_group_indexes
-                       if g is not None}
-        assert_used(used_markers, self.mc.marker_offset_groups, 'marker')
-        assert_used(used_frames, self.mc.frame_offset_groups, 'frame')
 
     def update_model(self, model: osim.Model, solution: Solution,
                     mass: float = None) -> osim.Model:

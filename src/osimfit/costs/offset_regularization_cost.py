@@ -15,6 +15,7 @@ class OffsetRegularizationCost(SymbolicCost):
     weight: float
         Non-negative scalar applied to the sum-of-squares.
     """
+    scope = 'global'
     required_inputs = frozenset({'marker_offsets', 'frame_offsets'})
 
     def __init__(self, weight: float):

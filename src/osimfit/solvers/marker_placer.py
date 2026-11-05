@@ -3,7 +3,8 @@ import casadi as ca
 import opensim as osim
 
 from ..bounds import Bounds
-from ..costs import BilevelCost, CostInput
+from ..costs import (BilevelCost, CostInput, CostCache, CostWorkspace,
+                     CostEvaluation, CostTerm, TrialSample)
 from ..model import MarkerOffset
 from .solution import ObjectiveTerms, Solution
 from .solver import Solver
@@ -87,25 +88,22 @@ class MarkerPlacer(Solver):
         for marker_offset in marker_offsets:
             marker_offset.append_guess_and_bounds(x0, lbx, ubx)
 
-        # Accumulate the placement error at each trial's first time point. Reps are held
-        # in a list for the lifetime of the solve so CasADi's references to them stay
-        # valid. _validate_trials rejects frame data, so a BilevelCost's frame terms are
-        # always empty here and each rep tracks markers only.
-        errors = ca.MX(len(self.trials), 1)
-        placement_reps = []
-        placement_cost = BilevelCost(position_weight=1.0)
-        for itrial, trial in enumerate(self.trials):
-            placement_rep = placement_cost.create_rep(
-                f'marker_placer_cost_trial_{itrial}', self.mc, trial, 0)
-            placement_reps.append(placement_rep)
-            errors[itrial] = placement_rep(
-                CostInput(coordinates=poses[itrial], body_scales=s,
-                          marker_offsets=mo, frame_offsets=fo))
-
-        # Average over trials so the objective's magnitude is independent of the number
-        # of trials.
+        # Accumulate the placement error at each trial's first time point. The workspace
+        # holds every callback for the lifetime of the solve so CasADi's references to
+        # them stay valid. _validate_trials rejects frame data, so a BilevelCost's frame
+        # terms are always empty here and each callback tracks markers only.
+        workspace = CostWorkspace(CostCache(self.mc))
+        named_costs = [CostTerm('tracking', BilevelCost(position_weight=1.0))]
         terms = ObjectiveTerms()
-        terms.add('tracking', ca.sum1(errors) / len(self.trials))
+        for itrial, trial in enumerate(self.trials):
+            evaluation = CostEvaluation(
+                CostInput(coordinates=poses[itrial], body_scales=s,
+                          marker_offsets=mo, frame_offsets=fo),
+                TrialSample(trial, 0))
+            terms.add_costs(named_costs, evaluation, workspace,
+                            weight=1.0 / len(self.trials))
+
+        workspace.validate(named_costs)
 
         # Solve.
         x = ca.vertcat(*poses, s, mo, fo)
@@ -165,7 +163,7 @@ class MarkerPlacer(Solver):
             If any cost was registered via `add_cost`.
         """
         if self.costs:
-            registered = sorted(type(cost).__name__ for cost in self.costs)
+            registered = sorted(term.label for term in self.costs)
             raise ValueError(
                 f'{type(self).__name__} does not accept additional costs; its '
                 f'objective is the marker placement error alone, but {registered} '

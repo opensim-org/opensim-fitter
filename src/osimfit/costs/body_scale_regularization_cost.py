@@ -20,6 +20,7 @@ class BodyScaleRegularizationCost(SymbolicCost):
     target: float, optional
         Per-component target value. Default is 1.0.
     """
+    scope = 'global'
     required_inputs = frozenset({'body_scales'})
 
     def __init__(self, weight: float, target: float = 1.0):

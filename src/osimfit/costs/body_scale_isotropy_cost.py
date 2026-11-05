@@ -19,6 +19,7 @@ class BodyScaleIsotropyCost(SymbolicCost):
     weight: float
         Non-negative scalar applied to the sum-of-squares.
     """
+    scope = 'global'
     required_inputs = frozenset({'body_scales'})
 
     def __init__(self, weight: float):
