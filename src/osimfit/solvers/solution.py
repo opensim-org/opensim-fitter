@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
 
-from .costs import CostInput
-from .model import Parameter
+from ..costs import CostInput
+from ..model import Parameter
 
 
 ############

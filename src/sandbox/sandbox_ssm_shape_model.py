@@ -204,16 +204,17 @@ def check_jacobian_fd(shape_model, s0=0.3, eps=1e-4):
 
 def fit_shape_factor(shape_model, target, prior_weight=1e-3):
     """Recover s* by minimizing ||apply(s) - target||^2 + prior_weight *
-    prior(s) with ipopt -- the same kind of NLP osimfit's BilevelSolver runs, but
-    standalone: this is the use case ShapeModel.expand() doesn't cover, since expand()
-    only folds a shape model into an existing bilevel solve, not a solve of its own.
+    prior(s) with ipopt -- the same kind of NLP osimfit's SplinedKinematicsSolver
+    runs, but standalone: this is the use case ShapeModel.expand() doesn't cover,
+    since expand() only folds a shape model into an existing bilevel solve, not a
+    solve of its own.
     """
     s = ca.MX.sym("s", shape_model.n_params)
     head = ShapeModelCallback("head", shape_model, output_size=3)
     prior_value, _ = shape_model.prior(s)
     cost = ca.sumsqr(head(s) - target) + prior_weight * prior_value
     # limited-memory: the geometry callback only supplies a Jacobian, not a
-    # Hessian (same reason osimfit's own solvers.py sets this).
+    # Hessian (same reason osimfit's own solvers/solver.py sets this).
     solver = ca.nlpsol("solver", "ipopt", {"x": s, "f": cost},
                         {"print_time": False, "ipopt.print_level": 0,
                          "ipopt.hessian_approximation": "limited-memory"})
