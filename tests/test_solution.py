@@ -12,7 +12,7 @@ import pytest
 
 from osimfit.bounds import Bounds
 from osimfit.model import BodyScale
-from osimfit.solution import Solution
+from osimfit.solvers import Solution
 from osimfit.solvers import (InverseKinematicsSolver, MarkerPlacer,
                              SplinedKinematicsSolver)
 from osimfit.costs import BodyScaleRegularizationCost, CoordinateStiffnessCost
