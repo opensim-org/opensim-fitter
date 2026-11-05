@@ -17,7 +17,7 @@ from osimfit.costs import (AnthropometricRegularizationCostRep, CostInput, CostR
                            TrackingCost, AnthropometricRegularizationCost,
                            CoordinateStiffnessCost,
                            EllipsoidRadiiScaleRegularizationCost,
-                           BeamLengthScaleRegularizationCost)
+                           BeamLengthScaleRegularizationCost, SolveCache)
 from osimfit.scaling import Axis, AnthropometricMeasurement
 from osimfit.data_sources import MarkerSource, Trial
 from tests.test_double_pendulum import create_double_pendulum
@@ -896,3 +896,138 @@ def test_beam_length_scale_regularization_holds_a_factor_at_its_target(tmp_path)
     solution = solver.solve()
     np.testing.assert_allclose(
         solution.get_parameter(ELBOW, BeamLengthScale).value, [1.0], atol=1e-3)
+
+
+#################################
+# SOLVE CACHE AND COST CALLBACK #
+#################################
+
+class CubicCost(TrackingCost):
+    """
+    A toy callback-backed cost over the coordinates and body scales, used to exercise
+    `CostCallback` independently of any real cost:
+
+        cost = sum_i q_i^3 + weight * sum_j s_j^2
+
+    The callback's `context` is a scalar offset added to the value, which lets a test
+    check that the context reaches the cost.
+    """
+    required_inputs = frozenset({'body_scales', 'coordinates'})
+
+    def __init__(self, weight=2.0, num_jacobian_blocks=None):
+        super().__init__()
+        self.weight = weight
+        self.num_jacobian_blocks = num_jacobian_blocks
+
+    def create_rep(self, name, mc, trial, itime):
+        raise NotImplementedError
+
+    def calc_value(self, cache, context, values):
+        offset = 0.0 if context is None else context
+        return (float(np.sum(values['coordinates']**3))
+                + self.weight * float(np.sum(values['body_scales']**2)) + offset)
+
+    def calc_jacobian(self, cache, context, values):
+        blocks = [3.0 * values['coordinates'][None, :]**2,
+                  2.0 * self.weight * values['body_scales'][None, :]]
+        return blocks[:self.num_jacobian_blocks]
+
+
+def create_cubic_cost_cache():
+    mc = ModelCache(create_two_link_model())
+    register_body_scales(mc, ['/bodyset/b0', '/bodyset/b1'])
+    return SolveCache(mc)
+
+
+def call_cubic_cost(callback, q, s):
+    return callback(CostInput(coordinates=ca.DM(q), body_scales=ca.DM(s)))
+
+
+def test_cost_input_names_follow_the_canonical_input_order():
+    assert CubicCost().input_names() == ('coordinates', 'body_scales')
+    assert TrackingCost().input_names() == ('coordinates',)
+    assert OffsetRegularizationCost(1.0).input_names() == (
+        'marker_offsets', 'frame_offsets')
+
+
+def test_cost_callback_declares_only_the_inputs_its_cost_requires():
+    cache = create_cubic_cost_cache()
+    callback = cache.add_callback('cubic', CubicCost())
+    assert callback.n_in() == 2
+    assert callback.size1_in(0) == len(cache.mc.coordinate_q_indexes) == 2
+    assert callback.size1_in(1) == 3 * len(cache.mc.body_scale_groups) == 6
+
+
+def test_cost_callback_evaluates_its_cost_with_its_context():
+    cache = create_cubic_cost_cache()
+    q = np.array([0.5, -1.0])
+    s = np.array([1.1, 1.0, 0.9, 1.2, 1.0, 0.8])
+    expected = float(np.sum(q**3) + 2.0 * np.sum(s**2))
+
+    plain = cache.add_callback('plain', CubicCost())
+    offset = cache.add_callback('offset', CubicCost(), context=0.25)
+    assert float(call_cubic_cost(plain, q, s)) == pytest.approx(expected, rel=1e-12)
+    assert float(call_cubic_cost(offset, q, s)) == pytest.approx(expected + 0.25,
+                                                                 rel=1e-12)
+
+
+def test_cost_callback_jacobian_matches_finite_difference():
+    cache = create_cubic_cost_cache()
+    analytic = cache.add_callback('analytic', CubicCost())
+    fd = cache.add_callback('fd', CubicCost(), enable_fd=True)
+
+    q_sym = ca.MX.sym('q', 2)
+    s_sym = ca.MX.sym('s', 6)
+    x = ca.vertcat(q_sym, s_sym)
+    x0 = np.array([0.5, -1.0, 1.1, 1.0, 0.9, 1.2, 1.0, 0.8])
+    jacobians = [
+        ca.Function('J', [x], [ca.jacobian(
+            callback(CostInput(coordinates=q_sym, body_scales=s_sym)), x)])(x0)
+        for callback in (analytic, fd)]
+    np.testing.assert_allclose(np.array(jacobians[0]), np.array(jacobians[1]),
+                               rtol=1e-6, atol=1e-8)
+
+
+def test_cost_callback_rejects_a_jacobian_with_the_wrong_number_of_blocks():
+    cache = create_cubic_cost_cache()
+    callback = cache.add_callback('cubic', CubicCost(num_jacobian_blocks=1))
+    q_sym = ca.MX.sym('q', 2)
+    s_sym = ca.MX.sym('s', 6)
+    J = ca.Function('J', [q_sym, s_sym], [ca.jacobian(
+        callback(CostInput(coordinates=q_sym, body_scales=s_sym)), q_sym)])
+    with pytest.raises(Exception, match='calc_jacobian returned 1 blocks'):
+        J(np.zeros(2), np.ones(6))
+
+
+def test_solve_cache_memoizes_per_owner_and_per_key():
+    cache = create_cubic_cost_cache()
+    first, second = CubicCost(), CubicCost()
+    calls = []
+
+    def factory():
+        calls.append(None)
+        return object()
+
+    value = cache.memoize(first, 'context', factory)
+    assert cache.memoize(first, 'context', factory) is value
+    assert cache.memoize(first, 'other', factory) is not value
+    assert cache.memoize(second, 'context', factory) is not value
+    assert len(calls) == 3
+
+    # A fresh cache, i.e. a fresh solve, resolves everything again.
+    assert create_cubic_cost_cache().memoize(first, 'context', factory) is not value
+
+
+def test_solve_cache_memoizes_station_caches_by_path():
+    cache = create_cubic_cost_cache()
+    station = cache.station_cache('/S1')
+    assert cache.station_cache('/S1') is station
+    expected = StationCache.from_station(cache.mc, cache.mc.model.getComponent('/S1'))
+    np.testing.assert_array_equal(station.base_station, expected.base_station)
+    assert station.mobod_index == expected.mobod_index
+    assert station.body_scale_group_index == expected.body_scale_group_index
+
+    # A frame path resolves to the frame origin's cache.
+    frame = cache.station_cache('/bodyset/b1')
+    assert cache.station_cache('/bodyset/b1') is frame
+    np.testing.assert_array_equal(frame.base_station, np.zeros(3))

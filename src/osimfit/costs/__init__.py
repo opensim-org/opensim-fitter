@@ -1,5 +1,6 @@
 from .cost import (CostInput, CostRep, CostBase, Cost, TrackingCostBase, SymbolicCost,
-                   SymbolicCostRep, Function, CallbackCostRep)
+                   SymbolicCostRep, Function, CallbackCostRep, CostCallback)
+from .solve_cache import SolveCache
 from .tasks import TaskArrays, Tasks, MarkerTasks, FrameTasks
 from .terms import (TrackingTerm, FrameTrackingTerm, MarkerTrackingTerm, BilevelTerm,
                     MarkerBilevelTerm, FrameBilevelTerm)
@@ -18,7 +19,8 @@ from .anthropometric_regularization_cost import (AnthropometricRegularizationCos
 
 __all__ = [
     'CostInput', 'CostRep', 'CostBase', 'Cost', 'TrackingCostBase', 'SymbolicCost',
-    'SymbolicCostRep', 'Function', 'CallbackCostRep',
+    'SymbolicCostRep', 'Function', 'CallbackCostRep', 'CostCallback',
+    'SolveCache',
     'TaskArrays', 'Tasks', 'MarkerTasks', 'FrameTasks',
     'TrackingTerm', 'FrameTrackingTerm', 'MarkerTrackingTerm', 'BilevelTerm',
     'MarkerBilevelTerm', 'FrameBilevelTerm',

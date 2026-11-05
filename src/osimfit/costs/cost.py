@@ -1,10 +1,14 @@
+import numpy as np
 import casadi as ca
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import ClassVar, TYPE_CHECKING
 
 from ..data_sources import Trial
 from ..model import ModelCache
+
+if TYPE_CHECKING:
+    from .solve_cache import SolveCache
 
 
 @dataclass
@@ -134,6 +138,14 @@ class CostBase(ABC):
     """
     required_inputs: frozenset[str] = frozenset()
 
+    def input_names(self) -> tuple[str, ...]:
+        """
+        Return this cost's `required_inputs` in canonical `CostInput.INPUT_ORDER`. This
+        is also the order of the inputs a `CostCallback` for this cost declares.
+        """
+        return tuple(name for name in CostInput.INPUT_ORDER
+                     if name in self.required_inputs)
+
 
 class Cost(CostBase):
     """
@@ -154,6 +166,23 @@ class Cost(CostBase):
             The solver's `ModelCache`, from which the rep initializes any model-derived
             quantities.
         """
+
+    def expression(self, cache: 'SolveCache', input: CostInput) -> ca.MX:
+        """
+        Return this cost's contribution to the objective for `input`.
+
+        Parameters
+        ----------
+        cache: SolveCache
+            The solver's cache, from which the cost resolves any model-bound quantities
+            it needs.
+        input: CostInput
+            The optimization variables.
+        """
+        # TODO: Transitional. Removed once every cost implements `expression`.
+        rep = cache.memoize(self, 'rep', lambda: self.create_rep(cache.mc))
+        cache.keep_alive(rep)
+        return rep(input)
 
 
 class TrackingCostBase(CostBase):
@@ -221,6 +250,33 @@ class TrackingCostBase(CostBase):
         itime: int
             Index of the time sample within `trial` that the rep tracks.
         """
+
+    def expression(self, cache: 'SolveCache', input: CostInput, trial: Trial,
+                   itime: int, name: str) -> ca.MX:
+        """
+        Return this cost's contribution to the objective at one time sample of one
+        trial.
+
+        Parameters
+        ----------
+        cache: SolveCache
+            The solver's cache, from which the cost resolves any model-bound quantities
+            it needs.
+        input: CostInput
+            The optimization variables.
+        trial: Trial
+            The trial supplying the reference data.
+        itime: int
+            Index of the time sample within `trial` to evaluate.
+        name: str
+            The name of the CasADi callback evaluating this sample.
+        """
+        # TODO: Transitional. Removed once every tracking cost implements
+        # `create_task_set`.
+        rep = self.create_rep(name, cache.mc, trial, itime)
+        cache.keep_alive(rep)
+        cache.task_sets.append(rep)
+        return rep(input)
 
 
 class SymbolicCost(Cost):
@@ -396,3 +452,129 @@ class CallbackCostRep(CostRep, Function):
         if i == 0:
             return 1
         raise IndexError(f'Invalid output index {i} for {type(self).__name__}.')
+
+
+class CostCallback(ca.Callback):
+    """
+    The CasADi callback that evaluates any OpenSim-backed cost and its Jacobian. It
+    declares one input per entry of the cost's `input_names`, sized from the solver's
+    registered parameter groups, and delegates evaluation to the cost's `calc_value`
+    and `calc_jacobian`, passing back the per-callback `context` the cost supplied.
+
+    Construct via `SolveCache.add_callback`, which retains the callback for the lifetime
+    of the solve.
+
+    Parameters
+    ----------
+    name: str
+        The name of the callback function.
+    cost: CostBase
+        The cost this callback evaluates.
+    cache: SolveCache
+        The solver's cache, which supplies the model and state.
+    context: optional
+        The cost's per-callback data (e.g., a tracking cost's task set for one time
+        sample). Default is ``None``.
+    enable_fd: bool, optional
+        If ``True``, CasADi finite-differences the callback instead of using its
+        analytic Jacobian. Default is ``False``.
+    """
+
+    def __init__(self, name: str, cost: CostBase, cache: 'SolveCache', context=None,
+                 enable_fd: bool = False):
+        ca.Callback.__init__(self)
+        self.cost = cost
+        self.cache = cache
+        self.mc = cache.mc
+        self.state = cache.state
+        self.context = context
+        self.enable_fd = enable_fd
+        self.input_names = cost.input_names()
+        self.construct(name, {'enable_fd': True} if enable_fd else {})
+
+    def __call__(self, input: CostInput) -> ca.MX:
+        return ca.Function.__call__(
+            self, *(getattr(input, name) for name in self.input_names))
+
+    def get_n_in(self): return len(self.input_names)
+    def get_n_out(self): return 1
+
+    def get_input_size(self, i):
+        if not 0 <= i < len(self.input_names):
+            raise IndexError(f'Invalid input index {i} for {type(self).__name__}.')
+        sizes = {
+            'coordinates': len(self.mc.coordinate_q_indexes),
+            'body_scales': 3 * len(self.mc.body_scale_groups),
+            'marker_offsets': 3 * len(self.mc.marker_offset_groups),
+            'frame_offsets': 3 * len(self.mc.frame_offset_groups),
+            'ellipsoid_radii_scales': 3 * len(self.mc.ellipsoid_radii_scale_groups),
+            'beam_length_scales': len(self.mc.beam_length_scale_groups),
+        }
+        return sizes[self.input_names[i]]
+
+    def get_output_size(self, i):
+        if i == 0:
+            return 1
+        raise IndexError(f'Invalid output index {i} for {type(self).__name__}.')
+
+    def get_sparsity_in(self, i):
+        return ca.Sparsity.dense(self.get_input_size(i), 1)
+
+    def get_sparsity_out(self, i):
+        return ca.Sparsity.dense(self.get_output_size(i), 1)
+
+    def _unpack(self, arg) -> dict[str, np.ndarray]:
+        """
+        Map each declared input name to its value as a 1-D float array.
+        """
+        return {name: np.atleast_1d(np.squeeze(arg[i].full())).astype(float)
+                for i, name in enumerate(self.input_names)}
+
+    def eval(self, arg):
+        values = self._unpack(arg)
+        return [self.cost.calc_value(self.cache, self.context, values)]
+
+    def has_jacobian(self): return not self.enable_fd
+
+    def get_jacobian(self, name, inames, onames, opts):
+        class JacobianFunction(ca.Callback):
+            def __init__(self, callback, opts={}):
+                ca.Callback.__init__(self)
+                self.callback = callback
+                self.construct(name, opts)
+
+            def get_n_in(self):
+                return self.callback.get_n_in() + self.callback.get_n_out()
+            def get_n_out(self):
+                return self.callback.get_n_in()
+
+            def get_sparsity_in(self,i):
+                if i < self.callback.get_n_in():
+                    return ca.Sparsity.dense(self.callback.get_input_size(i), 1)
+                elif i < self.callback.get_n_in() + self.callback.get_n_out():
+                    iout = i - self.callback.get_n_in()
+                    return ca.Sparsity.dense(self.callback.get_output_size(iout), 1)
+                else:
+                    return ca.Sparsity.dense(0, 0)
+
+            def get_sparsity_out(self,i):
+                iin = i % self.callback.get_n_in()
+                iout = i // self.callback.get_n_in()
+                return ca.Sparsity.dense(self.callback.get_output_size(iout),
+                                         self.callback.get_input_size(iin))
+
+            def eval(self, arg):
+                return self.callback._jac_eval(arg)
+
+        self.jacobian_callback = JacobianFunction(self)
+        return self.jacobian_callback
+
+    def _jac_eval(self, arg):
+        values = self._unpack(arg)
+        blocks = self.cost.calc_jacobian(self.cache, self.context, values)
+        if len(blocks) != len(self.input_names):
+            raise ValueError(
+                f'{type(self.cost).__name__}.calc_jacobian returned {len(blocks)} '
+                f'blocks, but {type(self).__name__} declares {len(self.input_names)} '
+                f'inputs {self.input_names}.')
+        return blocks
