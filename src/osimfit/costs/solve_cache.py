@@ -1,5 +1,3 @@
-import opensim as osim
-
 from ..model import ModelCache, StationCache
 from .cost import CostBase, CostCallback
 
@@ -27,6 +25,9 @@ class SolveCache:
         The wrapped model cache.
     state: osim.State
         The state every cost evaluation mutates and realizes.
+    default_q: np.ndarray
+        The model's default generalized coordinates, captured at construction, before
+        any evaluation can perturb the state.
     task_sets: list
         Every tracking task set created during the solve, so a solver can validate
         coverage across trials (e.g., that every registered offset group is tracked).
@@ -35,37 +36,62 @@ class SolveCache:
     def __init__(self, mc: ModelCache):
         self.mc = mc
         self.state = mc.state
+        mc.model.realizePosition(self.state)
+        self.default_q = self.state.getQ().to_numpy().copy()
         self.task_sets = []
         self._callbacks: list[CostCallback] = []
         self._station_caches: dict[str, StationCache] = {}
+        self._frame_caches: dict[str, StationCache] = {}
         self._memoized: dict[tuple, tuple] = {}
 
     def station_cache(self, path: str) -> StationCache:
         """
-        Return the memoized `StationCache` for the station or frame at `path`.
+        Return the memoized `StationCache` for the station at `path`.
 
         Parameters
         ----------
         path: str
-            The model path to an `osim.Station` (e.g., an `osim.Marker`) or an
-            `osim.PhysicalFrame`.
+            The model path to an `osim.Station` (e.g., an `osim.Marker`).
 
         Returns
         -------
         StationCache
             The cached station, resolved on first request.
+
+        Raises
+        ------
+        ValueError
+            If the component at `path` is not an `osim.Station`.
         """
         if path not in self._station_caches:
-            component = self.mc.model.getComponent(path)
-            station = osim.Station.safeDownCast(component)
-            if station is not None:
-                self.mc.model.realizePosition(self.state)
-                cache = StationCache.from_station(self.mc, station)
-            else:
-                cache = StationCache.from_frame(
-                    self.mc, osim.PhysicalFrame.safeDownCast(component))
-            self._station_caches[path] = cache
+            self.mc.model.realizePosition(self.state)
+            self._station_caches[path] = StationCache.from_station(
+                self.mc, self.mc.model.getComponent(path))
         return self._station_caches[path]
+
+    def frame_cache(self, path: str) -> StationCache:
+        """
+        Return the memoized `StationCache` for the origin of the frame at `path`.
+
+        Parameters
+        ----------
+        path: str
+            The model path to an `osim.PhysicalFrame`.
+
+        Returns
+        -------
+        StationCache
+            The cached frame origin, resolved on first request.
+
+        Raises
+        ------
+        ValueError
+            If the component at `path` is not an `osim.PhysicalFrame`.
+        """
+        if path not in self._frame_caches:
+            self._frame_caches[path] = StationCache.from_frame(
+                self.mc, self.mc.model.getComponent(path))
+        return self._frame_caches[path]
 
     def memoize(self, owner: CostBase, key: str, factory):
         """

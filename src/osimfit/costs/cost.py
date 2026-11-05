@@ -297,6 +297,66 @@ class SymbolicCost(Cost):
         return self.evaluate(input)
 
 
+class CallbackCost(Cost):
+    """
+    A `Cost` evaluated through OpenSim via a `CostCallback`. Subclasses implement
+    `calc_value` and `calc_jacobian`, which the callback invokes, and optionally
+    `create_context` to resolve model-bound data the evaluation needs. The callback and
+    its context are built once per solve, the first time the cost is evaluated.
+    """
+
+    def expression(self, cache: 'SolveCache', input: CostInput) -> ca.MX:
+        callback = cache.memoize(self, 'callback', lambda: cache.add_callback(
+            type(self).__name__, self, self.create_context(cache)))
+        return callback(input)
+
+    def create_context(self, cache: 'SolveCache'):
+        """
+        Resolve the model-bound data this cost's evaluation needs, which the callback
+        passes back to `calc_value` and `calc_jacobian` as `context`. Default is
+        ``None``, for a cost that needs nothing beyond the cache itself.
+
+        Parameters
+        ----------
+        cache: SolveCache
+            The solver's cache.
+        """
+        return None
+
+    @abstractmethod
+    def calc_value(self, cache: 'SolveCache', context,
+                   values: dict[str, np.ndarray]) -> float:
+        """
+        Return this cost's scalar value.
+
+        Parameters
+        ----------
+        cache: SolveCache
+            The solver's cache.
+        context
+            The value returned by `create_context`.
+        values: dict[str, np.ndarray]
+            The cost's `input_names`, mapped to their numeric values.
+        """
+
+    @abstractmethod
+    def calc_jacobian(self, cache: 'SolveCache', context,
+                      values: dict[str, np.ndarray]) -> list[np.ndarray]:
+        """
+        Return this cost's Jacobian as one ``(1, n)`` block per entry of
+        `input_names`, in that order.
+
+        Parameters
+        ----------
+        cache: SolveCache
+            The solver's cache.
+        context
+            The value returned by `create_context`.
+        values: dict[str, np.ndarray]
+            The cost's `input_names`, mapped to their numeric values.
+        """
+
+
 class Function(ca.Callback, ABC):
     """
     A base class for CasADi callback functions that evaluate the function and its

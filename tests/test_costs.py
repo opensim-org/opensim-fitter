@@ -11,8 +11,8 @@ import opensim as osim
 from osimfit.model import ModelCache, BodyScale, StationCache, BeamLengthScale
 from osimfit.bounds import Bounds
 from osimfit.solvers import InverseKinematicsSolver, SplinedKinematicsSolver
-from osimfit.costs import (AnthropometricRegularizationCostRep, CostInput, CostRep,
-                           SymbolicCost, BodyScaleRegularizationCost,
+from osimfit.costs import (CallbackCost, CostInput, SymbolicCost,
+                           BodyScaleRegularizationCost,
                            BodyScaleIsotropyCost, OffsetRegularizationCost,
                            TrackingCost, AnthropometricRegularizationCost,
                            CoordinateStiffnessCost,
@@ -164,12 +164,12 @@ def test_splined_accepts_coordinate_cost(double_pendulum_model):
     assert len(solver.costs) == 1
 
 
-def test_registered_cost_reps_size_themselves_from_the_solvers_parameters():
+def test_registered_cost_callbacks_size_themselves_from_the_solvers_parameters():
     """
-    A registered cost's rep is built from the solver's own ModelCache, so its declared
-    CasADi input size follows the parameters registered on that solver: an
-    AnthropometricRegularizationCostRep declares 3 * len(mc.body_scale_groups), which is
-    only final once add_parameter() has been called for every body scale.
+    A registered cost's callback is built from the solver's own ModelCache, so its
+    declared CasADi input size follows the parameters registered on that solver: an
+    AnthropometricRegularizationCost callback declares 3 * len(mc.body_scale_groups),
+    which is only final once add_parameter() has been called for every body scale.
     """
     solver = SplinedKinematicsSolver(create_two_link_model())
     cost = AnthropometricRegularizationCost(
@@ -179,16 +179,14 @@ def test_registered_cost_reps_size_themselves_from_the_solvers_parameters():
     for body_path in ('/bodyset/b0', '/bodyset/b1'):
         solver.add_parameter(BodyScale(body_path, Bounds(0.5, 2.0), np.ones(3)))
 
-    rep = cost.create_rep(solver.mc)
+    cache = SolveCache(solver.mc)
+    callback = cache.add_callback('anthropometric', cost, cost.create_context(cache))
 
-    assert isinstance(rep, AnthropometricRegularizationCostRep)
-    assert rep.mc is solver.mc
+    assert callback.mc is solver.mc
     num_scales = 3 * len(solver.mc.body_scale_groups)
     assert num_scales == 6
-    assert rep.size1_in(0) == num_scales
-
-    # Every solve builds a fresh rep rather than reusing the previous solve's.
-    assert cost.create_rep(solver.mc) is not rep
+    assert callback.n_in() == 1
+    assert callback.size1_in(0) == num_scales
 
 
 def test_add_cost_rejects_a_tracking_cost(double_pendulum_model):
@@ -412,33 +410,34 @@ def station_ground_under_scale(mc, station_path, s):
 # The cost fits its distribution from the ANSUR II dataset, so measurement names must be
 # real ANSUR labels. The station pairs are the synthetic model's stations — anatomical
 # correctness is irrelevant here; we exercise the cost mechanics.
-def _build_rep(label='stature', axis=Axis.YAxis, sex='female', weight=1.0):
+def _build_cost(label='stature', axis=Axis.YAxis, sex='female', weight=1.0):
     """
-    Build an AnthropometricRegularizationCost and its rep, as a solver does in solve().
+    Build an AnthropometricRegularizationCost and bind it to a solve over the two-link
+    model, as a solver does in solve(). Returns the cost, its model cache, the bound
+    cost (see `bind_cost`), and the number of body-scale variables.
     """
     model = create_two_link_model()
     mc = ModelCache(model)
     register_body_scales(mc, ['/bodyset/b0', '/bodyset/b1'])
     measurements = [AnthropometricMeasurement(label, '/S0', '/S1', axis)]
     cost = AnthropometricRegularizationCost(measurements, sex=sex, weight=weight)
-    rep = cost.create_rep(mc)
     n = 3 * len(mc.body_scale_groups)
-    return rep, n
+    return cost, mc, bind_cost(cost, mc), n
 
 
-def _manual_cost(rep, s):
+def _manual_cost(cost, mc, s):
     """
     Independent numpy evaluation of the Mahalanobis penalty: measurements are recomputed
-    from explicit station ground positions under the scaling model (bypassing the rep's
-    own callback), then combined with its cost's fitted mean and precision.
+    from explicit station ground positions under the scaling model (bypassing the cost's
+    callback), then combined with the cost's fitted mean and precision.
     """
     s = np.asarray(s, dtype=float)
-    cost = rep.cost
     measurements = []
-    for (sc1, sc2, axis), m in zip(rep.station_caches, cost.measurements):
-        d = (station_ground_under_scale(sc2.mc, m.station2_path, s) -
-             station_ground_under_scale(sc1.mc, m.station1_path, s))
-        measurements.append(np.abs(d[axis]) if axis is not None else np.linalg.norm(d))
+    for m in cost.measurements:
+        d = (station_ground_under_scale(mc, m.station2_path, s) -
+             station_ground_under_scale(mc, m.station1_path, s))
+        measurements.append(np.abs(d[m.axis.value]) if m.axis is not None
+                            else np.linalg.norm(d))
     residual = np.asarray(measurements) - cost.mean
     return cost.weight * 0.5 * residual @ cost.precision @ residual
 
@@ -473,21 +472,22 @@ def test_station_position_jacobian_matches_finite_difference():
 
 def test_distribution_mean_is_in_meters():
     # A female stature is ~1.6 m; without the mm->m conversion it would be ~1600.
-    rep, n = _build_rep(label='stature')
-    assert 1.0 < rep.cost.mean[0] < 2.5
+    cost, _, _, _ = _build_cost(label='stature')
+    assert 1.0 < cost.mean[0] < 2.5
 
 
 def test_cost_matches_manual_mahalanobis():
-    rep, n = _build_rep(label='stature', weight=2.0)
+    cost, mc, penalty, n = _build_cost(label='stature', weight=2.0)
     for s in (np.ones(n), np.array([1.1, 1.0, 1.0, 0.9, 1.0, 1.0])):
-        value = float(rep(CostInput(body_scales=ca.DM(s))))
-        np.testing.assert_allclose(value, _manual_cost(rep, s), rtol=1e-9)
+        value = float(penalty(CostInput(body_scales=ca.DM(s))))
+        np.testing.assert_allclose(value, _manual_cost(cost, mc, s), rtol=1e-9)
 
 
 def test_cost_gradient_matches_finite_difference():
-    rep, n = _build_rep(label='stature')
+    _, _, penalty, n = _build_cost(label='stature')
     s = ca.MX.sym('s', n)
-    grad = ca.Function('grad', [s], [ca.gradient(rep(CostInput(body_scales=s)), s)])
+    grad = ca.Function('grad', [s],
+                       [ca.gradient(penalty(CostInput(body_scales=s)), s)])
     s0 = np.ones(n)
     g = np.array(grad(s0)).flatten()
     eps = 1e-6
@@ -496,61 +496,56 @@ def test_cost_gradient_matches_finite_difference():
         sp, sm = s0.copy(), s0.copy()
         sp[k] += eps
         sm[k] -= eps
-        g_fd[k] = (float(rep(CostInput(body_scales=ca.DM(sp)))) -
-                   float(rep(CostInput(body_scales=ca.DM(sm))))) / (2 * eps)
+        g_fd[k] = (float(penalty(CostInput(body_scales=ca.DM(sp)))) -
+                   float(penalty(CostInput(body_scales=ca.DM(sm))))) / (2 * eps)
     np.testing.assert_allclose(g, g_fd, atol=1e-6)
 
 
 def test_euclidean_measurement_builds_and_evaluates():
-    rep, n = _build_rep(label='biacromialbreadth', axis=None)
-    value = float(rep(CostInput(body_scales=ca.DM(np.ones(n)))))
+    _, _, penalty, n = _build_cost(label='biacromialbreadth', axis=None)
+    value = float(penalty(CostInput(body_scales=ca.DM(np.ones(n)))))
     assert np.isfinite(value)
 
 
-def test_cost_is_a_description_and_only_its_rep_is_callable():
+def test_cost_is_a_stateless_description():
     """
-    A Cost carries no model state and is not evaluable; the rep it creates is.
+    A Cost is not evaluable on its own, and evaluating it within a solve leaves it
+    unchanged: every model-bound quantity lives in the solve's SolveCache.
     """
     measurements = [AnthropometricMeasurement('stature', '/S0', '/S1', Axis.YAxis)]
     cost = AnthropometricRegularizationCost(measurements, sex='female')
-    assert not isinstance(cost, CostRep)
     assert not callable(cost)
 
     mc = ModelCache(create_two_link_model())
     register_body_scales(mc, ['/bodyset/b0', '/bodyset/b1'])
-    rep = cost.create_rep(mc)
-    assert isinstance(rep, CostRep)
-    assert rep.cost is cost
-    assert rep.mc is mc
+    attributes = dict(vars(cost))
+    bind_cost(cost, mc)(CostInput(body_scales=ca.DM(np.ones(6))))
+    assert vars(cost).keys() == attributes.keys()
+    assert all(vars(cost)[name] is value for name, value in attributes.items())
 
 
-def test_creating_a_rep_twice_yields_independent_reps():
+def test_each_solve_evaluates_a_cost_independently():
     """
-    A solver builds a fresh rep on every solve, so a Cost must support create_rep more
-    than once. A CasADi callback can only be constructed once per proxy, so each rep
-    has to be a distinct object rather than the cost itself.
+    A solver builds a fresh SolveCache on every solve, so the same Cost must evaluate
+    correctly against more than one cache, each bound to its own model.
     """
     measurements = [AnthropometricMeasurement('stature', '/S0', '/S1', Axis.YAxis)]
     cost = AnthropometricRegularizationCost(measurements, sex='female', weight=2.0)
 
-    caches, reps = [], []
+    caches, penalties = [], []
     for _ in range(2):
         mc = ModelCache(create_two_link_model())
         register_body_scales(mc, ['/bodyset/b0', '/bodyset/b1'])
         caches.append(mc)
-        reps.append(cost.create_rep(mc))
+        penalties.append(bind_cost(cost, mc))
 
-    assert reps[0] is not reps[1]
-    assert [rep.mc for rep in reps] == caches
-    assert all(rep.cost is cost for rep in reps)
-
-    # The models are identical copies, so both reps evaluate to the same value, and
-    # each agrees with an independent numpy evaluation through its own caches.
+    # The models are identical copies, so both evaluate to the same value, and each
+    # agrees with an independent numpy evaluation through its own model.
     s = np.array([1.1, 1.0, 1.0, 0.9, 1.0, 1.0])
-    values = [float(rep(CostInput(body_scales=ca.DM(s)))) for rep in reps]
+    values = [float(penalty(CostInput(body_scales=ca.DM(s)))) for penalty in penalties]
     np.testing.assert_allclose(values[0], values[1], rtol=1e-9)
-    for rep, value in zip(reps, values):
-        np.testing.assert_allclose(value, _manual_cost(rep, s), rtol=1e-9)
+    for mc, value in zip(caches, values):
+        np.testing.assert_allclose(value, _manual_cost(cost, mc, s), rtol=1e-9)
 
 
 def test_symbolic_cost_expression_is_its_evaluation():
@@ -909,7 +904,7 @@ def test_beam_length_scale_regularization_holds_a_factor_at_its_target(tmp_path)
 # SOLVE CACHE AND COST CALLBACK #
 #################################
 
-class CubicCost(TrackingCost):
+class CubicCost(CallbackCost):
     """
     A toy callback-backed cost over the coordinates and body scales, used to exercise
     `CostCallback` independently of any real cost:
@@ -922,12 +917,8 @@ class CubicCost(TrackingCost):
     required_inputs = frozenset({'body_scales', 'coordinates'})
 
     def __init__(self, weight=2.0, num_jacobian_blocks=None):
-        super().__init__()
         self.weight = weight
         self.num_jacobian_blocks = num_jacobian_blocks
-
-    def create_rep(self, name, mc, trial, itime):
-        raise NotImplementedError
 
     def calc_value(self, cache, context, values):
         offset = 0.0 if context is None else context
@@ -1034,7 +1025,23 @@ def test_solve_cache_memoizes_station_caches_by_path():
     assert station.mobod_index == expected.mobod_index
     assert station.body_scale_group_index == expected.body_scale_group_index
 
-    # A frame path resolves to the frame origin's cache.
-    frame = cache.station_cache('/bodyset/b1')
-    assert cache.station_cache('/bodyset/b1') is frame
+    with pytest.raises(ValueError, match='Expected an osim.Station'):
+        cache.station_cache('/bodyset/b1')
+
+
+def test_solve_cache_memoizes_frame_caches_by_path():
+    cache = create_cubic_cost_cache()
+    frame = cache.frame_cache('/bodyset/b1')
+    assert cache.frame_cache('/bodyset/b1') is frame
     np.testing.assert_array_equal(frame.base_station, np.zeros(3))
+
+    with pytest.raises(ValueError, match='Expected an osim.PhysicalFrame'):
+        cache.frame_cache('/S1')
+
+
+def test_solve_cache_captures_the_default_pose_at_construction():
+    mc = ModelCache(create_two_link_model())
+    default_q = mc.state.getQ().to_numpy().copy()
+    cache = SolveCache(mc)
+    mc.state.setQ(osim.Vector.createFromMat(default_q + 0.3))
+    np.testing.assert_array_equal(cache.default_q, default_q)

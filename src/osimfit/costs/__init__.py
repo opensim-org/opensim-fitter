@@ -1,5 +1,5 @@
 from .cost import (CostInput, CostRep, CostBase, Cost, TrackingCostBase, SymbolicCost,
-                   Function, CallbackCostRep, CostCallback)
+                   CallbackCost, Function, CallbackCostRep, CostCallback)
 from .solve_cache import SolveCache
 from .tasks import TaskArrays, Tasks, MarkerTasks, FrameTasks
 from .terms import (TrackingTerm, FrameTrackingTerm, MarkerTrackingTerm, BilevelTerm,
@@ -13,12 +13,11 @@ from .beam_length_scale_regularization_cost import BeamLengthScaleRegularization
 from .coordinate_stiffness_cost import CoordinateStiffnessCost
 from .tracking_cost import TrackingCost, TrackingCostRep
 from .bilevel_cost import BilevelCost, BilevelCostRep
-from .anthropometric_regularization_cost import (AnthropometricRegularizationCost,
-                                                 AnthropometricRegularizationCostRep)
+from .anthropometric_regularization_cost import AnthropometricRegularizationCost
 
 __all__ = [
     'CostInput', 'CostRep', 'CostBase', 'Cost', 'TrackingCostBase', 'SymbolicCost',
-    'Function', 'CallbackCostRep', 'CostCallback',
+    'CallbackCost', 'Function', 'CallbackCostRep', 'CostCallback',
     'SolveCache',
     'TaskArrays', 'Tasks', 'MarkerTasks', 'FrameTasks',
     'TrackingTerm', 'FrameTrackingTerm', 'MarkerTrackingTerm', 'BilevelTerm',
@@ -31,5 +30,5 @@ __all__ = [
     'CoordinateStiffnessCost',
     'TrackingCost', 'TrackingCostRep',
     'BilevelCost', 'BilevelCostRep',
-    'AnthropometricRegularizationCost', 'AnthropometricRegularizationCostRep',
+    'AnthropometricRegularizationCost',
 ]
