@@ -9,6 +9,7 @@ from ..model import ModelCache
 
 if TYPE_CHECKING:
     from .solve_cache import SolveCache
+    from .terms import TaskSet
 
 
 @dataclass
@@ -188,8 +189,8 @@ class Cost(CostBase):
 
 class TrackingCostBase(CostBase):
     """
-    A cost evaluated at a single time sample of a single trial, whose rep therefore
-    needs that trial and sample index at construction.
+    A cost evaluated at a single time sample of a single trial, through a
+    `CostCallback` whose context is that sample's `TaskSet`.
 
     Parameters
     ----------
@@ -231,32 +232,11 @@ class TrackingCostBase(CostBase):
                 self.orientation_weight
                 * self.frame_orientation_weights.get(frame_path, 1.0))
 
-    @abstractmethod
-    def create_rep(self, name: str, mc: ModelCache, trial: Trial,
-                   itime: int) -> CostRep:
-        """
-        Build this cost's representation of one time sample of one trial. Solvers call
-        this once for every sample the problem tracks, after all parameter groups are
-        registered, and hold the returned reps for the lifetime of the solve.
-
-        Parameters
-        ----------
-        name: str
-            The name of the rep's callback function.
-        mc: ModelCache
-            The solver's `ModelCache`, from which the rep initializes any model-derived
-            quantities.
-        trial: Trial
-            The trial supplying the reference data.
-        itime: int
-            Index of the time sample within `trial` that the rep tracks.
-        """
-
     def expression(self, cache: 'SolveCache', input: CostInput, trial: Trial,
                    itime: int, name: str) -> ca.MX:
         """
         Return this cost's contribution to the objective at one time sample of one
-        trial.
+        trial, evaluated by a `CostCallback` carrying that sample's `TaskSet`.
 
         Parameters
         ----------
@@ -272,12 +252,59 @@ class TrackingCostBase(CostBase):
         name: str
             The name of the CasADi callback evaluating this sample.
         """
-        # TODO: Transitional. Removed once every tracking cost implements
-        # `create_task_set`.
-        rep = self.create_rep(name, cache.mc, trial, itime)
-        cache.keep_alive(rep)
-        cache.task_sets.append(rep)
-        return rep(input)
+        task_set = self.create_task_set(cache, trial, itime)
+        cache.task_sets.append(task_set)
+        return cache.add_callback(name, self, task_set)(input)
+
+    @abstractmethod
+    def create_task_set(self, cache: 'SolveCache', trial: Trial,
+                        itime: int) -> 'TaskSet':
+        """
+        Register this cost's marker and frame tasks for one time sample of one trial.
+
+        Parameters
+        ----------
+        cache: SolveCache
+            The solver's cache, which supplies the memoized `StationCache` of each
+            tracked marker and frame.
+        trial: Trial
+            The trial supplying the reference data.
+        itime: int
+            Index of the time sample within `trial` to track.
+        """
+
+    @abstractmethod
+    def calc_value(self, cache: 'SolveCache', context: 'TaskSet',
+                   values: dict[str, np.ndarray]) -> float:
+        """
+        Return this cost's scalar value at the sample `context` tracks.
+
+        Parameters
+        ----------
+        cache: SolveCache
+            The solver's cache.
+        context: TaskSet
+            The tasks returned by `create_task_set`.
+        values: dict[str, np.ndarray]
+            The cost's `input_names`, mapped to their numeric values.
+        """
+
+    @abstractmethod
+    def calc_jacobian(self, cache: 'SolveCache', context: 'TaskSet',
+                      values: dict[str, np.ndarray]) -> list[np.ndarray]:
+        """
+        Return this cost's Jacobian as one ``(1, n)`` block per entry of
+        `input_names`, in that order.
+
+        Parameters
+        ----------
+        cache: SolveCache
+            The solver's cache.
+        context: TaskSet
+            The tasks returned by `create_task_set`.
+        values: dict[str, np.ndarray]
+            The cost's `input_names`, mapped to their numeric values.
+        """
 
 
 class SymbolicCost(Cost):

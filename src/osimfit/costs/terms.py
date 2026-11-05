@@ -1,6 +1,7 @@
 import numpy as np
 import opensim as osim
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from ..model import ModelCache
 from .tasks import FrameTasks, MarkerTasks
@@ -448,3 +449,21 @@ class FrameBilevelTerm(FrameTasks, BilevelTerm):
                       arrays.scaled_base_stations * doffset[arrays.scaled_rows])
 
         return [Jq, Js, Jo, Jr, Jl]
+
+
+@dataclass
+class TaskSet:
+    """
+    The marker and frame tasks a tracking cost evaluates at one time sample of one
+    trial. A tracking cost builds one per sample, and its `CostCallback` carries it as
+    the callback's context.
+
+    Attributes
+    ----------
+    marker_term: MarkerTrackingTerm | MarkerBilevelTerm
+        The marker tasks.
+    frame_term: FrameTrackingTerm | FrameBilevelTerm
+        The frame tasks.
+    """
+    marker_term: MarkerTasks
+    frame_term: FrameTasks

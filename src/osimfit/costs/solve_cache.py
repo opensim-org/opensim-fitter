@@ -61,9 +61,10 @@ class SolveCache:
         Raises
         ------
         ValueError
-            If the component at `path` is not an `osim.Station`.
+            If the model has no component at `path`, or it is not an `osim.Station`.
         """
         if path not in self._station_caches:
+            self._assert_has_component(path)
             self.mc.model.realizePosition(self.state)
             self._station_caches[path] = StationCache.from_station(
                 self.mc, self.mc.model.getComponent(path))
@@ -86,12 +87,18 @@ class SolveCache:
         Raises
         ------
         ValueError
-            If the component at `path` is not an `osim.PhysicalFrame`.
+            If the model has no component at `path`, or it is not an
+            `osim.PhysicalFrame`.
         """
         if path not in self._frame_caches:
+            self._assert_has_component(path)
             self._frame_caches[path] = StationCache.from_frame(
                 self.mc, self.mc.model.getComponent(path))
         return self._frame_caches[path]
+
+    def _assert_has_component(self, path: str) -> None:
+        if not self.mc.model.hasComponent(path):
+            raise ValueError(f'Model does not have a component at path {path}.')
 
     def memoize(self, owner: CostBase, key: str, factory):
         """

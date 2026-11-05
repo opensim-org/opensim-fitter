@@ -2,7 +2,7 @@ import numpy as np
 import casadi as ca
 import opensim as osim
 
-from ..costs import BilevelCost, CostInput, SolveCache, TrackingCost
+from ..costs import BilevelCost, CostInput, SolveCache, TaskSet, TrackingCost
 from ..model import (ModelCache, Parameter, BodyScale, MarkerOffset, FrameOffset,
                      EllipsoidRadiiScale, BeamLengthScale)
 from ..scaling import Axis, Scaler, ManualBodyScale
@@ -325,7 +325,7 @@ class SplinedKinematicsSolver(TrackingSolver):
             },
         )
 
-    def _assert_offset_groups_used(self, task_sets: list):
+    def _assert_offset_groups_used(self, task_sets: list[TaskSet]):
         """
         Verify that every registered offset group is tracked by at least one task in at
         least one of `task_sets`, ensuring that the offset is properly constrained in

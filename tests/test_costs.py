@@ -1039,6 +1039,13 @@ def test_solve_cache_memoizes_frame_caches_by_path():
         cache.frame_cache('/S1')
 
 
+def test_solve_cache_rejects_a_path_with_no_component():
+    cache = create_cubic_cost_cache()
+    for lookup in (cache.station_cache, cache.frame_cache):
+        with pytest.raises(ValueError, match='Model does not have a component'):
+            lookup('/markerset/not_a_marker')
+
+
 def test_solve_cache_captures_the_default_pose_at_construction():
     mc = ModelCache(create_two_link_model())
     default_q = mc.state.getQ().to_numpy().copy()

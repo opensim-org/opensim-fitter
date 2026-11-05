@@ -167,7 +167,8 @@ class MarkerTasks(Tasks):
         self._task_arrays: TaskArrays = None
 
     def add_marker(self, marker_path: str, position: osim.Vec3, weight: float = 1.0,
-                   offset_group_index: int | None = None):
+                   offset_group_index: int | None = None,
+                   station_cache: StationCache | None = None):
         """
         Register a marker to track.
 
@@ -182,15 +183,21 @@ class MarkerTasks(Tasks):
         offset_group_index: int | None, optional
             The index of the offset group whose XYZ offset applies to this marker, or
             ``None`` if this marker's placement is not offset. Default: ``None``.
+        station_cache: StationCache | None, optional
+            A previously resolved `StationCache` for this marker (e.g., from
+            `SolveCache.station_cache`), or ``None`` to resolve one here. Default:
+            ``None``.
         """
         if not self.mc.model.hasComponent(marker_path):
             raise ValueError(f'Model does not have a component at path {marker_path}.')
         if weight < 0:
             raise ValueError(f'Expected weight to be non-negative, but got {weight}.')
 
-        self.mc.model.realizePosition(self.mc.state)
         marker = osim.Marker.safeDownCast(self.mc.model.getComponent(marker_path))
-        cache = StationCache.from_station(self.mc, marker)
+        if station_cache is None:
+            self.mc.model.realizePosition(self.mc.state)
+            station_cache = StationCache.from_station(self.mc, marker)
+        cache = station_cache
         self.station_caches.append(cache)
         self.markers.append(marker)
         self.mobod_indexes.push_back(cache.base_frame.getMobilizedBodyIndex())
@@ -226,7 +233,8 @@ class FrameTasks(Tasks):
     def add_frame(self, frame_path: str, position: osim.Vec3,
                   orientation: osim.Quaternion, position_weight: float = 1.0,
                   orientation_weight: float = 1.0,
-                  offset_group_index: int | None = None):
+                  offset_group_index: int | None = None,
+                  station_cache: StationCache | None = None):
         """
         Register a frame to track.
 
@@ -246,6 +254,10 @@ class FrameTasks(Tasks):
         offset_group_index: int | None, optional
             The index of the offset group whose XYZ offset applies to this frame, or
             ``None`` if this frame's placement is not offset. Default: ``None``.
+        station_cache: StationCache | None, optional
+            A previously resolved `StationCache` for this frame's origin (e.g., from
+            `SolveCache.frame_cache`), or ``None`` to resolve one here. Default:
+            ``None``.
         """
         if not self.mc.model.hasComponent(frame_path):
             raise ValueError(f'Model does not have a component at path {frame_path}.')
@@ -257,7 +269,8 @@ class FrameTasks(Tasks):
                              f'{orientation_weight}.')
 
         frame = osim.PhysicalFrame.safeDownCast(self.mc.model.getComponent(frame_path))
-        cache = StationCache.from_frame(self.mc, frame)
+        cache = (StationCache.from_frame(self.mc, frame) if station_cache is None
+                 else station_cache)
         self.station_caches.append(cache)
         self.frames.append(frame)
         self.mobod_indexes.push_back(cache.base_frame.getMobilizedBodyIndex())
