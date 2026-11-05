@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from typing import ClassVar, TYPE_CHECKING
 
 from ..data_sources import Trial
-from ..model import ModelCache
 
 if TYPE_CHECKING:
     from .solve_cache import SolveCache
@@ -111,24 +110,12 @@ class CostInput:
         return ca.reshape(value, 3, num_entries // 3).T
 
 
-class CostRep(ABC):
-    """
-    A cost's per-solve representation that a solver evaluates.
-
-    A `CostRep` is constructed via a cost's `create_rep` from the solver's `ModelCache`
-    and lives only for the duration of one solve.
-    """
-
-    @abstractmethod
-    def __call__(self, input: CostInput) -> ca.MX:
-        pass
-
-
 class CostBase(ABC):
     """
     A model-independent description of a cost term: the weights, targets, and reference
     data the user (or a solver) supplies, with no OpenSim state of its own. A cost is
-    inert and reusable. All model-bound work happens in the `CostRep` it creates.
+    inert and reusable. All model-bound work is resolved through the `SolveCache` a
+    solver passes to the cost when evaluating it.
 
     Attributes
     ----------
@@ -150,28 +137,16 @@ class CostBase(ABC):
 
 class Cost(CostBase):
     """
-    A cost whose rep is built from the `ModelCache` alone, and so the kind of cost a
-    user can register on a solver via `Solver.add_cost`.
+    A cost evaluated from the model and the optimization variables alone, and so the
+    kind of cost a user can register on a solver via `Solver.add_cost`.
     """
 
-    def create_rep(self, mc: ModelCache) -> CostRep:
-        """
-        Build one of this cost's representations against `mc`. Solvers call this once
-        for every rep the problem needs, after all parameter groups are registered, and
-        hold the returned reps for the lifetime of the solve.
-
-        Parameters
-        ----------
-        mc: ModelCache
-            The solver's `ModelCache`, from which the rep initializes any model-derived
-            quantities.
-        """
-        # TODO: Transitional. Removed once every cost implements `expression`.
-        raise NotImplementedError
-
+    @abstractmethod
     def expression(self, cache: 'SolveCache', input: CostInput) -> ca.MX:
         """
-        Return this cost's contribution to the objective for `input`.
+        Return this cost's contribution to the objective for `input`. Solvers call this
+        after all parameter groups are registered, possibly once per time sample, so
+        any model-bound data the cost resolves should be memoized on `cache`.
 
         Parameters
         ----------
@@ -181,10 +156,6 @@ class Cost(CostBase):
         input: CostInput
             The optimization variables.
         """
-        # TODO: Transitional. Removed once every cost implements `expression`.
-        rep = cache.memoize(self, 'rep', lambda: self.create_rep(cache.mc))
-        cache.keep_alive(rep)
-        return rep(input)
 
 
 class TrackingCostBase(CostBase):
@@ -382,146 +353,6 @@ class CallbackCost(Cost):
         values: dict[str, np.ndarray]
             The cost's `input_names`, mapped to their numeric values.
         """
-
-
-class Function(ca.Callback, ABC):
-    """
-    A base class for CasADi callback functions that evaluate the function and its
-    Jacobian using OpenSim. To implement a new callback, extend this class and implement
-    the abstract methods to define the number of inputs and outputs and provide the
-    function evaluation and its Jacobian.
-
-    Parameters
-    ----------
-    name: str
-        The name of the callback function.
-    mc: ModelCache
-        The `ModelCache` wrapping the OpenSim model used for evaluating the function
-        and its Jacobian and caching model information.
-    enable_fd: bool, optional
-        If ``True``, CasADi finite-differences the callback instead of using its analytic
-        Jacobian (`get_jacobian`). Default is ``False``.
-    """
-    def __init__(self, name: str, mc: ModelCache, enable_fd: bool = False):
-        ca.Callback.__init__(self)
-        self.mc = mc
-        self.state = self.mc.state
-        self.enable_fd = enable_fd
-        self.construct(name, {'enable_fd': True} if enable_fd else {})
-
-    def get_n_in(self): return self._get_num_inputs()
-    def get_n_out(self): return self._get_num_outputs()
-
-    def get_input_size(self, i):
-        return self._get_input_size(i)
-
-    def get_output_size(self, i):
-        return self._get_output_size(i)
-
-    def get_sparsity_in(self, i):
-        return ca.Sparsity.dense(self.get_input_size(i), 1)
-
-    def get_sparsity_out(self, i):
-        return ca.Sparsity.dense(self.get_output_size(i), 1)
-
-    def eval(self, arg):
-        return self._eval(arg)
-
-    def has_jacobian(self): return not self.enable_fd
-
-    def get_jacobian(self, name, inames, onames, opts):
-        class JacobianFunction(ca.Callback):
-            def __init__(self, callback, opts={}):
-                ca.Callback.__init__(self)
-                self.callback = callback
-                self.construct(name, opts)
-
-            def get_n_in(self):
-                return self.callback.get_n_in() + self.callback.get_n_out()
-            def get_n_out(self):
-                return self.callback.get_n_in()
-
-            def get_sparsity_in(self,i):
-                if i < self.callback.get_n_in():
-                    return ca.Sparsity.dense(self.callback.get_input_size(i), 1)
-                elif i < self.callback.get_n_in() + self.callback.get_n_out():
-                    iout = i - self.callback.get_n_in()
-                    return ca.Sparsity.dense(self.callback.get_output_size(iout), 1)
-                else:
-                    return ca.Sparsity.dense(0, 0)
-
-            def get_sparsity_out(self,i):
-                iin = i % self.callback.get_n_in()
-                iout = i // self.callback.get_n_in()
-                return ca.Sparsity.dense(self.callback.get_output_size(iout),
-                                         self.callback.get_input_size(iin))
-
-            def eval(self, arg):
-                return self.callback._jac_eval(arg)
-
-        self.jacobian_callback = JacobianFunction(self)
-        return self.jacobian_callback
-
-    @abstractmethod
-    def _get_num_inputs(self):
-        pass
-
-    @abstractmethod
-    def _get_num_outputs(self):
-        pass
-
-    @abstractmethod
-    def _get_input_size(self, i):
-        pass
-
-    @abstractmethod
-    def _get_output_size(self, i):
-        pass
-
-    @abstractmethod
-    def _eval(self, arg):
-        pass
-
-    @abstractmethod
-    def _jac_eval(self, arg):
-        pass
-
-
-class CallbackCostRep(CostRep, Function):
-    """
-    A `CostRep` backed by a CasADi callback function that evaluates the cost and its
-    Jacobian through OpenSim. Constructed with a fully-populated `ModelCache`, so the
-    input sizes it declares to CasADi match the solver's registered parameter groups.
-    """
-
-    def __call__(self, input: CostInput) -> ca.MX:
-        return ca.Function.__call__(
-            self, *(getattr(input, name) for name in CostInput.INPUT_ORDER))
-
-    def _get_num_inputs(self):
-        return len(CostInput.INPUT_ORDER)
-
-    def _get_num_outputs(self):
-        return 1
-
-    def _get_input_size(self, i):
-        sizes = {
-            'coordinates': len(self.mc.coordinate_q_indexes),
-            'body_scales': 3 * len(self.mc.body_scale_groups),
-            'marker_offsets': 3 * len(self.mc.marker_offset_groups),
-            'frame_offsets': 3 * len(self.mc.frame_offset_groups),
-            'ellipsoid_radii_scales': 3 * len(self.mc.ellipsoid_radii_scale_groups),
-            'beam_length_scales': len(self.mc.beam_length_scale_groups),
-        }
-        order = CostInput.INPUT_ORDER
-        if not 0 <= i < len(order):
-            raise IndexError(f'Invalid input index {i} for {type(self).__name__}.')
-        return sizes[order[i]]
-
-    def _get_output_size(self, i):
-        if i == 0:
-            return 1
-        raise IndexError(f'Invalid output index {i} for {type(self).__name__}.')
 
 
 class CostCallback(ca.Callback):

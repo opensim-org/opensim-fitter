@@ -191,9 +191,9 @@ def test_registered_cost_callbacks_size_themselves_from_the_solvers_parameters()
 
 def test_add_cost_rejects_a_tracking_cost(double_pendulum_model):
     """
-    The registered-cost loop builds reps from the ModelCache alone, so a
-    TrackingCostBase (which a solver is meant to construct itself, per trial and time
-    sample) is not a Cost and cannot be registered.
+    A registered cost is evaluated from the model and the optimization variables
+    alone, so a TrackingCostBase (which a solver is meant to construct itself, per
+    trial and time sample) is not a Cost and cannot be registered.
     """
     solver = InverseKinematicsSolver(double_pendulum_model)
     with pytest.raises(TypeError, match='expects a Cost'):

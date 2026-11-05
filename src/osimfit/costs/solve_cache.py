@@ -143,10 +143,3 @@ class SolveCache:
         callback = CostCallback(name, cost, self, context, enable_fd=enable_fd)
         self._callbacks.append(callback)
         return callback
-
-    def keep_alive(self, obj) -> None:
-        """
-        Retain `obj` for the lifetime of this cache. Used while costs that still build
-        their own CasADi callbacks are migrated to `CostCallback`.
-        """
-        self._callbacks.append(obj)
