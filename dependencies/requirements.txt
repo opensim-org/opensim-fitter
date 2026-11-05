@@ -7,3 +7,5 @@ matplotlib
 pandas
 scipy
 packaging
+pytest
+pip
