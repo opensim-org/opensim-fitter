@@ -3,7 +3,9 @@ Tests for `Cost`s: the cost classes a user registers on a solver, and the
 solver-side validation of what each solver accepts.
 """
 
+import gc
 import pytest
+import weakref
 import numpy as np
 import casadi as ca
 import opensim as osim
@@ -11,16 +13,19 @@ import opensim as osim
 from osimfit.model import ModelCache, BodyScale, StationCache, BeamLengthScale
 from osimfit.bounds import Bounds
 from osimfit.solvers import InverseKinematicsSolver, SplinedKinematicsSolver
-from osimfit.costs import (AnthropometricRegularizationCostRep, CostInput, CostRep,
-                           SymbolicCost, SymbolicCostRep, BodyScaleRegularizationCost,
+from osimfit.solvers.solution import ObjectiveTerms
+from osimfit.costs import (CallbackCost, CostInput, SymbolicCost,
+                           BodyScaleRegularizationCost,
                            BodyScaleIsotropyCost, OffsetRegularizationCost,
                            TrackingCost, AnthropometricRegularizationCost,
                            CoordinateStiffnessCost,
                            EllipsoidRadiiScaleRegularizationCost,
-                           BeamLengthScaleRegularizationCost)
+                           BeamLengthScaleRegularizationCost, CostCache,
+                           CostFunction, CostWorkspace, TrackingTaskSet)
 from osimfit.scaling import Axis, AnthropometricMeasurement
 from osimfit.data_sources import MarkerSource, Trial
 from tests.test_double_pendulum import create_double_pendulum
+from tests.test_solution import create_pendulum_trial
 
 # Baseline mobilizer geometry of the beam test model.
 ELBOW = '/jointset/elbow_r'
@@ -164,12 +169,12 @@ def test_splined_accepts_coordinate_cost(double_pendulum_model):
     assert len(solver.costs) == 1
 
 
-def test_registered_cost_reps_size_themselves_from_the_solvers_parameters():
+def test_registered_cost_callbacks_size_themselves_from_the_solvers_parameters():
     """
-    A registered cost's rep is built from the solver's own ModelCache, so its declared
-    CasADi input size follows the parameters registered on that solver: an
-    AnthropometricRegularizationCostRep declares 3 * len(mc.body_scale_groups), which is
-    only final once add_parameter() has been called for every body scale.
+    A registered cost's callback is built from the solver's own ModelCache, so its
+    declared CasADi input size follows the parameters registered on that solver: an
+    AnthropometricRegularizationCost callback declares 3 * len(mc.body_scale_groups),
+    which is only final once add_parameter() has been called for every body scale.
     """
     solver = SplinedKinematicsSolver(create_two_link_model())
     cost = AnthropometricRegularizationCost(
@@ -179,23 +184,22 @@ def test_registered_cost_reps_size_themselves_from_the_solvers_parameters():
     for body_path in ('/bodyset/b0', '/bodyset/b1'):
         solver.add_parameter(BodyScale(body_path, Bounds(0.5, 2.0), np.ones(3)))
 
-    rep = cost.create_rep(solver.mc)
+    cache = CostCache(solver.mc)
+    workspace = CostWorkspace(cache)
+    callback = workspace.cost_callback(cost)
 
-    assert isinstance(rep, AnthropometricRegularizationCostRep)
-    assert rep.mc is solver.mc
+    assert callback.mc is solver.mc
     num_scales = 3 * len(solver.mc.body_scale_groups)
     assert num_scales == 6
-    assert rep.size1_in(0) == num_scales
-
-    # Every solve builds a fresh rep rather than reusing the previous solve's.
-    assert cost.create_rep(solver.mc) is not rep
+    assert callback.n_in() == 1
+    assert callback.size1_in(0) == num_scales
 
 
 def test_add_cost_rejects_a_tracking_cost(double_pendulum_model):
     """
-    The registered-cost loop builds reps from the ModelCache alone, so a
-    TrackingCostBase (which a solver is meant to construct itself, per trial and time
-    sample) is not a Cost and cannot be registered.
+    A registered cost is evaluated from the model and the optimization variables
+    alone, so a TrackingCostBase (which a solver is meant to construct itself, per
+    trial and time sample) is not a Cost and cannot be registered.
     """
     solver = InverseKinematicsSolver(double_pendulum_model)
     with pytest.raises(TypeError, match='expects a Cost'):
@@ -368,6 +372,15 @@ def create_two_link_model():
     return model
 
 
+def bind_cost(cost, mc):
+    """
+    Return a function evaluating `cost`'s expression through one `CostWorkspace` over
+    `mc`, i.e. the cost as a solver sees it during a single solve.
+    """
+    workspace = CostWorkspace(CostCache(mc))
+    return lambda input: cost.expression(workspace, input)
+
+
 def register_body_scales(mc, body_paths):
     """Register one BodyScale group per body on the ModelCache, in order."""
     for path in body_paths:
@@ -403,33 +416,34 @@ def station_ground_under_scale(mc, station_path, s):
 # The cost fits its distribution from the ANSUR II dataset, so measurement names must be
 # real ANSUR labels. The station pairs are the synthetic model's stations — anatomical
 # correctness is irrelevant here; we exercise the cost mechanics.
-def _build_rep(label='stature', axis=Axis.YAxis, sex='female', weight=1.0):
+def _build_cost(label='stature', axis=Axis.YAxis, sex='female', weight=1.0):
     """
-    Build an AnthropometricRegularizationCost and its rep, as a solver does in solve().
+    Build an AnthropometricRegularizationCost and bind it to a solve over the two-link
+    model, as a solver does in solve(). Returns the cost, its model cache, the bound
+    cost (see `bind_cost`), and the number of body-scale variables.
     """
     model = create_two_link_model()
     mc = ModelCache(model)
     register_body_scales(mc, ['/bodyset/b0', '/bodyset/b1'])
     measurements = [AnthropometricMeasurement(label, '/S0', '/S1', axis)]
     cost = AnthropometricRegularizationCost(measurements, sex=sex, weight=weight)
-    rep = cost.create_rep(mc)
     n = 3 * len(mc.body_scale_groups)
-    return rep, n
+    return cost, mc, bind_cost(cost, mc), n
 
 
-def _manual_cost(rep, s):
+def _manual_cost(cost, mc, s):
     """
     Independent numpy evaluation of the Mahalanobis penalty: measurements are recomputed
-    from explicit station ground positions under the scaling model (bypassing the rep's
-    own callback), then combined with its cost's fitted mean and precision.
+    from explicit station ground positions under the scaling model (bypassing the cost's
+    callback), then combined with the cost's fitted mean and precision.
     """
     s = np.asarray(s, dtype=float)
-    cost = rep.cost
     measurements = []
-    for (sc1, sc2, axis), m in zip(rep.station_caches, cost.measurements):
-        d = (station_ground_under_scale(sc2.mc, m.station2_path, s) -
-             station_ground_under_scale(sc1.mc, m.station1_path, s))
-        measurements.append(np.abs(d[axis]) if axis is not None else np.linalg.norm(d))
+    for m in cost.measurements:
+        d = (station_ground_under_scale(mc, m.station2_path, s) -
+             station_ground_under_scale(mc, m.station1_path, s))
+        measurements.append(np.abs(d[m.axis.value]) if m.axis is not None
+                            else np.linalg.norm(d))
     residual = np.asarray(measurements) - cost.mean
     return cost.weight * 0.5 * residual @ cost.precision @ residual
 
@@ -464,21 +478,22 @@ def test_station_position_jacobian_matches_finite_difference():
 
 def test_distribution_mean_is_in_meters():
     # A female stature is ~1.6 m; without the mm->m conversion it would be ~1600.
-    rep, n = _build_rep(label='stature')
-    assert 1.0 < rep.cost.mean[0] < 2.5
+    cost, _, _, _ = _build_cost(label='stature')
+    assert 1.0 < cost.mean[0] < 2.5
 
 
 def test_cost_matches_manual_mahalanobis():
-    rep, n = _build_rep(label='stature', weight=2.0)
+    cost, mc, penalty, n = _build_cost(label='stature', weight=2.0)
     for s in (np.ones(n), np.array([1.1, 1.0, 1.0, 0.9, 1.0, 1.0])):
-        value = float(rep(CostInput(body_scales=ca.DM(s))))
-        np.testing.assert_allclose(value, _manual_cost(rep, s), rtol=1e-9)
+        value = float(penalty(CostInput(body_scales=ca.DM(s))))
+        np.testing.assert_allclose(value, _manual_cost(cost, mc, s), rtol=1e-9)
 
 
 def test_cost_gradient_matches_finite_difference():
-    rep, n = _build_rep(label='stature')
+    _, _, penalty, n = _build_cost(label='stature')
     s = ca.MX.sym('s', n)
-    grad = ca.Function('grad', [s], [ca.gradient(rep(CostInput(body_scales=s)), s)])
+    grad = ca.Function('grad', [s],
+                       [ca.gradient(penalty(CostInput(body_scales=s)), s)])
     s0 = np.ones(n)
     g = np.array(grad(s0)).flatten()
     eps = 1e-6
@@ -487,73 +502,64 @@ def test_cost_gradient_matches_finite_difference():
         sp, sm = s0.copy(), s0.copy()
         sp[k] += eps
         sm[k] -= eps
-        g_fd[k] = (float(rep(CostInput(body_scales=ca.DM(sp)))) -
-                   float(rep(CostInput(body_scales=ca.DM(sm))))) / (2 * eps)
+        g_fd[k] = (float(penalty(CostInput(body_scales=ca.DM(sp)))) -
+                   float(penalty(CostInput(body_scales=ca.DM(sm))))) / (2 * eps)
     np.testing.assert_allclose(g, g_fd, atol=1e-6)
 
 
 def test_euclidean_measurement_builds_and_evaluates():
-    rep, n = _build_rep(label='biacromialbreadth', axis=None)
-    value = float(rep(CostInput(body_scales=ca.DM(np.ones(n)))))
+    _, _, penalty, n = _build_cost(label='biacromialbreadth', axis=None)
+    value = float(penalty(CostInput(body_scales=ca.DM(np.ones(n)))))
     assert np.isfinite(value)
 
 
-def test_cost_is_a_description_and_only_its_rep_is_callable():
+def test_cost_is_a_stateless_description():
     """
-    A Cost carries no model state and is not evaluable; the rep it creates is.
+    A Cost is not evaluable on its own, and evaluating it within a solve leaves it
+    unchanged: every model-bound quantity lives in the solve's CostCache.
     """
     measurements = [AnthropometricMeasurement('stature', '/S0', '/S1', Axis.YAxis)]
     cost = AnthropometricRegularizationCost(measurements, sex='female')
-    assert not isinstance(cost, CostRep)
     assert not callable(cost)
 
     mc = ModelCache(create_two_link_model())
     register_body_scales(mc, ['/bodyset/b0', '/bodyset/b1'])
-    rep = cost.create_rep(mc)
-    assert isinstance(rep, CostRep)
-    assert rep.cost is cost
-    assert rep.mc is mc
+    attributes = dict(vars(cost))
+    bind_cost(cost, mc)(CostInput(body_scales=ca.DM(np.ones(6))))
+    assert vars(cost).keys() == attributes.keys()
+    assert all(vars(cost)[name] is value for name, value in attributes.items())
 
 
-def test_creating_a_rep_twice_yields_independent_reps():
+def test_each_solve_evaluates_a_cost_independently():
     """
-    A solver builds a fresh rep on every solve, so a Cost must support create_rep more
-    than once. A CasADi callback can only be constructed once per proxy, so each rep
-    has to be a distinct object rather than the cost itself.
+    A solver builds a fresh CostCache on every solve, so the same Cost must evaluate
+    correctly against more than one cache, each bound to its own model.
     """
     measurements = [AnthropometricMeasurement('stature', '/S0', '/S1', Axis.YAxis)]
     cost = AnthropometricRegularizationCost(measurements, sex='female', weight=2.0)
 
-    caches, reps = [], []
+    caches, penalties = [], []
     for _ in range(2):
         mc = ModelCache(create_two_link_model())
         register_body_scales(mc, ['/bodyset/b0', '/bodyset/b1'])
         caches.append(mc)
-        reps.append(cost.create_rep(mc))
+        penalties.append(bind_cost(cost, mc))
 
-    assert reps[0] is not reps[1]
-    assert [rep.mc for rep in reps] == caches
-    assert all(rep.cost is cost for rep in reps)
-
-    # The models are identical copies, so both reps evaluate to the same value, and
-    # each agrees with an independent numpy evaluation through its own caches.
+    # The models are identical copies, so both evaluate to the same value, and each
+    # agrees with an independent numpy evaluation through its own model.
     s = np.array([1.1, 1.0, 1.0, 0.9, 1.0, 1.0])
-    values = [float(rep(CostInput(body_scales=ca.DM(s)))) for rep in reps]
+    values = [float(penalty(CostInput(body_scales=ca.DM(s)))) for penalty in penalties]
     np.testing.assert_allclose(values[0], values[1], rtol=1e-9)
-    for rep, value in zip(reps, values):
-        np.testing.assert_allclose(value, _manual_cost(rep, s), rtol=1e-9)
+    for mc, value in zip(caches, values):
+        np.testing.assert_allclose(value, _manual_cost(cost, mc, s), rtol=1e-9)
 
 
-def test_symbolic_cost_rep_delegates_to_its_cost():
+def test_symbolic_cost_expression_is_its_evaluation():
     cost = BodyScaleRegularizationCost(2.0, target=1.1)
-    mc = ModelCache(create_two_link_model())
-    rep = cost.create_rep(mc)
-
-    assert isinstance(rep, SymbolicCostRep)
-    assert rep.cost is cost
+    workspace = CostWorkspace(CostCache(ModelCache(create_two_link_model())))
 
     s = ca.DM([1.2, 0.9, 1.0])
-    assert float(rep(CostInput(body_scales=s))) == pytest.approx(
+    assert float(cost.expression(workspace, CostInput(body_scales=s))) == pytest.approx(
         float(cost.evaluate(CostInput(body_scales=s))))
 
 
@@ -638,9 +644,10 @@ def test_stiffness_rejects_empty_stiffnesses():
 
 
 def test_stiffness_rejects_unknown_coordinate(pendulum):
-    cost = CoordinateStiffnessCost({'/jointset/j0/nope': 1.0})
+    penalty = bind_cost(CoordinateStiffnessCost({'/jointset/j0/nope': 1.0}),
+                        ModelCache(pendulum))
     with pytest.raises(ValueError, match='not a coordinate in the model'):
-        cost.create_rep(ModelCache(pendulum))
+        penalty(CostInput(coordinates=ca.DM.zeros(2)))
 
 
 def test_stiffness_requires_coordinates():
@@ -650,18 +657,19 @@ def test_stiffness_requires_coordinates():
 
 def test_stiffness_penalizes_only_the_named_coordinates(pendulum):
     mc = ModelCache(pendulum)
-    rep = CoordinateStiffnessCost({Q1: 2.0}).create_rep(mc)
+    penalty = bind_cost(CoordinateStiffnessCost({Q1: 2.0}), mc)
     order = list(mc.coordinate_q_map)
 
     # Moving the unpenalized coordinate leaves the cost at zero; moving the penalized
     # one gives stiffness * deviation^2.
     q = np.zeros(len(order))
     q[order.index(Q0)] = 0.5
-    assert float(rep(CostInput(coordinates=ca.DM(q)))) == pytest.approx(0.0)
+    assert float(penalty(CostInput(coordinates=ca.DM(q)))) == pytest.approx(0.0)
 
     q = np.zeros(len(order))
     q[order.index(Q1)] = 0.5
-    assert float(rep(CostInput(coordinates=ca.DM(q)))) == pytest.approx(2.0 * 0.25)
+    assert float(penalty(CostInput(coordinates=ca.DM(q)))) == pytest.approx(
+        2.0 * 0.25)
 
 
 def test_stiffness_weight_scales_the_penalty(pendulum):
@@ -670,8 +678,8 @@ def test_stiffness_weight_scales_the_penalty(pendulum):
     q = np.zeros(len(order))
     q[order.index(Q0)] = 0.3
 
-    plain = CoordinateStiffnessCost({Q0: 1.0}).create_rep(mc)
-    scaled = CoordinateStiffnessCost({Q0: 1.0}, weight=5.0).create_rep(mc)
+    plain = bind_cost(CoordinateStiffnessCost({Q0: 1.0}), mc)
+    scaled = bind_cost(CoordinateStiffnessCost({Q0: 1.0}, weight=5.0), mc)
     assert float(scaled(CostInput(coordinates=ca.DM(q)))) == pytest.approx(
         5.0 * float(plain(CostInput(coordinates=ca.DM(q)))))
 
@@ -686,25 +694,25 @@ def test_stiffness_target_defaults_to_the_model_default_value(pendulum):
     pendulum.finalizeConnections()
 
     mc = ModelCache(pendulum)
-    rep = CoordinateStiffnessCost({Q0: 3.0}).create_rep(mc)
+    penalty = bind_cost(CoordinateStiffnessCost({Q0: 3.0}), mc)
     order = list(mc.coordinate_q_map)
 
     q = np.zeros(len(order))
     q[order.index(Q0)] = 0.4
-    assert float(rep(CostInput(coordinates=ca.DM(q)))) == pytest.approx(0.0)
+    assert float(penalty(CostInput(coordinates=ca.DM(q)))) == pytest.approx(0.0)
 
     q[order.index(Q0)] = 0.5
-    assert float(rep(CostInput(coordinates=ca.DM(q)))) == pytest.approx(
+    assert float(penalty(CostInput(coordinates=ca.DM(q)))) == pytest.approx(
         3.0 * (0.5 - 0.4)**2)
 
 
 def test_stiffness_explicit_target_overrides_the_model_default(pendulum):
     mc = ModelCache(pendulum)
-    rep = CoordinateStiffnessCost({Q0: 1.0}, targets={Q0: 0.25}).create_rep(mc)
+    penalty = bind_cost(CoordinateStiffnessCost({Q0: 1.0}, targets={Q0: 0.25}), mc)
     order = list(mc.coordinate_q_map)
     q = np.zeros(len(order))
     q[order.index(Q0)] = 0.25
-    assert float(rep(CostInput(coordinates=ca.DM(q)))) == pytest.approx(0.0)
+    assert float(penalty(CostInput(coordinates=ca.DM(q)))) == pytest.approx(0.0)
 
 
 def test_stiffness_gradient_matches_the_analytic_spring(pendulum):
@@ -714,11 +722,11 @@ def test_stiffness_gradient_matches_the_analytic_spring(pendulum):
     """
     mc = ModelCache(pendulum)
     order = list(mc.coordinate_q_map)
-    rep = CoordinateStiffnessCost({Q0: 2.0, Q1: 0.5}, weight=3.0).create_rep(mc)
+    penalty = bind_cost(CoordinateStiffnessCost({Q0: 2.0, Q1: 0.5}, weight=3.0), mc)
 
     x = ca.SX.sym('x', len(order))
     gradient = ca.Function('g', [x],
-                           [ca.jacobian(rep(CostInput(coordinates=x)), x)])
+                           [ca.jacobian(penalty(CostInput(coordinates=x)), x)])
     q = np.zeros(len(order))
     q[order.index(Q0)] = 0.3
     q[order.index(Q1)] = -0.2
@@ -748,11 +756,11 @@ def test_stiffness_pulls_an_underdetermined_coordinate_toward_its_target(pendulu
     """
     mc = ModelCache(pendulum)
     order = list(mc.coordinate_q_map)
-    rep = CoordinateStiffnessCost({Q0: 1.0, Q1: 1.0},
-                                  targets={Q0: 0.2, Q1: -0.3}).create_rep(mc)
+    penalty = bind_cost(CoordinateStiffnessCost({Q0: 1.0, Q1: 1.0},
+                                                targets={Q0: 0.2, Q1: -0.3}), mc)
 
     x = ca.SX.sym('x', len(order))
-    nlp = {'x': x, 'f': rep(CostInput(coordinates=x))}
+    nlp = {'x': x, 'f': penalty(CostInput(coordinates=x))}
     solver = ca.nlpsol('solver', 'ipopt', nlp,
                        {'ipopt': {'print_level': 0}, 'print_time': False})
     optimal = np.squeeze(solver(x0=np.zeros(len(order)))['x'].full())
@@ -896,3 +904,325 @@ def test_beam_length_scale_regularization_holds_a_factor_at_its_target(tmp_path)
     solution = solver.solve()
     np.testing.assert_allclose(
         solution.get_parameter(ELBOW, BeamLengthScale).value, [1.0], atol=1e-3)
+
+
+################################
+# COST CACHE AND COST FUNCTION #
+################################
+
+class CubicCost(CallbackCost):
+    """
+    A toy callback-backed cost over the coordinates and body scales, used to exercise
+    `CostFunction` independently of any real cost:
+
+        cost = sum_i q_i^3 + weight * sum_j s_j^2
+
+    The callback's `context` is a scalar offset added to the value, which lets a test
+    check that the context reaches the cost.
+    """
+    required_inputs = frozenset({'body_scales', 'coordinates'})
+
+    def __init__(self, weight=2.0, num_jacobian_blocks=None):
+        self.weight = weight
+        self.num_jacobian_blocks = num_jacobian_blocks
+
+    def calc_value(self, cache, context, values):
+        offset = 0.0 if context is None else context
+        return (float(np.sum(values['coordinates']**3))
+                + self.weight * float(np.sum(values['body_scales']**2)) + offset)
+
+    def calc_jacobian(self, cache, context, values):
+        blocks = [3.0 * values['coordinates'][None, :]**2,
+                  2.0 * self.weight * values['body_scales'][None, :]]
+        return blocks[:self.num_jacobian_blocks]
+
+
+def create_cubic_cost_cache():
+    mc = ModelCache(create_two_link_model())
+    register_body_scales(mc, ['/bodyset/b0', '/bodyset/b1'])
+    return CostCache(mc)
+
+
+def call_cubic_cost(callback, q, s):
+    return callback(CostInput(coordinates=ca.DM(q), body_scales=ca.DM(s)))
+
+
+def test_cost_input_names_follow_the_canonical_input_order():
+    assert CubicCost().input_names() == ('coordinates', 'body_scales')
+    assert TrackingCost().input_names() == ('coordinates',)
+    assert OffsetRegularizationCost(1.0).input_names() == (
+        'marker_offsets', 'frame_offsets')
+
+
+def test_cost_function_declares_only_the_inputs_its_cost_requires():
+    cache = create_cubic_cost_cache()
+    callback = CostFunction('cubic', CubicCost(), cache)
+    assert callback.n_in() == 2
+    assert callback.size1_in(0) == len(cache.mc.coordinate_q_indexes) == 2
+    assert callback.size1_in(1) == 3 * len(cache.mc.body_scale_groups) == 6
+
+
+def test_cost_function_evaluates_its_cost_with_its_context():
+    cache = create_cubic_cost_cache()
+    q = np.array([0.5, -1.0])
+    s = np.array([1.1, 1.0, 0.9, 1.2, 1.0, 0.8])
+    expected = float(np.sum(q**3) + 2.0 * np.sum(s**2))
+
+    plain = CostFunction('plain', CubicCost(), cache)
+    offset = CostFunction('offset', CubicCost(), cache, context=0.25)
+    assert float(call_cubic_cost(plain, q, s)) == pytest.approx(expected, rel=1e-12)
+    assert float(call_cubic_cost(offset, q, s)) == pytest.approx(expected + 0.25,
+                                                                 rel=1e-12)
+
+
+def test_cost_function_jacobian_matches_finite_difference():
+    cache = create_cubic_cost_cache()
+    analytic = CostFunction('analytic', CubicCost(), cache)
+    fd = CostFunction('fd', CubicCost(), cache, enable_fd=True)
+
+    q_sym = ca.MX.sym('q', 2)
+    s_sym = ca.MX.sym('s', 6)
+    x = ca.vertcat(q_sym, s_sym)
+    x0 = np.array([0.5, -1.0, 1.1, 1.0, 0.9, 1.2, 1.0, 0.8])
+    jacobians = [
+        ca.Function('J', [x], [ca.jacobian(
+            callback(CostInput(coordinates=q_sym, body_scales=s_sym)), x)])(x0)
+        for callback in (analytic, fd)]
+    np.testing.assert_allclose(np.array(jacobians[0]), np.array(jacobians[1]),
+                               rtol=1e-6, atol=1e-8)
+
+
+def test_cost_function_rejects_a_jacobian_with_the_wrong_number_of_blocks():
+    cache = create_cubic_cost_cache()
+    callback = CostFunction('cubic', CubicCost(num_jacobian_blocks=1), cache)
+    q_sym = ca.MX.sym('q', 2)
+    s_sym = ca.MX.sym('s', 6)
+    J = ca.Function('J', [q_sym, s_sym], [ca.jacobian(
+        callback(CostInput(coordinates=q_sym, body_scales=s_sym)), q_sym)])
+    with pytest.raises(Exception, match='calc_jacobian returned 1 blocks'):
+        J(np.zeros(2), np.ones(6))
+
+
+def test_cost_cache_memoizes_per_owner_and_per_key():
+    cache = create_cubic_cost_cache()
+    first, second = CubicCost(), CubicCost()
+    calls = []
+
+    def factory():
+        calls.append(None)
+        return object()
+
+    value = cache.memoize(first, 'context', factory)
+    assert cache.memoize(first, 'context', factory) is value
+    assert cache.memoize(first, 'other', factory) is not value
+    assert cache.memoize(second, 'context', factory) is not value
+    assert len(calls) == 3
+
+    # A fresh cache, i.e. a fresh solve, resolves everything again.
+    assert create_cubic_cost_cache().memoize(first, 'context', factory) is not value
+
+
+def test_cost_cache_memoizes_station_caches_by_path():
+    cache = create_cubic_cost_cache()
+    station = cache.station_cache('/S1')
+    assert cache.station_cache('/S1') is station
+    expected = StationCache.from_station(cache.mc, cache.mc.model.getComponent('/S1'))
+    np.testing.assert_array_equal(station.base_station, expected.base_station)
+    assert station.mobod_index == expected.mobod_index
+    assert station.body_scale_group_index == expected.body_scale_group_index
+
+    with pytest.raises(ValueError, match='Expected an osim.Station'):
+        cache.station_cache('/bodyset/b1')
+
+
+def test_cost_cache_memoizes_frame_caches_by_path():
+    cache = create_cubic_cost_cache()
+    frame = cache.frame_cache('/bodyset/b1')
+    assert cache.frame_cache('/bodyset/b1') is frame
+    np.testing.assert_array_equal(frame.base_station, np.zeros(3))
+
+    with pytest.raises(ValueError, match='Expected an osim.PhysicalFrame'):
+        cache.frame_cache('/S1')
+
+
+def test_cost_cache_rejects_a_path_with_no_component():
+    cache = create_cubic_cost_cache()
+    for lookup in (cache.station_cache, cache.frame_cache):
+        with pytest.raises(ValueError, match='Model does not have a component'):
+            lookup('/markerset/not_a_marker')
+
+
+def test_cost_cache_captures_the_default_pose_at_construction():
+    mc = ModelCache(create_two_link_model())
+    default_q = mc.state.getQ().to_numpy().copy()
+    cache = CostCache(mc)
+    mc.state.setQ(osim.Vector.createFromMat(default_q + 0.3))
+    np.testing.assert_array_equal(cache.default_q, default_q)
+
+
+@pytest.fixture
+def without_cyclic_gc():
+    """Do not let cyclic garbage collection hide ownership cycles."""
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+
+
+def test_cost_function_jacobian_outlives_its_parent(without_cyclic_gc):
+    """A retained Jacobian owns its evaluation data without retaining its parent."""
+    def build_jacobian():
+        cache = create_cubic_cost_cache()
+        context = np.array(0.25)
+        function = CostFunction('cubic', CubicCost(), cache, context)
+        # Exercise CasADi's real derivative request, including its options, and
+        # retain the Python Jacobian callback for as long as the function is used.
+        jacobian = function.jacobian()
+        return (jacobian, function.jacobian_callback, weakref.ref(function),
+                weakref.ref(cache), weakref.ref(context))
+
+    jacobian, callback, function_ref, cache_ref, context_ref = build_jacobian()
+    assert function_ref() is None
+    assert cache_ref() is not None
+    assert context_ref() is not None
+
+    q = np.array([0.5, -1.0])
+    s = np.array([1.1, 1.0, 0.9, 1.2, 1.0, 0.8])
+    assert jacobian.n_in() == 3  # Coordinates, scales, and the scalar cost value.
+    assert jacobian.n_out() == 2
+    blocks = jacobian(q, s, 0.0)
+    np.testing.assert_allclose(blocks[0], [3.0 * q**2])
+    np.testing.assert_allclose(blocks[1], [4.0 * s])
+
+    jacobian_ref = weakref.ref(callback)
+    del jacobian, callback
+    assert jacobian_ref() is None
+    assert cache_ref() is None
+    assert context_ref() is None
+
+
+def test_cost_workspaces_share_context_but_own_callbacks(monkeypatch, without_cyclic_gc):
+    cache = create_cubic_cost_cache()
+    cost = CubicCost()
+    contexts = []
+
+    def create_context(self, evaluation_cache):
+        assert evaluation_cache is cache
+        context = np.array(0.25)
+        contexts.append(weakref.ref(context))
+        return context
+
+    monkeypatch.setattr(CubicCost, 'create_context', create_context)
+
+    def evaluate_workspace():
+        workspace = CostWorkspace(cache)
+        callback = workspace.cost_callback(cost)
+        assert workspace.cost_callback(cost) is callback
+        assert callback.cache is cache
+        assert callback.context is contexts[0]()
+        q = ca.MX.sym('q', 2)
+        s = ca.MX.sym('s', 6)
+        expr = cost.expression(workspace, CostInput(coordinates=q, body_scales=s))
+        f = ca.Function('f', [q, s], [expr])
+        jacobian = ca.Function('J', [q, s], [ca.jacobian(expr, q)])
+        assert float(f(np.ones(2), np.ones(6))) == pytest.approx(14.25)
+        np.testing.assert_allclose(jacobian(np.ones(2), np.ones(6)), [[3.0, 3.0]])
+        return (weakref.ref(workspace), weakref.ref(callback),
+                weakref.ref(callback.jacobian_callback))
+
+    for _ in range(3):
+        refs = evaluate_workspace()
+        assert all(ref() is None for ref in refs)
+        assert len(contexts) == 1
+        assert contexts[0]() is not None
+
+
+def test_cost_workspaces_sharing_a_cache_have_independent_lifetimes(without_cyclic_gc):
+    cache = create_cubic_cost_cache()
+    cost = CubicCost()
+    surviving_workspace = CostWorkspace(cache)
+    callback = surviving_workspace.cost_callback(cost)
+
+    def evaluate_other_workspace():
+        workspace = CostWorkspace(cache)
+        other = workspace.cost_callback(cost)
+        assert other is not callback
+        assert float(call_cubic_cost(other, np.zeros(2), np.ones(6))) == 12.0
+        return weakref.ref(other)
+
+    other_callback = evaluate_other_workspace()
+    assert other_callback() is None
+    assert float(call_cubic_cost(callback, np.zeros(2), np.ones(6))) == 12.0
+
+
+def test_inverse_kinematics_callbacks_follow_step_lifetime(
+        tmp_path, monkeypatch, without_cyclic_gc):
+    """Completed steps retain no callbacks, Jacobians, or tracking task sets."""
+    callbacks, tasks, jacobians, caches, contexts = [], [], [], [], []
+    station_caches = {}
+    add_callback = CostWorkspace.add_callback
+    solve_step = InverseKinematicsSolver._solve_step
+
+    class CoordinateCallbackCost(CallbackCost):
+        required_inputs = frozenset({'coordinates'})
+
+        def create_context(self, cache):
+            context = cache.default_q.copy()
+            contexts.append(weakref.ref(context))
+            return context
+
+        def calc_value(self, cache, context, values):
+            return 0.001 * float(np.sum((values['coordinates'] - context)**2))
+
+        def calc_jacobian(self, cache, context, values):
+            return [0.002 * (values['coordinates'] - context)[None, :]]
+
+    def record_callback(self, *args, **kwargs):
+        callback = add_callback(self, *args, **kwargs)
+        callbacks.append(weakref.ref(callback))
+        if isinstance(callback.context, TrackingTaskSet):
+            tasks.append(weakref.ref(callback.context))
+            for station in callback.context.marker_term.station_caches:
+                path = id(station)
+                station_caches.setdefault(path, weakref.ref(station))
+        return callback
+
+    # Check while objective evaluation is still in progress, as well as after the
+    # step returns, so premature destruction cannot pass the lifetime assertions.
+    evaluate = ObjectiveTerms.evaluate
+
+    def record_jacobians(self, *args, **kwargs):
+        live_callbacks = [ref() for ref in callbacks if ref() is not None]
+        assert len(live_callbacks) == 2
+        jacobians.extend(weakref.ref(cb.jacobian_callback) for cb in live_callbacks)
+        return evaluate(self, *args, **kwargs)
+
+    def check_step(self, cache, *args, **kwargs):
+        assert all(ref() is None for ref in callbacks + tasks + jacobians)
+        caches.append(weakref.ref(cache))
+        result = solve_step(self, cache, *args, **kwargs)
+        assert all(ref() is None for ref in callbacks + tasks + jacobians)
+        return result
+
+    monkeypatch.setattr(CostWorkspace, 'add_callback', record_callback)
+    monkeypatch.setattr(ObjectiveTerms, 'evaluate', record_jacobians)
+    monkeypatch.setattr(InverseKinematicsSolver, '_solve_step', check_step)
+    solver = InverseKinematicsSolver(create_double_pendulum(1.0, 1.0))
+    solver.add_cost(CoordinateCallbackCost())
+    for name in ('first', 'second'):
+        solver.add_trial(create_pendulum_trial(tmp_path, name=name, duration=0.1))
+
+    solution = solver.solve()
+    num_steps = sum(len(trial.times) for trial in solver.trials)
+    assert num_steps > 2
+    assert len(callbacks) == 2 * num_steps
+    assert len(tasks) == num_steps
+    assert len(jacobians) == 2 * num_steps
+    assert len(contexts) == 1
+    assert len(station_caches) == 2
+    assert all(ref() is None for ref in caches + contexts + list(station_caches.values()))
+    assert set(solution.states_tables) == {'first', 'second'}
+    assert np.isfinite(solution.outputs['cost_terms']['total'])

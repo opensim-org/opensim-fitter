@@ -15,9 +15,11 @@ from osimfit.model import (ModelCache, BodyScaleGroup, MarkerOffsetGroup,
                            BeamLengthScaleGroup)
 from osimfit.solvers import SplinedKinematicsSolver
 from osimfit.costs import (CostInput, FrameTrackingTerm, FrameBilevelTerm,
-                           MarkerTrackingTerm, BilevelCostRep, TrackingCost,
-                           TrackingCostRep, BilevelCost)
+                           MarkerTrackingTerm, MarkerBilevelTerm, TrackingCost,
+                           BilevelCost, CostCache, CostFunction, TrackingTaskSet)
 from tests.test_costs import create_beam_model, getP_BM
+from tests.test_double_pendulum import create_double_pendulum
+from tests.test_solution import create_pendulum_trial
 
 # Define the test model path.
 MODEL_FPATH = str(Path(__file__).parent / 'subject_scale_walk.osim')
@@ -44,39 +46,45 @@ def create_sliding_mass_model(child_x_offset: float = 0.0):
     model.finalizeConnections()
     return model
 
+def build_tracking_callback(name, mc, enable_fd=False):
+    tracking_task_set = TrackingTaskSet(MarkerTrackingTerm(mc), FrameTrackingTerm(mc))
+    return CostFunction(name, TrackingCost(), CostCache(mc), tracking_task_set,
+                        enable_fd=enable_fd)
+
+
 def test_tracking_cost_function_constructs_marker_and_frame_terms():
     model = osim.Model(MODEL_FPATH)
     model.initSystem()
-    cost = TrackingCostRep('cost', ModelCache(model))
-    assert cost.marker_term is not None
-    assert cost.frame_term is not None
+    cost = build_tracking_callback('cost', ModelCache(model))
+    assert cost.context.marker_term is not None
+    assert cost.context.frame_term is not None
 
 
 def test_tracking_cost_function_add_marker_registers_in_marker_term():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = TrackingCostRep('cost', ModelCache(model))
-    cost.add_marker_tracking_cost_term('/markerset/m0', osim.Vec3(0))
-    assert len(cost.marker_term.markers) == 1
-    assert cost.marker_term.mobod_indexes.size() == 1
-    assert len(cost.frame_term.frames) == 0
+    cost = build_tracking_callback('cost', ModelCache(model))
+    cost.context.marker_term.add_marker('/markerset/m0', osim.Vec3(0))
+    assert len(cost.context.marker_term.markers) == 1
+    assert cost.context.marker_term.mobod_indexes.size() == 1
+    assert len(cost.context.frame_term.frames) == 0
 
 
 def test_tracking_cost_function_add_frame_registers_in_frame_term():
     model = osim.Model(MODEL_FPATH)
     model.initSystem()
-    cost = TrackingCostRep('cost', ModelCache(model))
-    cost.add_frame_tracking_cost_term(
+    cost = build_tracking_callback('cost', ModelCache(model))
+    cost.context.frame_term.add_frame(
         '/bodyset/pelvis', osim.Vec3(0), osim.Quaternion())
-    assert len(cost.frame_term.frames) == 1
-    assert cost.frame_term.mobod_indexes.size() == 1
-    assert len(cost.marker_term.markers) == 0
+    assert len(cost.context.frame_term.frames) == 1
+    assert cost.context.frame_term.mobod_indexes.size() == 1
+    assert len(cost.context.marker_term.markers) == 0
 
 
 def test_empty_tracking_cost_function():
     model = osim.Model(MODEL_FPATH)
     model.initSystem()
-    cost = TrackingCostRep('cost', ModelCache(model))
+    cost = build_tracking_callback('cost', ModelCache(model))
     x = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     assert float(cost(CostInput(coordinates=x))) == pytest.approx(0.0, abs=1e-12)
 
@@ -84,9 +92,9 @@ def test_empty_tracking_cost_function():
 def test_tracking_cost_function_marker_at_reference_yields_zero():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = TrackingCostRep('cost', ModelCache(model))
+    cost = build_tracking_callback('cost', ModelCache(model))
     # At q=0, m0 sits at the world origin.
-    cost.add_marker_tracking_cost_term('/markerset/m0', osim.Vec3(0))
+    cost.context.marker_term.add_marker('/markerset/m0', osim.Vec3(0))
     x = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     assert float(cost(CostInput(coordinates=x))) == pytest.approx(0.0, abs=1e-12)
 
@@ -94,9 +102,9 @@ def test_tracking_cost_function_marker_at_reference_yields_zero():
 def test_tracking_cost_function_marker_off_reference_yields_squared_error():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = TrackingCostRep('cost', ModelCache(model))
+    cost = build_tracking_callback('cost', ModelCache(model))
     # m0 at world (0.1, 0, 0) when q=0.1; reference at the origin.
-    cost.add_marker_tracking_cost_term(
+    cost.context.marker_term.add_marker(
         '/markerset/m0', osim.Vec3(0.0, 0, 0), weight=1.0)
     x = ca.DM([0.1])
     assert float(cost(CostInput(coordinates=x))) == pytest.approx(0.01, abs=1e-9)
@@ -105,14 +113,13 @@ def test_tracking_cost_function_marker_off_reference_yields_squared_error():
 def test_tracking_cost_function_jacobian_sliding_mass():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost_jac = TrackingCostRep('cost_jac', ModelCache(model))
-    cost_fd = TrackingCostRep('cost_fd', ModelCache(model),
-                                   enable_fd=True)
+    cost_jac = build_tracking_callback('cost_jac', ModelCache(model))
+    cost_fd = build_tracking_callback('cost_fd', ModelCache(model), enable_fd=True)
 
     for cost in (cost_jac, cost_fd):
-        cost.add_marker_tracking_cost_term(
+        cost.context.marker_term.add_marker(
             '/markerset/m0', osim.Vec3(0.3, 0, 0), weight=2.0)
-        cost.add_marker_tracking_cost_term(
+        cost.context.marker_term.add_marker(
             '/markerset/m1', osim.Vec3(0.7, 0, 0), weight=1.5)
 
     x = ca.SX.sym('x', len(cost_jac.mc.coordinate_q_indexes))
@@ -125,14 +132,13 @@ def test_tracking_cost_function_jacobian_sliding_mass():
 def test_tracking_cost_function_jacobian_full_body():
     model = osim.Model(MODEL_FPATH)
     model.initSystem()
-    cost_jac = TrackingCostRep('cost_jac', ModelCache(model))
-    cost_fd = TrackingCostRep('cost_fd', ModelCache(model),
-                                   enable_fd=True)
+    cost_jac = build_tracking_callback('cost_jac', ModelCache(model))
+    cost_fd = build_tracking_callback('cost_fd', ModelCache(model), enable_fd=True)
 
     for cost in (cost_jac, cost_fd):
-        cost.add_marker_tracking_cost_term(
+        cost.context.marker_term.add_marker(
             '/markerset/R.Shoulder', osim.Vec3(0.3, 0, 0), weight=2.0)
-        cost.add_marker_tracking_cost_term(
+        cost.context.marker_term.add_marker(
             '/markerset/L.ASIS', osim.Vec3(0.7, 0, 0), weight=1.5)
 
     x = ca.SX.sym('x', len(cost_jac.mc.coordinate_q_indexes))
@@ -170,13 +176,14 @@ def create_n_sliding_body_model(n: int, child_x_offset: float = 0.0):
     return model
 
 
-def build_bilevel_rep(name, mc, body_scale_groups=[], marker_offset_groups=[],
-                       frame_offset_groups=[], ellipsoid_radii_scale_groups=[],
-                       beam_length_scale_groups=[], enable_fd=False):
+def build_bilevel_callback(name, mc, body_scale_groups=[], marker_offset_groups=[],
+                           frame_offset_groups=[], ellipsoid_radii_scale_groups=[],
+                           beam_length_scale_groups=[], enable_fd=False):
     """
-    Register the given parameter groups on `mc` and build a BilevelCostRep, which
-    reads its groups from the ModelCache. Mirrors what BilevelCost.create_rep does,
-    without needing a Trial to supply reference data.
+    Register the given parameter groups on `mc` and build a BilevelCost's CostFunction,
+    which reads its groups from the ModelCache, with an empty TrackingTaskSet as its
+    context. Mirrors what BilevelCost.expression does, without needing a Trial to supply
+    reference data.
 
     Every group goes through `add_parameter_group`, since that is what resolves the
     model-specific state each group implies (a joint-level group's `Joint`s, a body
@@ -186,43 +193,45 @@ def build_bilevel_rep(name, mc, body_scale_groups=[], marker_offset_groups=[],
                   + list(frame_offset_groups) + list(ellipsoid_radii_scale_groups)
                   + list(beam_length_scale_groups)):
         mc.add_parameter_group(group)
-    return BilevelCostRep(name, mc, enable_fd=enable_fd)
+    tracking_task_set = TrackingTaskSet(MarkerBilevelTerm(mc), FrameBilevelTerm(mc))
+    return CostFunction(name, BilevelCost(), CostCache(mc), tracking_task_set,
+                        enable_fd=enable_fd)
 
 
 def test_bilevel_cost_function_constructs_marker_term():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
+    cost = build_bilevel_callback(
         'cost', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
-    assert cost.marker_term is not None
+    assert cost.context.marker_term is not None
     assert cost.mc.body_scale_groups == [BodyScaleGroup(['/bodyset/body'], [1])]
 
 
 def test_bilevel_cost_function_add_marker_registers_in_marker_term():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
+    cost = build_bilevel_callback(
         'cost', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
-    cost.add_marker_bilevel_cost_term('/markerset/m0', osim.Vec3(0))
-    assert cost.marker_term.mobod_indexes.size() == 1
-    assert len(cost.frame_term.frames) == 0
+    cost.context.marker_term.add_marker('/markerset/m0', osim.Vec3(0))
+    assert cost.context.marker_term.mobod_indexes.size() == 1
+    assert len(cost.context.frame_term.frames) == 0
 
 
 def test_bilevel_cost_function_add_frame_registers_in_frame_term():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
+    cost = build_bilevel_callback(
         'cost', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
-    cost.add_frame_bilevel_cost_term(
+    cost.context.frame_term.add_frame(
         '/bodyset/body', osim.Vec3(0), osim.Quaternion())
-    assert cost.frame_term.mobod_indexes.size() == 1
-    assert len(cost.marker_term.markers) == 0
+    assert cost.context.frame_term.mobod_indexes.size() == 1
+    assert len(cost.context.marker_term.markers) == 0
 
 
 def test_bilevel_apply_scales_shifts_child_frame_translation():
@@ -232,7 +241,7 @@ def test_bilevel_apply_scales_shifts_child_frame_translation():
     """
     model = create_sliding_mass_model(child_x_offset=0.4)
     model.initSystem()
-    cost = build_bilevel_rep(
+    cost = build_bilevel_callback(
         'cost', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
@@ -250,7 +259,7 @@ def test_bilevel_apply_scales_shared_group_broadcasts_across_members():
     """
     model = create_n_sliding_body_model(2, child_x_offset=0.4)
     model.initSystem()
-    cost = build_bilevel_rep(
+    cost = build_bilevel_callback(
         'cost', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(
             ['/bodyset/body_0', '/bodyset/body_1'], [1, 2])],
@@ -269,7 +278,7 @@ def test_bilevel_apply_scales_mixed_groups_apply_independent_vectors():
     """
     model = create_n_sliding_body_model(3, child_x_offset=0.4)
     model.initSystem()
-    cost = build_bilevel_rep(
+    cost = build_bilevel_callback(
         'cost', ModelCache(model),
         body_scale_groups=[
             BodyScaleGroup(['/bodyset/body_0', '/bodyset/body_1'], [1, 2]),
@@ -289,7 +298,7 @@ def test_bilevel_apply_scales_mixed_groups_apply_independent_vectors():
 def test_bilevel_cost_function_empty_eval_is_zero():
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
+    cost = build_bilevel_callback(
         'cost', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
@@ -306,11 +315,11 @@ def test_bilevel_cost_function_scaling_changes_marker_world_position():
     """
     model = create_sliding_mass_model(child_x_offset=0.4)
     model.initSystem()
-    cost = build_bilevel_rep(
+    cost = build_bilevel_callback(
         'cost', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
-    cost.add_marker_bilevel_cost_term('/markerset/m1', osim.Vec3(0.5, 0, 0))
+    cost.context.marker_term.add_marker('/markerset/m1', osim.Vec3(0.5, 0, 0))
 
     q = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     s_unit = ca.DM([1.0, 1.0, 1.0])
@@ -329,11 +338,11 @@ def test_bilevel_cost_function_frame_at_reference_yields_zero():
     """
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
+    cost = build_bilevel_callback(
         'cost', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
-    cost.add_frame_bilevel_cost_term('/bodyset/body', osim.Vec3(0), osim.Quaternion())
+    cost.context.frame_term.add_frame('/bodyset/body', osim.Vec3(0), osim.Quaternion())
     q = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     s = ca.DM([1.0, 1.0, 1.0])
     assert float(cost(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1)))) == \
@@ -347,11 +356,11 @@ def test_bilevel_cost_function_scaling_changes_frame_world_position():
     """
     model = create_sliding_mass_model(child_x_offset=0.4)
     model.initSystem()
-    cost = build_bilevel_rep(
+    cost = build_bilevel_callback(
         'cost', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
-    cost.add_frame_bilevel_cost_term(
+    cost.context.frame_term.add_frame(
         '/bodyset/body', osim.Vec3(0), osim.Quaternion(), position_weight=2.0)
 
     q = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
@@ -368,22 +377,22 @@ def test_bilevel_cost_function_scaling_changes_frame_world_position():
 def test_bilevel_cost_function_jacobians_sliding_mass():
     model = create_sliding_mass_model(child_x_offset=0.4)
     model.initSystem()
-    cost_jac = build_bilevel_rep(
+    cost_jac = build_bilevel_callback(
         'cost_jac', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[])
-    cost_fd = build_bilevel_rep(
+    cost_fd = build_bilevel_callback(
         'cost_fd', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[], frame_offset_groups=[],
         enable_fd=True)
 
     for cost in (cost_jac, cost_fd):
-        cost.add_marker_bilevel_cost_term(
+        cost.context.marker_term.add_marker(
             '/markerset/m0', osim.Vec3(0.3, 0, 0), weight=2.0)
-        cost.add_marker_bilevel_cost_term(
+        cost.context.marker_term.add_marker(
             '/markerset/m1', osim.Vec3(0.7, 0, 0), weight=1.5)
-        cost.add_frame_bilevel_cost_term(
+        cost.context.frame_term.add_frame(
             '/bodyset/body', osim.Vec3(0.5, 0, 0), osim.Quaternion(),
             position_weight=1.5, orientation_weight=1.0)
 
@@ -416,19 +425,19 @@ def test_bilevel_cost_function_jacobians_full_body():
             body_paths=[body.getAbsolutePathString()],
             mobod_indexes=[int(body.getMobilizedBodyIndex())]))
 
-    cost_jac = build_bilevel_rep(
+    cost_jac = build_bilevel_callback(
         'cost_jac', ModelCache(model), body_scale_groups=body_scale_groups,
         marker_offset_groups=[], frame_offset_groups=[])
-    cost_fd = build_bilevel_rep(
+    cost_fd = build_bilevel_callback(
         'cost_fd', ModelCache(model), body_scale_groups=body_scale_groups,
         marker_offset_groups=[], frame_offset_groups=[], enable_fd=True)
 
     for cost in (cost_jac, cost_fd):
-        cost.add_marker_bilevel_cost_term(
+        cost.context.marker_term.add_marker(
             '/markerset/R.Shoulder', osim.Vec3(0.3, 0, 0), weight=2.0)
-        cost.add_marker_bilevel_cost_term(
+        cost.context.marker_term.add_marker(
             '/markerset/L.ASIS', osim.Vec3(0.7, 0, 0), weight=1.5)
-        cost.add_frame_bilevel_cost_term(
+        cost.context.frame_term.add_frame(
             '/bodyset/pelvis', osim.Vec3(0.3, 0.1, -0.2),
             osim.Quaternion(0.9, 0.1, 0.2, 0.3),
             position_weight=2.0, orientation_weight=1.5)
@@ -468,25 +477,25 @@ def test_bilevel_cost_function_grouped_jacobian_sums_solo_and_matches_fd():
     shared_groups = [
         BodyScaleGroup(['/bodyset/body_0', '/bodyset/body_1'], [1, 2]),
     ]
-    cost_solo = build_bilevel_rep(
+    cost_solo = build_bilevel_callback(
         'cost_solo', ModelCache(model), body_scale_groups=solo_groups,
         marker_offset_groups=[], frame_offset_groups=[])
-    cost_shared = build_bilevel_rep(
+    cost_shared = build_bilevel_callback(
         'cost_shared', ModelCache(model), body_scale_groups=shared_groups,
         marker_offset_groups=[], frame_offset_groups=[])
-    cost_fd = build_bilevel_rep(
+    cost_fd = build_bilevel_callback(
         'cost_fd', ModelCache(model), body_scale_groups=shared_groups,
         marker_offset_groups=[], frame_offset_groups=[], enable_fd=True)
 
     for cost in (cost_solo, cost_shared, cost_fd):
-        cost.add_marker_bilevel_cost_term(
+        cost.context.marker_term.add_marker(
             '/markerset/m0', osim.Vec3(0.4, 0, 0), weight=2.0)
-        cost.add_marker_bilevel_cost_term(
+        cost.context.marker_term.add_marker(
             '/markerset/m1', osim.Vec3(0.7, 0, 0), weight=1.5)
-        cost.add_frame_bilevel_cost_term(
+        cost.context.frame_term.add_frame(
             '/bodyset/body_0', osim.Vec3(0.2, 0, 0), osim.Quaternion(),
             position_weight=1.0)
-        cost.add_frame_bilevel_cost_term(
+        cost.context.frame_term.add_frame(
             '/bodyset/body_1', osim.Vec3(0.5, 0, 0), osim.Quaternion(),
             position_weight=1.2)
 
@@ -605,11 +614,11 @@ def add_chain_cost_terms(cost):
     tests to `cost`. The frame term pins an orientation reference as well, so the
     orientation-error path is exercised alongside the position-error path.
     """
-    cost.add_marker_bilevel_cost_term(
+    cost.context.marker_term.add_marker(
         '/markerset/m_prox', osim.Vec3(0.25, 0.05, 0.1), weight=2.0)
-    cost.add_marker_bilevel_cost_term(
+    cost.context.marker_term.add_marker(
         '/markerset/m_dist', osim.Vec3(0.5, -0.1, 0.2), weight=1.5)
-    cost.add_frame_bilevel_cost_term(
+    cost.context.frame_term.add_frame(
         '/bodyset/distal', osim.Vec3(0.3, 0.1, -0.2),
         osim.Quaternion(0.9, 0.1, 0.2, 0.3),
         position_weight=2.0, orientation_weight=1.5)
@@ -627,10 +636,11 @@ def test_bilevel_cost_function_ellipsoid_radii_scale_jacobian_matches_fd():
     model.initSystem()
     groups = [EllipsoidRadiiScaleGroup(['/jointset/ellipsoid'])]
 
-    cost_jac = build_bilevel_rep('cost_jac', ModelCache(model),
-                                 ellipsoid_radii_scale_groups=groups)
-    cost_fd = build_bilevel_rep('cost_fd', ModelCache(model),
-                                ellipsoid_radii_scale_groups=groups, enable_fd=True)
+    cost_jac = build_bilevel_callback('cost_jac', ModelCache(model),
+                                      ellipsoid_radii_scale_groups=groups)
+    cost_fd = build_bilevel_callback('cost_fd', ModelCache(model),
+                                     ellipsoid_radii_scale_groups=groups,
+                                     enable_fd=True)
     for cost in (cost_jac, cost_fd):
         add_chain_cost_terms(cost)
 
@@ -663,10 +673,10 @@ def test_bilevel_cost_function_beam_length_scale_jacobian_matches_fd():
     model.initSystem()
     groups = [BeamLengthScaleGroup(['/jointset/beam'])]
 
-    cost_jac = build_bilevel_rep('cost_jac', ModelCache(model),
-                                 beam_length_scale_groups=groups)
-    cost_fd = build_bilevel_rep('cost_fd', ModelCache(model),
-                                beam_length_scale_groups=groups, enable_fd=True)
+    cost_jac = build_bilevel_callback('cost_jac', ModelCache(model),
+                                      beam_length_scale_groups=groups)
+    cost_fd = build_bilevel_callback('cost_fd', ModelCache(model),
+                                     beam_length_scale_groups=groups, enable_fd=True)
     for cost in (cost_jac, cost_fd):
         add_chain_cost_terms(cost)
 
@@ -701,17 +711,17 @@ def test_bilevel_shared_ellipsoid_radii_scale_group_jacobian_sums_solo_and_match
     shared_groups = [EllipsoidRadiiScaleGroup(
         ['/jointset/ellipsoid_0', '/jointset/ellipsoid_1'])]
 
-    cost_solo = build_bilevel_rep('cost_solo', ModelCache(model),
-                                  ellipsoid_radii_scale_groups=solo_groups)
-    cost_shared = build_bilevel_rep('cost_shared', ModelCache(model),
-                                    ellipsoid_radii_scale_groups=shared_groups)
-    cost_fd = build_bilevel_rep('cost_fd', ModelCache(model),
-                                ellipsoid_radii_scale_groups=shared_groups,
-                                enable_fd=True)
+    cost_solo = build_bilevel_callback('cost_solo', ModelCache(model),
+                                       ellipsoid_radii_scale_groups=solo_groups)
+    cost_shared = build_bilevel_callback('cost_shared', ModelCache(model),
+                                         ellipsoid_radii_scale_groups=shared_groups)
+    cost_fd = build_bilevel_callback('cost_fd', ModelCache(model),
+                                     ellipsoid_radii_scale_groups=shared_groups,
+                                     enable_fd=True)
     for cost in (cost_solo, cost_shared, cost_fd):
-        cost.add_marker_bilevel_cost_term(
+        cost.context.marker_term.add_marker(
             '/markerset/m0', osim.Vec3(0.35, 0.05, 0.1), weight=2.0)
-        cost.add_marker_bilevel_cost_term(
+        cost.context.marker_term.add_marker(
             '/markerset/m1', osim.Vec3(0.2, -0.1, 0.25), weight=1.5)
 
     nq = len(cost_shared.mc.coordinate_q_indexes)
@@ -745,7 +755,7 @@ def test_bilevel_cost_function_all_parameter_jacobians_match_fd():
     """
     Body scales, marker offsets, frame offsets, ellipsoid radii, and beam lengths
     active at once: the assembled six-input Jacobian must match finite differences.
-    Guards the ordering of the blocks returned by `BilevelCostRep._jac_eval`.
+    Guards the ordering of the blocks returned by `BilevelCost.calc_jacobian`.
     """
     model = create_ellipsoid_chain_model()
     model.initSystem()
@@ -755,7 +765,7 @@ def test_bilevel_cost_function_all_parameter_jacobians_match_fd():
     ellipsoid_radii_scale_groups = [EllipsoidRadiiScaleGroup(['/jointset/ellipsoid'])]
 
     def build(name, enable_fd):
-        return build_bilevel_rep(
+        return build_bilevel_callback(
             name, ModelCache(model), body_scale_groups=body_scale_groups,
             marker_offset_groups=marker_offset_groups,
             frame_offset_groups=frame_offset_groups,
@@ -799,15 +809,15 @@ def test_bilevel_apply_state_shifts_station():
     """
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
+    cost = build_bilevel_callback(
         'cost', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[MarkerOffsetGroup(['/markerset/m1'], [2])],
         frame_offset_groups=[])
-    cost.add_marker_bilevel_cost_term('/markerset/m1', osim.Vec3(0.5, 0, 0),
-                                 offset_group_index=0)
-    cost.add_marker_bilevel_cost_term('/markerset/m0', osim.Vec3(0, 0, 0))
-    term = cost.marker_term
+    cost.context.marker_term.add_marker('/markerset/m1', osim.Vec3(0.5, 0, 0),
+                                        offset_group_index=0)
+    cost.context.marker_term.add_marker('/markerset/m0', osim.Vec3(0, 0, 0))
+    term = cost.context.marker_term
     baseline_m1 = term.base_stations[0].copy()
     baseline_m0 = term.base_stations[1].copy()
 
@@ -831,13 +841,13 @@ def test_bilevel_offset_changes_marker_error():
     """
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
+    cost = build_bilevel_callback(
         'cost', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[MarkerOffsetGroup(['/markerset/m1'], [2])],
         frame_offset_groups=[])
-    cost.add_marker_bilevel_cost_term('/markerset/m1', osim.Vec3(0.5, 0, 0),
-                                 offset_group_index=0)
+    cost.context.marker_term.add_marker('/markerset/m1', osim.Vec3(0.5, 0, 0),
+                                        offset_group_index=0)
     q = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     s = ca.DM.ones(3)
     # No offset: m1 world = 0.5, reference = 0.5, error = 0.
@@ -855,12 +865,12 @@ def test_bilevel_offset_frame_orientation_invariant():
     """
     model = create_sliding_mass_model()
     model.initSystem()
-    cost = build_bilevel_rep(
+    cost = build_bilevel_callback(
         'cost', ModelCache(model),
         body_scale_groups=[BodyScaleGroup(['/bodyset/body'], [1])],
         marker_offset_groups=[],
         frame_offset_groups=[FrameOffsetGroup(['/bodyset/body'], [1])])
-    cost.add_frame_bilevel_cost_term(
+    cost.context.frame_term.add_frame(
         '/bodyset/body', osim.Vec3(0), osim.Quaternion(0.9, 0.1, 0.2, 0.3),
         position_weight=0.0, orientation_weight=1.0, offset_group_index=0)
     q = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
@@ -887,20 +897,20 @@ def test_bilevel_cost_function_offset_jacobians_full_body():
 
     marker_offset_groups = [MarkerOffsetGroup(['/markerset/R.Shoulder'], [torso_mbx])]
     frame_offset_groups = [FrameOffsetGroup(['/bodyset/pelvis'], [pelvis_mbx])]
-    cost_jac = build_bilevel_rep(
+    cost_jac = build_bilevel_callback(
         'cost_jac', ModelCache(model), body_scale_groups=body_scale_groups,
         marker_offset_groups=marker_offset_groups,
         frame_offset_groups=frame_offset_groups)
-    cost_fd = build_bilevel_rep(
+    cost_fd = build_bilevel_callback(
         'cost_fd', ModelCache(model), body_scale_groups=body_scale_groups,
         marker_offset_groups=marker_offset_groups,
         frame_offset_groups=frame_offset_groups, enable_fd=True)
 
     for cost in (cost_jac, cost_fd):
-        cost.add_marker_bilevel_cost_term(
+        cost.context.marker_term.add_marker(
             '/markerset/R.Shoulder', osim.Vec3(0.3, 0, 0), weight=2.0,
             offset_group_index=0)
-        cost.add_frame_bilevel_cost_term(
+        cost.context.frame_term.add_frame(
             '/bodyset/pelvis', osim.Vec3(0.3, 0.1, -0.2),
             osim.Quaternion(0.9, 0.1, 0.2, 0.3),
             position_weight=2.0, orientation_weight=1.5,
@@ -928,6 +938,27 @@ def test_bilevel_cost_function_offset_jacobians_full_body():
     assert np.allclose(A, F, atol=1e-6)
     # The offset columns should be non-zero.
     assert np.any(np.abs(A[0, nq+3:nq+9]) > 1e-8)
+
+
+@pytest.mark.parametrize('cost_cls', [TrackingCost, BilevelCost])
+def test_tracking_task_sets_share_station_caches_across_time_samples(tmp_path,
+                                                                     cost_cls):
+    """
+    Within one solve, every time sample's task set reuses the same memoized
+    StationCache per marker, while each still tracks its own sample's reference data.
+    """
+    model = create_double_pendulum(1.0, 1.0)
+    model.initSystem()
+    cache = CostCache(ModelCache(model))
+    trial = create_pendulum_trial(tmp_path)
+
+    first, second = (cost_cls().create_tracking_task_set(cache, trial, itime)
+                     for itime in (0, 1))
+    assert len(first.marker_term.station_caches) == 2
+    for a, b in zip(first.marker_term.station_caches,
+                    second.marker_term.station_caches):
+        assert a is b
+    assert not np.allclose(first.marker_term.positions, second.marker_term.positions)
 
 
 #############################

@@ -1,6 +1,7 @@
 import numpy as np
 import opensim as osim
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from ..model import ModelCache
 from .tracking_tasks import FrameTrackingTasks, MarkerTrackingTasks
@@ -183,8 +184,9 @@ class BilevelTerm(TrackingTerm):
     An intermediate base class that provides functionality common to bilevel cost terms.
 
     Applying body scales and placement offsets to the cached station locations is shared
-    across marker and frame terms; subclasses (via `MarkerTrackingTasks`/`FrameTrackingTasks`) supply the
-    per-task `station_caches`, `stations`, and `offset_group_indexes`.
+    across marker and frame terms; subclasses (via
+    `MarkerTrackingTasks`/`FrameTrackingTasks`) supply the per-task `station_caches`,
+    `stations`, and `offset_group_indexes`.
     """
     def __init__(self):
         super().__init__()
@@ -448,3 +450,21 @@ class FrameBilevelTerm(FrameTrackingTasks, BilevelTerm):
                       arrays.scaled_base_stations * doffset[arrays.scaled_rows])
 
         return [Jq, Js, Jo, Jr, Jl]
+
+
+@dataclass
+class TrackingTaskSet:
+    """
+    The marker and frame tasks a tracking cost evaluates at one time sample of one
+    trial. A tracking cost builds one per sample, and its `CostFunction` carries it as
+    the callback's context.
+
+    Attributes
+    ----------
+    marker_term: MarkerTrackingTerm | MarkerBilevelTerm
+        The marker tasks.
+    frame_term: FrameTrackingTerm | FrameBilevelTerm
+        The frame tasks.
+    """
+    marker_term: MarkerTrackingTasks
+    frame_term: FrameTrackingTasks
