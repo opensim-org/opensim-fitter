@@ -151,6 +151,7 @@ class InverseKinematicsSolver(TrackingSolver):
         if self.damping_weight > 0:
             terms.add('damping', self.damping_weight
                       * ca.dot(x - x_prev, x - x_prev) / x.numel())
+        workspace.validate(named_costs)
         nlp = {'x': x, 'f': terms.objective}
         opts = {}
         opts['ipopt'] = self._get_ipopt_options()

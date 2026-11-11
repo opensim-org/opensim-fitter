@@ -2,7 +2,7 @@ import numpy as np
 import opensim as osim
 
 from ..data_sources import Trial
-from .cost import CallbackCost, CostCache, TrialSample
+from .cost import CallbackCost, CostCache, CostWorkspace, TrialSample
 from .tracking_terms import (FrameTrackingTerm, MarkerTrackingTerm,
                              FrameBilevelTerm, MarkerBilevelTerm, TrackingTaskSet)
 
@@ -140,6 +140,32 @@ class BilevelCost(TrackingCost):
     required_inputs = frozenset(
         {'coordinates', 'body_scales', 'marker_offsets', 'frame_offsets',
          'ellipsoid_radii_scales', 'beam_length_scales'})
+
+    def validate(self, workspace: CostWorkspace) -> None:
+        """Require every offset group to be tracked in at least one prepared sample.
+
+        Coverage is checked across all samples and trials in this problem, allowing
+        a group absent from one trial to be tracked in another. Only contexts built
+        by this cost in this workspace contribute to coverage.
+        """
+        tracking_task_sets = workspace.contexts(self)
+
+        def assert_used(used, offset_groups, label):
+            for i, group in enumerate(offset_groups):
+                if i not in used:
+                    raise ValueError(
+                        f'{label.capitalize()} offset group {group.component_paths} is '
+                        f'not tracked by any registered {label} in any trial; its '
+                        f'offset would be unconstrained.')
+
+        used_markers = {g for tracking_task_set in tracking_task_sets
+                        for g in tracking_task_set.marker_term.offset_group_indexes
+                        if g is not None}
+        used_frames = {g for tracking_task_set in tracking_task_sets
+                       for g in tracking_task_set.frame_term.offset_group_indexes
+                       if g is not None}
+        assert_used(used_markers, workspace.cache.mc.marker_offset_groups, 'marker')
+        assert_used(used_frames, workspace.cache.mc.frame_offset_groups, 'frame')
 
     def create_tracking_task_set(self, cache: CostCache, trial: Trial,
                                  itime: int) -> TrackingTaskSet:

@@ -321,6 +321,18 @@ class CostWorkspace:
         return tuple(callback.context for callback in self._callbacks
                      if callback.cost is cost)
 
+    def validate(self, named_costs: list['CostTerm']) -> None:
+        """Validate all costs after objective assembly and before optimization.
+
+        Include both sample and global terms, even costs without callbacks. This
+        workspace must contain every sample of the optimization problem: one step
+        for sequential IK, or all selected samples and trials for a joint solve.
+        Validation errors propagate to the caller before constructing the NLP solver.
+        """
+        for term in named_costs:
+            term.cost.validate(self)
+
+
 class Cost(CostBase):
     """
     A cost evaluated from the model and the optimization variables that user can
@@ -343,6 +355,16 @@ class Cost(CostBase):
         evaluation: CostEvaluation
             The optimization variables and optional reference sample.
         """
+
+    def validate(self, workspace: CostWorkspace) -> None:
+        """Check the fully assembled problem, raising ValueError if invalid.
+
+        The default does nothing. Costs can inspect shared model data and their
+        prepared contexts via `workspace.contexts(self)`. Checks must not retain
+        the workspace or accumulate validation state on the reusable cost instance.
+        """
+        pass
+
 
 @dataclass(frozen=True)
 class CostTerm:
