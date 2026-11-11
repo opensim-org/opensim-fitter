@@ -2,8 +2,9 @@ import numpy as np
 import casadi as ca
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import ClassVar, Literal
 
+from ..data_sources import Trial
 from ..model import ModelCache, StationCache
 
 
@@ -104,6 +105,33 @@ class CostInput:
             raise ValueError(
                 f'{name!r} has length {num_entries}, which is not a multiple of 3.')
         return ca.reshape(value, 3, num_entries // 3).T
+
+
+CostScope = Literal['sample', 'global']
+
+
+@dataclass(frozen=True)
+class TrialSample:
+    """A reference-data sample, identified by trial identity and row index."""
+    trial: Trial
+    index: int
+
+
+@dataclass(frozen=True)
+class CostEvaluation:
+    """Variables and optional reference sample for one scalar cost evaluation.
+
+    The solver supplies coordinates directly or as an expression of its decision
+    variables (e.g., spline coefficients). A global evaluation has no sample and
+    contains only inputs shared across trials. Reference metadata is never passed
+    to CasADi as an optimization variable.
+    """
+    inputs: CostInput
+    sample: TrialSample | None = None
+
+    @property
+    def scope(self) -> CostScope:
+        return 'global' if self.sample is None else 'sample'
 
 
 class CostBase(ABC):
@@ -239,7 +267,7 @@ class CostCache:
 
 class CostWorkspace:
     """
-    The callbacks and tracking task sets for an optimization problem.
+    The callbacks and sample-specific evaluation data for an optimization problem.
 
     Parameters
     ----------
@@ -249,9 +277,8 @@ class CostWorkspace:
 
     def __init__(self, cache: CostCache):
         self.cache = cache
-        self.tracking_task_sets = []
         self._callbacks: list[CostFunction] = []
-        self._cost_callbacks: dict[int, CostFunction] = {}
+        self._cost_callbacks: dict[tuple[int, TrialSample | None], CostFunction] = {}
 
     def add_callback(self, name: str, cost: CostBase, context=None,
                      enable_fd: bool = False) -> 'CostFunction':
@@ -276,38 +303,78 @@ class CostWorkspace:
         self._callbacks.append(callback)
         return callback
 
-    def cost_callback(self, cost: 'CallbackCost') -> 'CostFunction':
+    def cost_callback(self, cost: 'CallbackCost',
+                      sample: TrialSample | None = None) -> 'CostFunction':
         """
-        Return a registered cost's callback, reusing it within this workspace.
+        Reuse a callback by cost, and by sample for costs requiring reference data.
+
+        Sample contexts belong to this workspace, so completed IK steps release
+        their reference tasks. Model-only contexts are shared through the cache.
         """
-        key = id(cost)
+        if cost.requires_sample and sample is None:
+            raise ValueError(f'{type(cost).__name__} requires a trial sample.')
+        sample = sample if cost.requires_sample else None
+        key = (id(cost), sample)
         if key not in self._cost_callbacks:
-            context = self.cache.memoize(
-                cost, 'context', lambda: cost.create_context(self.cache))
+            if sample is None:
+                context = self.cache.memoize(
+                    cost, 'context', lambda: cost.create_context(self.cache))
+            else:
+                context = cost.create_context(self.cache, sample)
             self._cost_callbacks[key] = self.add_callback(
-                type(cost).__name__, cost, context)
+                f'{type(cost).__name__}_{len(self._callbacks)}', cost, context)
         return self._cost_callbacks[key]
 
+    def contexts(self, cost: 'CallbackCost') -> tuple:
+        """Prepared contexts for a cost, for post-assembly validation."""
+        return tuple(callback.context for callback in self._callbacks
+                     if callback.cost is cost)
 
 class Cost(CostBase):
     """
     A cost evaluated from the model and the optimization variables that user can
     register on a solver via `Solver.add_cost`.
     """
+    scope: ClassVar[CostScope] = 'sample'
+    requires_sample: bool = False
 
     @abstractmethod
-    def expression(self, workspace: CostWorkspace, input: CostInput) -> ca.MX:
+    def expression(self, workspace: CostWorkspace,
+                   evaluation: CostEvaluation) -> ca.MX:
         """
-        Return this cost's contribution to the objective for `input`.
+        Return this cost's scalar contribution before solver reduction.
 
         Parameters
         ----------
         workspace: CostWorkspace
             Owns this problem's callbacks and supplies shared evaluation data via
             its `cache`.
-        input: CostInput
-            The optimization variables.
+        evaluation: CostEvaluation
+            The optimization variables and optional reference sample.
         """
+
+@dataclass(frozen=True)
+class CostTerm:
+    """A named cost whose objective placement is defined by its cost class.
+
+    Sample terms are reduced using the solver's sample weights; global terms are
+    evaluated once. Registration does not override the cost's scope.
+    """
+    label: str
+    cost: Cost
+
+    @property
+    def scope(self) -> CostScope:
+        return self.cost.scope
+
+    def __post_init__(self):
+        scope = self.cost.scope
+        if scope not in ('sample', 'global'):
+            raise ValueError(f'Unknown cost scope {scope!r}; expected sample or global.')
+        if scope == 'global' and self.cost.requires_sample:
+            raise ValueError(
+                f'{type(self.cost).__name__} requires a trial sample and cannot '
+                f'use global scope.')
 
 
 class SymbolicCost(Cost):
@@ -323,8 +390,9 @@ class SymbolicCost(Cost):
         Return this cost's CasADi expression for `input`.
         """
 
-    def expression(self, workspace: CostWorkspace, input: CostInput) -> ca.MX:
-        return self.evaluate(input)
+    def expression(self, workspace: CostWorkspace,
+                   evaluation: CostEvaluation) -> ca.MX:
+        return self.evaluate(evaluation.inputs)
 
 
 class CallbackCost(Cost):
@@ -334,10 +402,11 @@ class CallbackCost(Cost):
     `create_context` to resolve model-bound data the evaluation needs.
     """
 
-    def expression(self, workspace: CostWorkspace, input: CostInput) -> ca.MX:
-        return workspace.cost_callback(self)(input)
+    def expression(self, workspace: CostWorkspace,
+                   evaluation: CostEvaluation) -> ca.MX:
+        return workspace.cost_callback(self, evaluation.sample)(evaluation.inputs)
 
-    def create_context(self, cache: CostCache):
+    def create_context(self, cache: CostCache, sample: TrialSample | None = None):
         """
         Model-bound data (beyond the cache itself) needed to evaluate `calc_value` and
         `calc_jacobian` for a cost.
@@ -346,6 +415,9 @@ class CallbackCost(Cost):
         ----------
         cache: CostCache
             The solver's cache.
+        sample: TrialSample, optional
+            Supplied only when `requires_sample` is True. Otherwise the context is
+            built once per solve and reused across samples and workspaces.
         """
         return None
 

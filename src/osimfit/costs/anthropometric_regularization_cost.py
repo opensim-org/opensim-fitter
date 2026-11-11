@@ -48,6 +48,7 @@ class AnthropometricRegularizationCost(CallbackCost):
         dataset. The referenced components are additionally validated as stations when
         the cost is first evaluated in a solve.
     """
+    scope = 'global'
     required_inputs = frozenset({'body_scales'})
 
     def __init__(self, measurements: list[AnthropometricMeasurement],

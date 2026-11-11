@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
 
-from ..costs import CostInput, CostWorkspace
+from ..costs import CostEvaluation, CostTerm, CostWorkspace
 from ..model import Parameter
 
 
@@ -359,22 +359,19 @@ class ObjectiveTerms:
         """
         self.terms[label] = self.terms.get(label, 0) + expr
 
-    def add_costs(self, named_costs: list, cost_input: CostInput,
-                  workspace: CostWorkspace) -> None:
+    def add_costs(self, named_costs: list[CostTerm], evaluation: CostEvaluation,
+                  workspace: CostWorkspace, weight: float = 1.0) -> None:
         """
-        Add one term per registered cost, evaluated against `cost_input`.
+        Evaluate all terms matching this evaluation's scope, using one scalar weight.
 
-        Parameters
-        ----------
-        named_costs: list[tuple[str, Cost]]
-            Each cost's label paired with the cost; a cost is labelled by its type.
-        cost_input: CostInput
-            The input to evaluate each cost against.
-        workspace: CostWorkspace
-            Owns the callbacks and supplies shared evaluation data for each cost.
+        Solvers supply quadrature/trial weights for sample evaluations and weight one
+        for the single global evaluation. Tracking and other costs follow this same
+        path, retaining their labels for the objective breakdown.
         """
-        for label, cost in named_costs:
-            self.add(label, cost.expression(workspace, cost_input))
+        for term in named_costs:
+            if term.scope == evaluation.scope:
+                self.add(term.label,
+                         weight * term.cost.expression(workspace, evaluation))
 
     def scale(self, factor: float) -> None:
         """
