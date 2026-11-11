@@ -3,7 +3,8 @@ import casadi as ca
 import opensim as osim
 
 from ..bounds import Bounds
-from ..costs import BilevelCost, CostInput, CostCache, CostWorkspace
+from ..costs import (BilevelCost, CostInput, CostCache, CostWorkspace,
+                     CostEvaluation, CostTerm, TrialSample)
 from ..model import MarkerOffset
 from .solution import ObjectiveTerms, Solution
 from .solver import Solver
@@ -92,19 +93,16 @@ class MarkerPlacer(Solver):
         # them stay valid. _validate_trials rejects frame data, so a BilevelCost's frame
         # terms are always empty here and each callback tracks markers only.
         workspace = CostWorkspace(CostCache(self.mc))
-        errors = ca.MX(len(self.trials), 1)
-        placement_cost = BilevelCost(position_weight=1.0)
+        named_costs = [CostTerm('tracking', BilevelCost(position_weight=1.0))]
+        terms = ObjectiveTerms()
         for itrial, trial in enumerate(self.trials):
-            errors[itrial] = placement_cost.expression(
-                workspace,
+            evaluation = CostEvaluation(
                 CostInput(coordinates=poses[itrial], body_scales=s,
                           marker_offsets=mo, frame_offsets=fo),
-                trial, 0, f'marker_placer_cost_trial_{itrial}')
+                TrialSample(trial, 0))
+            terms.add_costs(named_costs, evaluation, workspace,
+                            weight=1.0 / len(self.trials))
 
-        # Average over trials so the objective's magnitude is independent of the number
-        # of trials.
-        terms = ObjectiveTerms()
-        terms.add('tracking', ca.sum1(errors) / len(self.trials))
 
         # Solve.
         x = ca.vertcat(*poses, s, mo, fo)
@@ -164,7 +162,7 @@ class MarkerPlacer(Solver):
             If any cost was registered via `add_cost`.
         """
         if self.costs:
-            registered = sorted(type(cost).__name__ for cost in self.costs)
+            registered = sorted(term.label for term in self.costs)
             raise ValueError(
                 f'{type(self).__name__} does not accept additional costs; its '
                 f'objective is the marker placement error alone, but {registered} '

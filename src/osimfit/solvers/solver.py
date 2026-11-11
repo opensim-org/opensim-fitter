@@ -1,10 +1,9 @@
 import numpy as np
-import casadi as ca
 import opensim as osim
 from abc import ABC, abstractmethod
 
 from ..data_sources import Trial
-from ..costs import Cost
+from ..costs import Cost, CostScope, CostTerm
 from ..model import ModelCache
 from .solution import Solution
 
@@ -38,6 +37,8 @@ class Solver(ABC):
     # Concrete subclasses override to define the set of CostInput fields supported by
     # the solver.
     SUPPORTED_INPUTS: frozenset[str] = frozenset()
+    SUPPORTED_SCOPES: frozenset[CostScope] = frozenset({'sample'})
+    GLOBAL_INPUTS: frozenset[str] = frozenset()
 
     def __init__(self, model: str | osim.Model, convergence_tolerance: float=1e-4):
         super().__init__()
@@ -55,8 +56,8 @@ class Solver(ABC):
         # Optimization settings.
         self.convergence_tolerance = convergence_tolerance
 
-        # Additional user-registered costs (e.g., regularization).
-        self.costs: list[Cost] = []
+        # Additional user-registered costs with their labels and evaluation scopes.
+        self.costs: list[CostTerm] = []
 
         # Reference data, one Trial per motion.
         self.trials: list[Trial] = []
@@ -93,17 +94,15 @@ class Solver(ABC):
 
     def add_cost(self, cost: Cost):
         """
-        Register an additional `Cost` to include in the solver's objective. The cost is
-        evaluated by calling it with a `CostInput`.
+        Register an additional cost, named by its type in the objective breakdown.
 
         Raises
         ------
         TypeError
-            If `cost` is not a `Cost`; a `TrackingCostBase` in particular is built by a
-            solver internally and cannot be registered here.
+            If `cost` is not a `Cost`.
         ValueError
-            If the cost depends on a `CostInput` field this solver does not provide, or
-            if a cost of the same type is already registered.
+            If the scope or inputs are unsupported, the cost needs reference data in
+            global scope, or a cost of the same type is already registered.
         """
         if not isinstance(cost, Cost):
             raise TypeError(
@@ -115,12 +114,22 @@ class Solver(ABC):
                 f'{type(self).__name__} does not support {type(cost).__name__}: it '
                 f'requires cost input(s) {sorted(unsupported)} that this solver does '
                 f'not provide (supported: {sorted(self.SUPPORTED_INPUTS)}).')
-        if any(type(cost) is type(registered) for registered in self.costs):
+        term = CostTerm(type(cost).__name__, cost)
+        if term.scope not in self.SUPPORTED_SCOPES:
+            raise ValueError(
+                f'{type(self).__name__} does not support {term.scope} cost scope.')
+        if term.scope == 'global':
+            unsupported = cost.required_inputs - self.GLOBAL_INPUTS
+            if unsupported:
+                raise ValueError(
+                    f'{type(cost).__name__} requires input(s) {sorted(unsupported)} '
+                    f'that {type(self).__name__} does not provide in global scope.')
+        if any(type(cost) is type(registered.cost) for registered in self.costs):
             raise ValueError(
                 f'A {type(cost).__name__} is already registered with this solver; a '
                 f'cost type may be added only once.')
 
-        self.costs.append(cost)
+        self.costs.append(term)
 
     def _assert_has_trials(self):
         """
@@ -206,40 +215,25 @@ class Solver(ABC):
             for coord_path in self.coordinate_q_map])
 
     @staticmethod
-    def _compute_average_trapezoidal_error(errors, times):
-        """
-        Time-averaged error computed from a per-timestep symbolic error vector using the
-        trapezoidal rule:
+    def _compute_average_trapezoidal_weights(times) -> np.ndarray:
+        """Normalized trapezoidal weights for a trial's strictly increasing times.
 
-            cost = (1 / (t_{N-1} - t_0))
-                   * sum_{i=0}^{N-2} 0.5 * (t_{i+1} - t_i) * (e_i + e_{i+1})
-
-        Compared to a simple mean (``ca.sum(errors) / num_times``), this is an
-        exact time average for piecewise-linear ``errors`` and handles
-        non-uniform time spacing correctly. Dividing by the total duration
-        keeps the cost in the same units as the per-timestep error so weights
-        on companion cost terms (e.g., body-scale regularization) need not be
-        retuned when switching averaging schemes.
-
-        Parameters
-        ----------
-        errors: ca.MX, shape (num_times, 1)
-            Symbolic per-timestep errors.
-        times: array-like of float, length num_times
-            Strictly increasing time vector associated with `errors`.
-
-        Returns
-        -------
-        ca.MX
-            Scalar time-averaged error expression.
+        The weights sum to one, preserving cost units and the relative strength of
+        global regularizers independently of trial duration or sample spacing.
+        A single sample (e.g., static data) has weight one.
         """
         times = np.asarray(times, dtype=float)
+        if times.ndim != 1 or times.size == 0 or not np.all(np.isfinite(times)):
+            raise ValueError('Expected a non-empty vector of finite sample times.')
+        if times.size == 1:
+            return np.ones(1)
         dt = np.diff(times)
+        if np.any(dt <= 0):
+            raise ValueError('Sample times must be strictly increasing.')
         weights = np.zeros(len(times))
         weights[:-1] += 0.5 * dt
-        weights[1:]  += 0.5 * dt
-        duration = times[-1] - times[0]
-        return ca.dot(ca.DM(weights), errors) / duration
+        weights[1:] += 0.5 * dt
+        return weights / (times[-1] - times[0])
 
     @abstractmethod
     def solve(self, guess=None) -> Solution:

@@ -1,14 +1,13 @@
 import numpy as np
-import casadi as ca
 import opensim as osim
 from abc import abstractmethod
 
 from ..data_sources import Trial
-from .cost import CostBase, CostCache, CostInput, CostWorkspace
+from .cost import CallbackCost, CostCache, TrialSample
 from .tracking_terms import FrameTrackingTerm, MarkerTrackingTerm, TrackingTaskSet
 
 
-class TrackingCostBase(CostBase):
+class TrackingCostBase(CallbackCost):
     """
     A cost evaluated at a single time sample of a single trial, through a
     `CostFunction` whose context is that sample's `TrackingTaskSet`.
@@ -33,6 +32,8 @@ class TrackingCostBase(CostBase):
         the overall `orientation_weight`. Absent frames use a weight of 1.0.
     """
 
+    requires_sample = True
+
     def __init__(self, position_weight: float = 1.0,
                  orientation_weight: float = 1.0,
                  marker_weights: dict[str, float] = None,
@@ -53,29 +54,12 @@ class TrackingCostBase(CostBase):
                 self.orientation_weight
                 * self.frame_orientation_weights.get(frame_path, 1.0))
 
-    def expression(self, workspace: CostWorkspace, input: CostInput, trial: Trial,
-                   itime: int, name: str) -> ca.MX:
-        """
-        Return this cost's contribution to the objective at one time sample of one
-        trial, evaluated by a `CostFunction` carrying that sample's `TrackingTaskSet`.
-
-        Parameters
-        ----------
-        workspace: CostWorkspace
-            Owns the sample's callback and tracking task set, and supplies the shared
-            cache for resolving model-bound quantities.
-        input: CostInput
-            The optimization variables.
-        trial: Trial
-            The trial supplying the reference data.
-        itime: int
-            Index of the time sample within `trial` to evaluate.
-        name: str
-            The name of the CasADi callback evaluating this sample.
-        """
-        tracking_task_set = self.create_tracking_task_set(workspace.cache, trial, itime)
-        workspace.tracking_task_sets.append(tracking_task_set)
-        return workspace.add_callback(name, self, tracking_task_set)(input)
+    def create_context(self, cache: CostCache,
+                       sample: TrialSample | None = None) -> TrackingTaskSet:
+        """Prepare the reference tasks for one sample in the owning workspace."""
+        if sample is None:
+            raise ValueError(f'{type(self).__name__} requires a trial sample.')
+        return self.create_tracking_task_set(cache, sample.trial, sample.index)
 
     @abstractmethod
     def create_tracking_task_set(self, cache: CostCache, trial: Trial,
@@ -93,40 +77,6 @@ class TrackingCostBase(CostBase):
         itime: int
             Index of the time sample within `trial` to track.
         """
-
-    @abstractmethod
-    def calc_value(self, cache: CostCache, context: TrackingTaskSet,
-                   values: dict[str, np.ndarray]) -> float:
-        """
-        Return this cost's scalar value at the sample `context` tracks.
-
-        Parameters
-        ----------
-        cache: CostCache
-            The solver's cache.
-        context: TrackingTaskSet
-            The tasks returned by `create_tracking_task_set`.
-        values: dict[str, np.ndarray]
-            The cost's `input_names`, mapped to their numeric values.
-        """
-
-    @abstractmethod
-    def calc_jacobian(self, cache: CostCache, context: TrackingTaskSet,
-                      values: dict[str, np.ndarray]) -> list[np.ndarray]:
-        """
-        Return this cost's Jacobian as one ``(1, n)`` block per entry of
-        `input_names`, in that order.
-
-        Parameters
-        ----------
-        cache: CostCache
-            The solver's cache.
-        context: TrackingTaskSet
-            The tasks returned by `create_tracking_task_set`.
-        values: dict[str, np.ndarray]
-            The cost's `input_names`, mapped to their numeric values.
-        """
-
 
 class TrackingCost(TrackingCostBase):
     """

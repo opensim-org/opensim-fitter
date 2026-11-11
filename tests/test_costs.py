@@ -14,7 +14,7 @@ from osimfit.model import ModelCache, BodyScale, StationCache, BeamLengthScale
 from osimfit.bounds import Bounds
 from osimfit.solvers import InverseKinematicsSolver, SplinedKinematicsSolver
 from osimfit.solvers.solution import ObjectiveTerms
-from osimfit.costs import (CallbackCost, CostInput, SymbolicCost,
+from osimfit.costs import (CallbackCost, CostEvaluation, CostInput, SymbolicCost,
                            BodyScaleRegularizationCost,
                            BodyScaleIsotropyCost, OffsetRegularizationCost,
                            TrackingCost, AnthropometricRegularizationCost,
@@ -195,16 +195,12 @@ def test_registered_cost_callbacks_size_themselves_from_the_solvers_parameters()
     assert callback.size1_in(0) == num_scales
 
 
-def test_add_cost_rejects_a_tracking_cost(double_pendulum_model):
-    """
-    A registered cost is evaluated from the model and the optimization variables
-    alone, so a TrackingCostBase (which a solver is meant to construct itself, per
-    trial and time sample) is not a Cost and cannot be registered.
-    """
+def test_add_cost_accepts_a_tracking_cost(double_pendulum_model):
     solver = InverseKinematicsSolver(double_pendulum_model)
-    with pytest.raises(TypeError, match='expects a Cost'):
-        solver.add_cost(TrackingCost())
-    assert solver.costs == []
+    cost = TrackingCost()
+    solver.add_cost(cost)
+    assert solver.costs[0].cost is cost
+    assert solver.costs[0].scope == 'sample'
 
 
 def test_add_cost_rejects_a_second_cost_of_the_same_type(double_pendulum_model):
@@ -378,7 +374,7 @@ def bind_cost(cost, mc):
     `mc`, i.e. the cost as a solver sees it during a single solve.
     """
     workspace = CostWorkspace(CostCache(mc))
-    return lambda input: cost.expression(workspace, input)
+    return lambda input: cost.expression(workspace, CostEvaluation(input))
 
 
 def register_body_scales(mc, body_paths):
@@ -559,7 +555,8 @@ def test_symbolic_cost_expression_is_its_evaluation():
     workspace = CostWorkspace(CostCache(ModelCache(create_two_link_model())))
 
     s = ca.DM([1.2, 0.9, 1.0])
-    assert float(cost.expression(workspace, CostInput(body_scales=s))) == pytest.approx(
+    evaluation = CostEvaluation(CostInput(body_scales=s))
+    assert float(cost.expression(workspace, evaluation)) == pytest.approx(
         float(cost.evaluate(CostInput(body_scales=s))))
 
 
@@ -1125,7 +1122,8 @@ def test_cost_workspaces_share_context_but_own_callbacks(monkeypatch, without_cy
         assert callback.context is contexts[0]()
         q = ca.MX.sym('q', 2)
         s = ca.MX.sym('s', 6)
-        expr = cost.expression(workspace, CostInput(coordinates=q, body_scales=s))
+        expr = cost.expression(
+            workspace, CostEvaluation(CostInput(coordinates=q, body_scales=s)))
         f = ca.Function('f', [q, s], [expr])
         jacobian = ca.Function('J', [q, s], [ca.jacobian(expr, q)])
         assert float(f(np.ones(2), np.ones(6))) == pytest.approx(14.25)

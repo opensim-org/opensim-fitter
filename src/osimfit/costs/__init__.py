@@ -1,4 +1,5 @@
-from .cost import (CostInput, CostBase, Cost, SymbolicCost, CallbackCost,
+from .cost import (CostEvaluation, CostScope, CostTerm, TrialSample,
+                   CostInput, CostBase, Cost, SymbolicCost, CallbackCost,
                    CostFunction, CostCache, CostWorkspace)
 from .tracking_tasks import (TrackingTaskArrays, TrackingTasks, MarkerTrackingTasks,
                              FrameTrackingTasks)
@@ -17,6 +18,7 @@ from .bilevel_cost import BilevelCost
 from .anthropometric_regularization_cost import AnthropometricRegularizationCost
 
 __all__ = [
+    'CostEvaluation', 'CostScope', 'CostTerm', 'TrialSample',
     'CostInput', 'CostBase', 'Cost', 'TrackingCostBase', 'SymbolicCost',
     'CallbackCost', 'CostFunction',
     'CostCache', 'CostWorkspace',

@@ -3,7 +3,8 @@ import casadi as ca
 import opensim as osim
 
 from ..data_sources import Trial
-from ..costs import Cost, CostInput, CostCache, CostWorkspace, TrackingCost
+from ..costs import (CostEvaluation, CostInput, CostCache, CostTerm, CostWorkspace,
+                     TrackingCost, TrialSample)
 from .solution import ObjectiveTerms, Solution
 from .solver import TrackingSolver
 
@@ -62,10 +63,10 @@ class InverseKinematicsSolver(TrackingSolver):
         # Solve each trial sequentially, restarting the warm start from the default
         # coordinate values (or that trial's guess) at each trial's first time step.
         cache = CostCache(self.mc)
-        named_costs = [(type(cost).__name__, cost) for cost in self.costs]
         tracking_cost = TrackingCost(
             self.position_weight, self.orientation_weight, self.marker_weights,
             self.frame_position_weights, self.frame_orientation_weights)
+        named_costs = [CostTerm('tracking', tracking_cost), *self.costs]
 
         # Accumulate each term's value over every sample of every trial, and report the
         # mean below.
@@ -99,7 +100,7 @@ class InverseKinematicsSolver(TrackingSolver):
                     x0 = guess_q[itime, :].tolist()
 
                 q_opt, term_values = self._solve_step(
-                    cache, trial, itime, tracking_cost, named_costs, x_prev,
+                    cache, trial, itime, named_costs, x_prev,
                     x0, lbx, ubx)
                 objective_terms.accumulate(term_values)
                 q_traj[itime, :] = q_opt
@@ -119,8 +120,7 @@ class InverseKinematicsSolver(TrackingSolver):
             outputs={'cost_terms': objective_terms.summarize_mean()})
 
     def _solve_step(self, cache: CostCache, trial: Trial, itime: int,
-                    tracking_cost: TrackingCost,
-                    named_costs: list[tuple[str, Cost]],
+                    named_costs: list[CostTerm],
                     x_prev, x0, lbx, ubx) -> tuple[np.ndarray, dict[str, float]]:
         """
         Build and solve one time step of the inverse kinematics problem.
@@ -133,11 +133,8 @@ class InverseKinematicsSolver(TrackingSolver):
             The trial supplying the reference data.
         itime: int
             Index of the time sample within `trial` to track.
-        tracking_cost: TrackingCost
-            The tracking cost description, built once per solve.
-        named_costs: list[tuple[str, Cost]]
-            The solver's registered costs, each paired with its label in the objective
-            breakdown.
+        named_costs: list[CostTerm]
+            Tracking and user costs with their labels and evaluation scopes.
         x_prev: array-like
             The solution from the previous time step.
         x0: array-like
@@ -149,9 +146,8 @@ class InverseKinematicsSolver(TrackingSolver):
         x = ca.SX.sym('x', len(self.coordinate_q_indexes))
         cost_input = CostInput(coordinates=x)
         terms = ObjectiveTerms()
-        terms.add('tracking', tracking_cost.expression(
-            workspace, cost_input, trial, itime, 'tracking_cost'))
-        terms.add_costs(named_costs, cost_input, workspace)
+        evaluation = CostEvaluation(cost_input, TrialSample(trial, itime))
+        terms.add_costs(named_costs, evaluation, workspace)
         if self.damping_weight > 0:
             terms.add('damping', self.damping_weight
                       * ca.dot(x - x_prev, x - x_prev) / x.numel())

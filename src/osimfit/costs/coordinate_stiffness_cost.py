@@ -2,7 +2,7 @@ import casadi as ca
 import opensim as osim
 
 from ..model import ModelCache
-from .cost import Cost, CostWorkspace, CostInput
+from .cost import Cost, CostWorkspace, CostEvaluation
 
 
 class CoordinateStiffnessCost(Cost):
@@ -50,13 +50,14 @@ class CoordinateStiffnessCost(Cost):
         self.stiffnesses = dict(stiffnesses)
         self.targets = dict(targets) if targets else {}
 
-    def expression(self, workspace: CostWorkspace, input: CostInput) -> ca.MX:
+    def expression(self, workspace: CostWorkspace,
+                   evaluation: CostEvaluation) -> ca.MX:
         cache = workspace.cache
         indexes, stiffnesses, targets = cache.memoize(
             self, 'coordinates', lambda: self._resolve(cache.mc))
         penalty = 0
         for index, stiffness, target in zip(indexes, stiffnesses, targets):
-            penalty += stiffness * (input.coordinates[index] - target)**2
+            penalty += stiffness * (evaluation.inputs.coordinates[index] - target)**2
         return self.weight * penalty
 
     def _resolve(self, mc: ModelCache) -> tuple[list[int], list[float], list[float]]:
