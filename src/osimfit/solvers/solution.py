@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
 
-from ..costs import CostInput
+from ..costs import CostInput, CostWorkspace
 from ..model import Parameter
 
 
@@ -359,19 +359,22 @@ class ObjectiveTerms:
         """
         self.terms[label] = self.terms.get(label, 0) + expr
 
-    def add_costs(self, named_reps: list, cost_input: CostInput) -> None:
+    def add_costs(self, named_costs: list, cost_input: CostInput,
+                  workspace: CostWorkspace) -> None:
         """
         Add one term per registered cost, evaluated against `cost_input`.
 
         Parameters
         ----------
-        named_reps: list[tuple[str, CostRep]]
-            Each cost's label paired with its rep; a cost is labelled by its type.
+        named_costs: list[tuple[str, Cost]]
+            Each cost's label paired with the cost; a cost is labelled by its type.
         cost_input: CostInput
-            The input to evaluate each rep against.
+            The input to evaluate each cost against.
+        workspace: CostWorkspace
+            Owns the callbacks and supplies shared evaluation data for each cost.
         """
-        for label, cost_rep in named_reps:
-            self.add(label, cost_rep(cost_input))
+        for label, cost in named_costs:
+            self.add(label, cost.expression(workspace, cost_input))
 
     def scale(self, factor: float) -> None:
         """

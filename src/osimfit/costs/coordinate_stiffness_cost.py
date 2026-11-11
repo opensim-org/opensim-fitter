@@ -2,7 +2,7 @@ import casadi as ca
 import opensim as osim
 
 from ..model import ModelCache
-from .cost import Cost, CostInput, CostRep
+from .cost import Cost, CostWorkspace, CostInput
 
 
 class CoordinateStiffnessCost(Cost):
@@ -28,8 +28,8 @@ class CoordinateStiffnessCost(Cost):
     ------
     ValueError
         If `weight` or any stiffness is negative, or `stiffnesses` is empty.
-        `CoordinateStiffnessCostRep` additionally validates the coordinate paths
-        against the model.
+        The coordinate paths are additionally validated against the model when the
+        cost is first evaluated in a solve.
     """
     required_inputs = frozenset({'coordinates'})
 
@@ -50,56 +50,46 @@ class CoordinateStiffnessCost(Cost):
         self.stiffnesses = dict(stiffnesses)
         self.targets = dict(targets) if targets else {}
 
-    def create_rep(self, mc: ModelCache) -> 'CoordinateStiffnessCostRep':
-        return CoordinateStiffnessCostRep(self, mc)
+    def expression(self, workspace: CostWorkspace, input: CostInput) -> ca.MX:
+        cache = workspace.cache
+        indexes, stiffnesses, targets = cache.memoize(
+            self, 'coordinates', lambda: self._resolve(cache.mc))
+        penalty = 0
+        for index, stiffness, target in zip(indexes, stiffnesses, targets):
+            penalty += stiffness * (input.coordinates[index] - target)**2
+        return self.weight * penalty
 
+    def _resolve(self, mc: ModelCache) -> tuple[list[int], list[float], list[float]]:
+        """
+        Resolve each penalized coordinate's index into the coordinates input, its
+        stiffness, and its target, falling back to the coordinate's default value in
+        the model when no target was given.
 
-class CoordinateStiffnessCostRep(CostRep):
-    """
-    The rep of a `CoordinateStiffnessCost`.
-
-    Parameters
-    ----------
-    cost: CoordinateStiffnessCost
-        The cost this rep represents.
-    mc: ModelCache
-        The solver's `ModelCache`, supplying the coordinate ordering and the default
-        coordinate values.
-
-    Raises
-    ------
-    ValueError
-        If a coordinate path is not an independent coordinate of the model. Dependent
-        (e.g. constrained) coordinates are absent from `ModelCache.coordinate_q_map` and
-        so cannot be penalized directly.
-    """
-
-    def __init__(self, cost: CoordinateStiffnessCost, mc: ModelCache):
-        self.cost = cost
+        Raises
+        ------
+        ValueError
+            If a coordinate path is not an independent coordinate of the model.
+            Dependent (e.g. constrained) coordinates are absent from
+            `ModelCache.coordinate_q_map` and so cannot be penalized directly.
+        """
         # Element j of the coordinates vector is the j-th entry of coordinate_q_map, so
         # a coordinate's position in that ordering is its index into the input.
         order = list(mc.coordinate_q_map)
-        self.indexes: list[int] = []
-        self.stiffnesses: list[float] = []
-        self.targets: list[float] = []
-        for path, stiffness in cost.stiffnesses.items():
+        indexes: list[int] = []
+        stiffnesses: list[float] = []
+        targets: list[float] = []
+        for path, stiffness in self.stiffnesses.items():
             if path not in mc.coordinate_q_map:
                 known = 'is a dependent coordinate' if mc.model.hasComponent(path) \
                     else 'is not a coordinate in the model'
                 raise ValueError(
                     f'Cannot apply a coordinate stiffness to {path}: it {known}. '
                     f'Expected one of the model\'s independent coordinates.')
-            self.indexes.append(order.index(path))
-            self.stiffnesses.append(float(stiffness))
-            if path in cost.targets:
-                self.targets.append(float(cost.targets[path]))
+            indexes.append(order.index(path))
+            stiffnesses.append(float(stiffness))
+            if path in self.targets:
+                targets.append(float(self.targets[path]))
             else:
                 coordinate = osim.Coordinate.safeDownCast(mc.model.getComponent(path))
-                self.targets.append(float(coordinate.getDefaultValue()))
-
-    def __call__(self, input: CostInput) -> ca.MX:
-        penalty = 0
-        for index, stiffness, target in zip(
-                self.indexes, self.stiffnesses, self.targets):
-            penalty += stiffness * (input.coordinates[index] - target)**2
-        return self.cost.weight * penalty
+                targets.append(float(coordinate.getDefaultValue()))
+        return indexes, stiffnesses, targets

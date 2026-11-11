@@ -25,13 +25,6 @@ class BodyScaleGroup:
     mobod_indexes: list[int]
         `MobilizedBodyIndex` values for the bodies in this group, paired with
         body_paths.
-
-    Notes
-    -----
-    A group holds only model-independent descriptors, so the same group may be
-    registered on more than one `ModelCache`. The `Joint`s whose mobilizer frames
-    scale with the group are model-specific and are therefore cached on the
-    `ModelCache`, rebuilt whenever a group is registered.
     """
     body_paths: list[str]
     mobod_indexes: list[int]
@@ -75,13 +68,6 @@ class JointParameterGroup:
     ----------
     joint_paths: list[str]
         Absolute model paths to the joints in this group.
-
-    Notes
-    -----
-    A group holds only model-independent descriptors, so the same group may be
-    registered on more than one `ModelCache`. The `Joint`s and their baselines are
-    model-specific and are therefore cached on the `ModelCache`; see
-    `ModelCache.add_parameter_group`.
     """
     joint_paths: list[str]
 
