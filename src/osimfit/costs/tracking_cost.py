@@ -4,7 +4,7 @@ import opensim as osim
 from ..data_sources import Trial
 from ..model import ModelCache
 from .cost import CallbackCostRep, CostInput, Function, TrackingCostBase
-from .terms import FrameTrackingTerm, MarkerTrackingTerm
+from .tracking_terms import FrameTrackingTerm, MarkerTrackingTerm
 
 
 class TrackingCost(TrackingCostBase):

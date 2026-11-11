@@ -1,7 +1,7 @@
 from .cost import (CostInput, CostRep, CostBase, Cost, TrackingCostBase, SymbolicCost,
                    SymbolicCostRep, Function, CallbackCostRep)
-from .tasks import TaskArrays, Tasks, MarkerTasks, FrameTasks
-from .terms import (TrackingTerm, FrameTrackingTerm, MarkerTrackingTerm, BilevelTerm,
+from .tracking_tasks import TrackingTaskArrays, TrackingTasks, MarkerTrackingTasks, FrameTrackingTasks
+from .tracking_terms import (TrackingTerm, FrameTrackingTerm, MarkerTrackingTerm, BilevelTerm,
                     MarkerBilevelTerm, FrameBilevelTerm)
 from .body_scale_regularization_cost import BodyScaleRegularizationCost
 from .body_scale_isotropy_cost import BodyScaleIsotropyCost
@@ -19,7 +19,7 @@ from .anthropometric_regularization_cost import (AnthropometricRegularizationCos
 __all__ = [
     'CostInput', 'CostRep', 'CostBase', 'Cost', 'TrackingCostBase', 'SymbolicCost',
     'SymbolicCostRep', 'Function', 'CallbackCostRep',
-    'TaskArrays', 'Tasks', 'MarkerTasks', 'FrameTasks',
+    'TrackingTaskArrays', 'TrackingTasks', 'MarkerTrackingTasks', 'FrameTrackingTasks',
     'TrackingTerm', 'FrameTrackingTerm', 'MarkerTrackingTerm', 'BilevelTerm',
     'MarkerBilevelTerm', 'FrameBilevelTerm',
     'BodyScaleRegularizationCost',

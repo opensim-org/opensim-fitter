@@ -4,7 +4,7 @@ import opensim as osim
 from ..data_sources import Trial
 from ..model import ModelCache
 from .cost import CallbackCostRep, Function, TrackingCostBase
-from .terms import FrameBilevelTerm, MarkerBilevelTerm
+from .tracking_terms import FrameBilevelTerm, MarkerBilevelTerm
 
 
 class BilevelCost(TrackingCostBase):

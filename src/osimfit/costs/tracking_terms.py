@@ -3,7 +3,7 @@ import opensim as osim
 from abc import ABC, abstractmethod
 
 from ..model import ModelCache
-from .tasks import FrameTasks, MarkerTasks
+from .tracking_tasks import FrameTrackingTasks, MarkerTrackingTasks
 
 
 class TrackingTerm(ABC):
@@ -26,7 +26,7 @@ class TrackingTerm(ABC):
         pass
 
 
-class FrameTrackingTerm(FrameTasks, TrackingTerm):
+class FrameTrackingTerm(FrameTrackingTasks, TrackingTerm):
     """
     A tracking cost term that computes the aggregate error between model frames'
     positions and orientations and corresponding reference data as a function of the
@@ -119,7 +119,7 @@ class FrameTrackingTerm(FrameTasks, TrackingTerm):
         return [np.expand_dims(Jq.to_numpy()[self.mc.coordinate_q_indexes], axis=0)]
 
 
-class MarkerTrackingTerm(MarkerTasks, TrackingTerm):
+class MarkerTrackingTerm(MarkerTrackingTasks, TrackingTerm):
     """
     A tracking cost term that computes the aggregate error between model markers'
     positions and corresponding reference positions as a function of the model's
@@ -183,7 +183,7 @@ class BilevelTerm(TrackingTerm):
     An intermediate base class that provides functionality common to bilevel cost terms.
 
     Applying body scales and placement offsets to the cached station locations is shared
-    across marker and frame terms; subclasses (via `MarkerTasks`/`FrameTasks`) supply the
+    across marker and frame terms; subclasses (via `MarkerTrackingTasks`/`FrameTrackingTasks`) supply the
     per-task `station_caches`, `stations`, and `offset_group_indexes`.
     """
     def __init__(self):
@@ -214,7 +214,7 @@ class BilevelTerm(TrackingTerm):
             np.ascontiguousarray(stations, dtype=float).reshape(-1))
 
 
-class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
+class MarkerBilevelTerm(MarkerTrackingTasks, BilevelTerm):
     """
     A tracking cost term that computes the aggregate error between model markers' scaled
     positions and corresponding reference positions as a function of the model's
@@ -312,7 +312,7 @@ class MarkerBilevelTerm(MarkerTasks, BilevelTerm):
         return [Jq, Js, Jo, Jr, Jl]
 
 
-class FrameBilevelTerm(FrameTasks, BilevelTerm):
+class FrameBilevelTerm(FrameTrackingTasks, BilevelTerm):
     """
     A tracking cost term that computes the aggregate error between model frames' scaled
     positions and corresponding reference positions as a function of the model's
