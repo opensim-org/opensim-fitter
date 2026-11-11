@@ -321,6 +321,12 @@ class CostWorkspace:
         return tuple(callback.context for callback in self._callbacks
                      if callback.cost is cost)
 
+    def validate(self, named_costs: list['CostTerm']) -> None:
+        """Validate all costs after objective assembly and before optimization."""
+        for term in named_costs:
+            term.cost.validate(self)
+
+
 class Cost(CostBase):
     """
     A cost evaluated from the model and the optimization variables that user can
@@ -343,6 +349,11 @@ class Cost(CostBase):
         evaluation: CostEvaluation
             The optimization variables and optional reference sample.
         """
+
+    def validate(self, workspace: CostWorkspace) -> None:
+        """Check the fully assembled problem, raising ValueError if invalid."""
+        pass
+
 
 @dataclass(frozen=True)
 class CostTerm:

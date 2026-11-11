@@ -9,10 +9,14 @@ from osimfit.costs import (BilevelCost, BodyScaleRegularizationCost, Cost,
                            CostCache, CostEvaluation, CostInput, CostTerm,
                            CostWorkspace, CoordinateStiffnessCost, TrackingCost,
                            TrialSample)
-from osimfit.model import BodyScale, ModelCache
-from osimfit.solvers import InverseKinematicsSolver, SplinedKinematicsSolver
+from osimfit.data_sources import Trial
+from osimfit.model import BodyScale, FrameOffset, MarkerOffset, ModelCache
+from osimfit.solvers import InverseKinematicsSolver, MarkerPlacer, SplinedKinematicsSolver
 from osimfit.solvers.solution import ObjectiveTerms
 from tests.test_double_pendulum import create_double_pendulum
+from tests.test_data_sources import PositionsSource, PositionsAndOrientationsSource
+from tests.test_marker_placer import create_placer_model, PosedMarkerSource
+from tests.test_offsets import create_offset_test_model
 from tests.test_solution import create_pendulum_trial
 
 
@@ -192,3 +196,100 @@ def test_registered_tracking_cost_uses_the_common_solver_path(tmp_path, solver_t
     solver.add_cost(TrackingCost(position_weight=2))
     terms = solver.solve().outputs['cost_terms']['terms']
     assert terms['TrackingCost']['value'] == pytest.approx(2 * terms['tracking']['value'])
+
+
+@pytest.mark.parametrize('solver_type, declared_scope', [
+    (InverseKinematicsSolver, 'sample'),
+    (SplinedKinematicsSolver, 'sample'),
+    (SplinedKinematicsSolver, 'global'),
+])
+def test_cost_validation_runs_after_assembly_before_optimization(
+        tmp_path, monkeypatch, solver_type, declared_scope):
+    evaluations = []
+    validations = []
+
+    class ValidatingCost(Cost):
+        scope = declared_scope
+
+        def expression(self, workspace, evaluation):
+            evaluations.append(evaluation.sample)
+            return ca.MX(0)
+
+        def validate(self, workspace):
+            validations.append(list(evaluations))
+            raise ValueError('cost validation failed')
+
+    def unexpected_solver(*args, **kwargs):
+        pytest.fail('NLP solver constructed before cost validation succeeded')
+
+    monkeypatch.setattr(ca, 'nlpsol', unexpected_solver)
+    solver = solver_type(create_double_pendulum(1, 1))
+    solver.add_cost(ValidatingCost())
+    for name in ('first', 'second'):
+        solver.add_trial(create_pendulum_trial(tmp_path, name=name, duration=0.1))
+
+    with pytest.raises(ValueError, match='cost validation failed'):
+        solver.solve()
+
+    if declared_scope == 'global':
+        expected = [None]
+    elif solver_type is InverseKinematicsSolver:
+        expected = [TrialSample(solver.trials[0], 0)]
+    else:
+        expected = [TrialSample(trial, i) for trial in solver.trials
+                    for i in range(len(trial.times))]
+    assert validations == [expected]
+
+
+@pytest.mark.parametrize('parameter_type, path, source_type, label', [
+    (MarkerOffset, '/markerset/m_body', PositionsSource, 'Marker'),
+    (FrameOffset, '/bodyset/body/pof', PositionsAndOrientationsSource, 'Frame'),
+])
+def test_offset_validation_combines_trials_only_within_its_workspace(
+        parameter_type, path, source_type, label):
+    mc = ModelCache(create_offset_test_model())
+    parameter = parameter_type(path, Bounds(-0.1, 0.1), np.zeros(3))
+    parameter.validate(mc)
+    mc.add_parameter_group(parameter.to_group())
+    cost = BilevelCost()
+    named_costs = [CostTerm('tracking', cost)]
+    workspace = CostWorkspace(CostCache(mc))
+
+    first_source = PositionsSource()
+    first_source.labels_to_remove = ['b']
+    first_source.label_map = {'a': '/markerset/m_pof'}
+    first = Trial('first', [first_source])
+    workspace.cost_callback(cost, TrialSample(first, 0))
+    with pytest.raises(ValueError, match=f'{label} offset group .*not tracked'):
+        workspace.validate(named_costs)
+
+    second_source = source_type()
+    second_source.labels_to_remove = ['b']
+    second_source.label_map = {'a': path}
+    second = Trial('second', [second_source])
+    workspace.cost_callback(cost, TrialSample(second, 0))
+    workspace.validate(named_costs)
+
+    # Reusing the cost and model cache cannot carry coverage into a new problem.
+    other_workspace = CostWorkspace(workspace.cache)
+    other_workspace.cost_callback(cost, TrialSample(first, 0))
+    with pytest.raises(ValueError, match=f'{label} offset group .*not tracked'):
+        other_workspace.validate(named_costs)
+
+
+@pytest.mark.parametrize('solver_type', [SplinedKinematicsSolver, MarkerPlacer])
+def test_solvers_reject_untracked_offsets_through_cost_validation(monkeypatch, solver_type):
+    model = create_placer_model(np.zeros(3))
+    source = PosedMarkerSource(model, {}, times=(0.0, 0.1))
+    source.labels_to_remove = ['/markerset/m1']
+    solver = solver_type(model)
+    solver.add_trial(Trial('missing_marker', [source]))
+    if solver_type is SplinedKinematicsSolver:
+        solver.add_parameter(MarkerOffset('/markerset/m1', Bounds(-0.1, 0.1), np.zeros(3)))
+
+    def unexpected_solver(*args, **kwargs):
+        pytest.fail('NLP solver constructed with an untracked offset')
+
+    monkeypatch.setattr(ca, 'nlpsol', unexpected_solver)
+    with pytest.raises(ValueError, match='Marker offset group .*m1.*not tracked'):
+        solver.solve()

@@ -3,7 +3,7 @@ import casadi as ca
 import opensim as osim
 
 from ..costs import (BilevelCost, CostInput, CostCache, CostWorkspace,
-                     TrackingTaskSet, TrackingCost, CostEvaluation, CostTerm, TrialSample)
+                     TrackingCost, CostEvaluation, CostTerm, TrialSample)
 from ..model import (ModelCache, Parameter, BodyScale, MarkerOffset, FrameOffset,
                      EllipsoidRadiiScale, BeamLengthScale)
 from ..scaling import Axis, Scaler, ManualBodyScale
@@ -250,15 +250,12 @@ class SplinedKinematicsSolver(TrackingSolver):
                 terms.add('damping', self.damping_weight
                           * ca.dot(ca.DM(weights), ca.sum2(qdot**2)))
 
-        # Every offset group must be tracked in at least one trial.
-        if num_params > 0:
-            self._assert_offset_groups_used(workspace.contexts(tracking_cost))
-
         # Add the cost terms on the parameters shared across all trials. These are
         # evaluated once, and so bypass the per-trial averaging above.
         parameter_input = CostInput(body_scales=s, marker_offsets=mo, frame_offsets=fo,
                                     ellipsoid_radii_scales=er, beam_length_scales=bl)
         terms.add_costs(named_costs, CostEvaluation(parameter_input), workspace)
+        workspace.validate(named_costs)
 
         # Solve.
         x = ca.vertcat(*[ca.vec(c) for c in coeffs], s, mo, fo, er, bl)
@@ -304,34 +301,6 @@ class SplinedKinematicsSolver(TrackingSolver):
                 'cost_terms': terms.summarize(x, sol['x']),
             },
         )
-
-    def _assert_offset_groups_used(self, tracking_task_sets: tuple[TrackingTaskSet, ...]):
-        """
-        Verify that every registered offset group is tracked by at least one task in at
-        least one of `tracking_task_sets`, ensuring that the offset is properly
-        constrained in the bilevel optimization problem.
-
-        Raises
-        ------
-        ValueError
-            If any registered marker or frame offset group is tracked by no task.
-        """
-        def assert_used(used, offset_groups, label):
-            for i, group in enumerate(offset_groups):
-                if i not in used:
-                    raise ValueError(
-                        f'{label.capitalize()} offset group {group.component_paths} is '
-                        f'not tracked by any registered {label} in any trial; its '
-                        f'offset would be unconstrained.')
-
-        used_markers = {g for tracking_task_set in tracking_task_sets
-                        for g in tracking_task_set.marker_term.offset_group_indexes
-                        if g is not None}
-        used_frames = {g for tracking_task_set in tracking_task_sets
-                       for g in tracking_task_set.frame_term.offset_group_indexes
-                       if g is not None}
-        assert_used(used_markers, self.mc.marker_offset_groups, 'marker')
-        assert_used(used_frames, self.mc.frame_offset_groups, 'frame')
 
     def update_model(self, model: osim.Model, solution: Solution,
                     mass: float = None) -> osim.Model:

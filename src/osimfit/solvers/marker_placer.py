@@ -103,6 +103,7 @@ class MarkerPlacer(Solver):
             terms.add_costs(named_costs, evaluation, workspace,
                             weight=1.0 / len(self.trials))
 
+        workspace.validate(named_costs)
 
         # Solve.
         x = ca.vertcat(*poses, s, mo, fo)
