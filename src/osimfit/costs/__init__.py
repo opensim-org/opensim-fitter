@@ -13,13 +13,12 @@ from .ellipsoid_radii_scale_regularization_cost import (
     EllipsoidRadiiScaleRegularizationCost)
 from .beam_length_scale_regularization_cost import BeamLengthScaleRegularizationCost
 from .coordinate_stiffness_cost import CoordinateStiffnessCost
-from .tracking_cost import TrackingCostBase, TrackingCost
-from .bilevel_cost import BilevelCost
+from .tracking_cost import TrackingCost, BilevelCost
 from .anthropometric_regularization_cost import AnthropometricRegularizationCost
 
 __all__ = [
     'CostEvaluation', 'CostScope', 'CostTerm', 'TrialSample',
-    'CostInput', 'CostBase', 'Cost', 'TrackingCostBase', 'SymbolicCost',
+    'CostInput', 'CostBase', 'Cost', 'SymbolicCost',
     'CallbackCost', 'CostFunction',
     'CostCache', 'CostWorkspace',
     'TrackingTaskArrays', 'TrackingTasks', 'MarkerTrackingTasks', 'FrameTrackingTasks',

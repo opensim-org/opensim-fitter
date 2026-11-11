@@ -1,16 +1,17 @@
 import numpy as np
 import opensim as osim
-from abc import abstractmethod
 
 from ..data_sources import Trial
 from .cost import CallbackCost, CostCache, TrialSample
-from .tracking_terms import FrameTrackingTerm, MarkerTrackingTerm, TrackingTaskSet
+from .tracking_terms import (FrameTrackingTerm, MarkerTrackingTerm,
+                             FrameBilevelTerm, MarkerBilevelTerm, TrackingTaskSet)
 
 
-class TrackingCostBase(CallbackCost):
+class TrackingCost(CallbackCost):
     """
-    A cost evaluated at a single time sample of a single trial, through a
-    `CostFunction` whose context is that sample's `TrackingTaskSet`.
+    The weighted, squared error between the model's markers and frames and a trial's
+    reference data, as a function of the model's generalized coordinates. Evaluated
+    through a `CostFunction` whose context is one sample's `TrackingTaskSet`.
 
     Parameters
     ----------
@@ -33,6 +34,7 @@ class TrackingCostBase(CallbackCost):
     """
 
     requires_sample = True
+    required_inputs = frozenset({'coordinates'})
 
     def __init__(self, position_weight: float = 1.0,
                  orientation_weight: float = 1.0,
@@ -61,7 +63,6 @@ class TrackingCostBase(CallbackCost):
             raise ValueError(f'{type(self).__name__} requires a trial sample.')
         return self.create_tracking_task_set(cache, sample.trial, sample.index)
 
-    @abstractmethod
     def create_tracking_task_set(self, cache: CostCache, trial: Trial,
                                  itime: int) -> TrackingTaskSet:
         """
@@ -77,22 +78,6 @@ class TrackingCostBase(CallbackCost):
         itime: int
             Index of the time sample within `trial` to track.
         """
-
-class TrackingCost(TrackingCostBase):
-    """
-    The weighted, squared error between the model's markers and frames and a trial's
-    reference data, as a function of the model's generalized coordinates.
-
-    Parameters
-    ----------
-    position_weight, orientation_weight, marker_weights, frame_position_weights,
-    frame_orientation_weights
-        See `TrackingCostBase`, which defines the weighting these costs apply.
-    """
-    required_inputs = frozenset({'coordinates'})
-
-    def create_tracking_task_set(self, cache: CostCache, trial: Trial,
-                                 itime: int) -> TrackingTaskSet:
         tracking_task_set = TrackingTaskSet(MarkerTrackingTerm(cache.mc),
                                             FrameTrackingTerm(cache.mc))
 
@@ -118,7 +103,8 @@ class TrackingCost(TrackingCostBase):
 
         return tracking_task_set
 
-    def _apply_state(self, cache: CostCache, values: dict[str, np.ndarray]):
+    def _apply_state(self, cache: CostCache, context: TrackingTaskSet,
+                     values: dict[str, np.ndarray]):
         """
         Apply the input coordinates to the model state and realize the system to the
         position stage.
@@ -129,11 +115,84 @@ class TrackingCost(TrackingCostBase):
         cache.mc.model.realizePosition(cache.state)
 
     def calc_value(self, cache, context, values):
-        self._apply_state(cache, values)
+        self._apply_state(cache, context, values)
         return (context.marker_term.calc_error(cache.state) +
                 context.frame_term.calc_error(cache.state))
 
     def calc_jacobian(self, cache, context, values):
-        self._apply_state(cache, values)
+        self._apply_state(cache, context, values)
         return [context.marker_term.calc_jacobian(cache.state)[0] +
                 context.frame_term.calc_jacobian(cache.state)[0]]
+
+
+class BilevelCost(TrackingCost):
+    """
+    The tracking cost of `TrackingCost`, as a function of the model's generalized
+    coordinates, its body scales, its per-marker/frame XYZ placement offsets, and its
+    joint-level geometry (e.g., ellipsoid radii).
+
+    Parameters
+    ----------
+    position_weight, orientation_weight, marker_weights, frame_position_weights,
+    frame_orientation_weights
+        See `TrackingCost`, which defines the weighting these costs apply.
+    """
+    required_inputs = frozenset(
+        {'coordinates', 'body_scales', 'marker_offsets', 'frame_offsets',
+         'ellipsoid_radii_scales', 'beam_length_scales'})
+
+    def create_tracking_task_set(self, cache: CostCache, trial: Trial,
+                                 itime: int) -> TrackingTaskSet:
+        mc = cache.mc
+        tracking_task_set = TrackingTaskSet(MarkerBilevelTerm(mc), FrameBilevelTerm(mc))
+        marker_index_of = {path: i for i, grp in enumerate(mc.marker_offset_groups)
+                           for path in grp.component_paths}
+        frame_index_of = {path: i for i, grp in enumerate(mc.frame_offset_groups)
+                          for path in grp.component_paths}
+
+        for data in trial.frame_data:
+            for iframe, frame_path in enumerate(data.labels):
+                frame_position_weight, frame_orientation_weight = \
+                    self.get_frame_weights(frame_path)
+                tracking_task_set.frame_term.add_frame(
+                    frame_path,
+                    data.positions.getRowAtIndex(itime).getElt(0, iframe),
+                    data.orientations.getRowAtIndex(itime).getElt(0, iframe),
+                    position_weight=frame_position_weight,
+                    orientation_weight=frame_orientation_weight,
+                    offset_group_index=frame_index_of.get(frame_path),
+                    station_cache=cache.frame_cache(frame_path))
+
+        for data in trial.marker_data:
+            for imarker, marker_path in enumerate(data.labels):
+                tracking_task_set.marker_term.add_marker(
+                    marker_path,
+                    data.positions.getRowAtIndex(itime).getElt(0, imarker),
+                    weight=self.get_marker_weight(marker_path),
+                    offset_group_index=marker_index_of.get(marker_path),
+                    station_cache=cache.station_cache(marker_path))
+
+        return tracking_task_set
+
+    def _apply_state(self, cache: CostCache, context: TrackingTaskSet,
+                     values: dict[str, np.ndarray]):
+        """
+        Apply input coordinates, body-scale variables, offset variables, and
+        joint-level variables (ellipsoid radii and beam lengths) to the model State,
+        then realize to Position.
+        """
+        mc, state = cache.mc, cache.state
+        body_scales = values['body_scales']
+        mc.set_scaled_mobilizer_frame_positions(state, body_scales)
+        context.marker_term.apply_state(body_scales, values['marker_offsets'])
+        context.frame_term.apply_state(body_scales, values['frame_offsets'])
+        mc.set_ellipsoid_radii_from_scales(state, values['ellipsoid_radii_scales'])
+        mc.set_beam_length_from_scales(state, values['beam_length_scales'])
+
+        super()._apply_state(cache, context, values)
+
+    def calc_jacobian(self, cache, context, values):
+        self._apply_state(cache, context, values)
+        Jq_m, Js_m, Jmo, Jr_m, Jl_m = context.marker_term.calc_jacobian(cache.state)
+        Jq_f, Js_f, Jfo, Jr_f, Jl_f = context.frame_term.calc_jacobian(cache.state)
+        return [Jq_m + Jq_f, Js_m + Js_f, Jmo, Jfo, Jr_m + Jr_f, Jl_m + Jl_f]
