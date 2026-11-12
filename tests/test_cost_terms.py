@@ -16,8 +16,7 @@ from osimfit.model import (ModelCache, BodyScaleGroup, MarkerOffsetGroup,
 from osimfit.solvers import SplinedKinematicsSolver
 from osimfit.costs import CostInput, TrackingCost, BilevelCost, CostCache
 from osimfit.costs.cost import CostFunction
-from osimfit.costs.tracking_terms import (FrameTrackingTerm, FrameBilevelTerm,
-                                          MarkerTrackingTerm, MarkerBilevelTerm,
+from osimfit.costs.tracking_terms import (FrameTrackingTerm, MarkerTrackingTerm,
                                           TrackingTaskSet)
 from tests.test_costs import create_beam_model, getP_BM
 from tests.test_double_pendulum import create_double_pendulum
@@ -196,7 +195,7 @@ def build_bilevel_callback(name, mc, body_scale_groups=[], marker_offset_groups=
                   + list(frame_offset_groups) + list(ellipsoid_radii_scale_groups)
                   + list(beam_length_scale_groups)):
         mc.add_parameter_group(group)
-    tracking_task_set = TrackingTaskSet(MarkerBilevelTerm(mc), FrameBilevelTerm(mc))
+    tracking_task_set = TrackingTaskSet(MarkerTrackingTerm(mc), FrameTrackingTerm(mc))
     cache = CostCache(mc)
     return CostFunction(name, BilevelCost(), cache, cache.state, tracking_task_set,
                         enable_fd=enable_fd)
@@ -1034,7 +1033,7 @@ def test_frame_tracking_term_jacobian_matches_finite_differences():
     np.testing.assert_allclose(analytic, numeric, rtol=1e-5, atol=1e-7)
 
 
-def test_frame_bilevel_term_coordinate_jacobian_matches_finite_differences():
+def test_scaled_frame_tracking_term_jacobian_matches_finite_differences():
     model = _chain_with_rotated_offset_frames()
     mc = ModelCache(model)
     bodies = [mc.model.getBodySet().get(i) for i in range(mc.model.getNumBodies())]
@@ -1042,7 +1041,7 @@ def test_frame_bilevel_term_coordinate_jacobian_matches_finite_differences():
         mc.add_parameter_group(BodyScaleGroup([body.getAbsolutePathString()],
                                               [int(body.getMobilizedBodyIndex())]))
 
-    term = FrameBilevelTerm(mc)
+    term = FrameTrackingTerm(mc)
     references = [
         # Reference position, and reference orientation as an unnormalized quaternion.
         ([-0.08, -0.03, 0.13], [0.21, 0.51, 0.20, -0.81]),

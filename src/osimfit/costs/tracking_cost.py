@@ -3,8 +3,7 @@ import opensim as osim
 
 from ..data_sources import Trial
 from .cost import CallbackCost, CostCache, CostWorkspace, TrialSample
-from .tracking_terms import (FrameTrackingTerm, MarkerTrackingTerm,
-                             FrameBilevelTerm, MarkerBilevelTerm, TrackingTaskSet)
+from .tracking_terms import FrameTrackingTerm, MarkerTrackingTerm, TrackingTaskSet
 
 
 class TrackingCost(CallbackCost):
@@ -165,7 +164,8 @@ class BilevelCost(TrackingCost):
     def create_tracking_task_set(self, cache: CostCache, trial: Trial,
                                  itime: int) -> TrackingTaskSet:
         mc = cache.mc
-        tracking_task_set = TrackingTaskSet(MarkerBilevelTerm(mc), FrameBilevelTerm(mc))
+        tracking_task_set = TrackingTaskSet(MarkerTrackingTerm(mc),
+                                            FrameTrackingTerm(mc))
         marker_index_of = {path: i for i, grp in enumerate(mc.marker_offset_groups)
                            for path in grp.component_paths}
         frame_index_of = {path: i for i, grp in enumerate(mc.frame_offset_groups)
@@ -214,6 +214,8 @@ class BilevelCost(TrackingCost):
 
     def calc_jacobian(self, cache, state, context, values):
         self._apply_state(cache, state, context, values)
-        Jq_m, Js_m, Jmo, Jr_m, Jl_m = context.marker_term.calc_jacobian(state)
-        Jq_f, Js_f, Jfo, Jr_f, Jl_f = context.frame_term.calc_jacobian(state)
+        Jq_m, Js_m, Jmo, Jr_m, Jl_m = context.marker_term.calc_jacobian(
+            state, include_parameters=True)
+        Jq_f, Js_f, Jfo, Jr_f, Jl_f = context.frame_term.calc_jacobian(
+            state, include_parameters=True)
         return [Jq_m + Jq_f, Js_m + Js_f, Jmo, Jfo, Jr_m + Jr_f, Jl_m + Jl_f]
