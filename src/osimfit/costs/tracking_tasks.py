@@ -7,7 +7,7 @@ from ..model import StationCache
 
 
 @dataclass
-class TaskArrays:
+class TrackingTaskArrays:
     """
     Per-task quantities packed into arrays, so a term can evaluate every task in a few
     vectorized numpy operations.
@@ -90,7 +90,7 @@ class TaskArrays:
                                       else 2.0 * self.weights[:, None])
 
 
-class Tasks(ABC):
+class TrackingTasks(ABC):
     """
     A base class for task-specific storage and registration.
     """
@@ -100,21 +100,21 @@ class Tasks(ABC):
 
     def invalidate_task_arrays(self) -> None:
         """
-        Drop the cached `TaskArrays`. Called whenever a task is registered, so the
-        arrays are rebuilt on next use.
+        Drop the cached `TrackingTaskArrays`. Called whenever a task is registered, so
+        the arrays are rebuilt on next use.
         """
         self._task_arrays = None
 
     @property
-    def task_arrays(self) -> TaskArrays:
+    def task_arrays(self) -> TrackingTaskArrays:
         """
-        The cached `TaskArrays` for the registered tasks, built on first use.
+        The cached `TrackingTaskArrays` for the registered tasks, built on first use.
         """
         if getattr(self, '_task_arrays', None) is None:
             self._task_arrays = self._build_task_arrays()
         return self._task_arrays
 
-    def _build_task_arrays(self) -> TaskArrays:
+    def _build_task_arrays(self) -> TrackingTaskArrays:
         num_tasks = self.num_tasks
         base_stations = (np.asarray(self.base_stations, dtype=float).reshape(-1, 3)
                          if num_tasks else np.zeros((0, 3)))
@@ -142,14 +142,14 @@ class Tasks(ABC):
         weights = (np.asarray(single_weights, dtype=float)
                    if single_weights is not None else None)
 
-        return TaskArrays(
+        return TrackingTaskArrays(
             base_stations=base_stations, mobod_indexes=mobod_indexes,
             scale_groups=scale_groups, offset_groups=offset_groups,
             base_frames=frames, body_rows=np.array(rows, dtype=int),
             reference_positions=reference_positions, weights=weights)
 
 
-class MarkerTasks(Tasks):
+class MarkerTrackingTasks(TrackingTasks):
     """
     Marker-specific task storage and registration.
     """
@@ -164,10 +164,11 @@ class MarkerTasks(Tasks):
         self.base_frames = []
         self.base_stations = []
         self.offset_group_indexes: list[int] = []
-        self._task_arrays: TaskArrays = None
+        self._task_arrays: TrackingTaskArrays = None
 
     def add_marker(self, marker_path: str, position: osim.Vec3, weight: float = 1.0,
-                   offset_group_index: int | None = None):
+                   offset_group_index: int | None = None,
+                   station_cache: StationCache | None = None):
         """
         Register a marker to track.
 
@@ -182,15 +183,21 @@ class MarkerTasks(Tasks):
         offset_group_index: int | None, optional
             The index of the offset group whose XYZ offset applies to this marker, or
             ``None`` if this marker's placement is not offset. Default: ``None``.
+        station_cache: StationCache | None, optional
+            A previously resolved `StationCache` for this marker (e.g., from
+            `CostCache.station_cache`), or ``None`` to resolve one here. Default:
+            ``None``.
         """
         if not self.mc.model.hasComponent(marker_path):
             raise ValueError(f'Model does not have a component at path {marker_path}.')
         if weight < 0:
             raise ValueError(f'Expected weight to be non-negative, but got {weight}.')
 
-        self.mc.model.realizePosition(self.mc.state)
         marker = osim.Marker.safeDownCast(self.mc.model.getComponent(marker_path))
-        cache = StationCache.from_station(self.mc, marker)
+        if station_cache is None:
+            self.mc.model.realizePosition(self.mc.state)
+            station_cache = StationCache.from_station(self.mc, marker)
+        cache = station_cache
         self.station_caches.append(cache)
         self.markers.append(marker)
         self.mobod_indexes.push_back(cache.base_frame.getMobilizedBodyIndex())
@@ -204,7 +211,7 @@ class MarkerTasks(Tasks):
         self.invalidate_task_arrays()
 
 
-class FrameTasks(Tasks):
+class FrameTrackingTasks(TrackingTasks):
     """
     Frame-specific task storage and registration.
     """
@@ -221,12 +228,13 @@ class FrameTasks(Tasks):
         self.base_frames = []
         self.base_stations = []
         self.offset_group_indexes: list[int] = []
-        self._task_arrays: TaskArrays = None
+        self._task_arrays: TrackingTaskArrays = None
 
     def add_frame(self, frame_path: str, position: osim.Vec3,
                   orientation: osim.Quaternion, position_weight: float = 1.0,
                   orientation_weight: float = 1.0,
-                  offset_group_index: int | None = None):
+                  offset_group_index: int | None = None,
+                  station_cache: StationCache | None = None):
         """
         Register a frame to track.
 
@@ -246,6 +254,10 @@ class FrameTasks(Tasks):
         offset_group_index: int | None, optional
             The index of the offset group whose XYZ offset applies to this frame, or
             ``None`` if this frame's placement is not offset. Default: ``None``.
+        station_cache: StationCache | None, optional
+            A previously resolved `StationCache` for this frame's origin (e.g., from
+            `CostCache.frame_cache`), or ``None`` to resolve one here. Default:
+            ``None``.
         """
         if not self.mc.model.hasComponent(frame_path):
             raise ValueError(f'Model does not have a component at path {frame_path}.')
@@ -257,7 +269,8 @@ class FrameTasks(Tasks):
                              f'{orientation_weight}.')
 
         frame = osim.PhysicalFrame.safeDownCast(self.mc.model.getComponent(frame_path))
-        cache = StationCache.from_frame(self.mc, frame)
+        cache = (StationCache.from_frame(self.mc, frame) if station_cache is None
+                 else station_cache)
         self.station_caches.append(cache)
         self.frames.append(frame)
         self.mobod_indexes.push_back(cache.base_frame.getMobilizedBodyIndex())
@@ -272,7 +285,7 @@ class FrameTasks(Tasks):
         self.offset_group_indexes.append(offset_group_index)
         self.invalidate_task_arrays()
 
-    def _build_task_arrays(self) -> TaskArrays:
+    def _build_task_arrays(self) -> TrackingTaskArrays:
         arrays = super()._build_task_arrays()
         arrays.position_weights = np.asarray(self.position_weights, dtype=float)
         arrays.orientation_weights = np.asarray(self.orientation_weights, dtype=float)
