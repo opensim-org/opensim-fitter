@@ -14,14 +14,16 @@ from osimfit.model import ModelCache, BodyScale, StationCache, BeamLengthScale
 from osimfit.bounds import Bounds
 from osimfit.solvers import InverseKinematicsSolver, SplinedKinematicsSolver
 from osimfit.solvers.solution import ObjectiveTerms
-from osimfit.costs import (CallbackCost, CostEvaluation, CostInput, SymbolicCost,
+from osimfit.costs import (Cost, CostEvaluation, CostInput,
                            BodyScaleRegularizationCost,
                            BodyScaleIsotropyCost, OffsetRegularizationCost,
                            TrackingCost, AnthropometricRegularizationCost,
                            CoordinateStiffnessCost,
                            EllipsoidRadiiScaleRegularizationCost,
                            BeamLengthScaleRegularizationCost, CostCache,
-                           CostFunction, CostWorkspace, TrackingTaskSet)
+                           CostWorkspace)
+from osimfit.costs.cost import CostFunction
+from osimfit.costs.tracking_terms import TrackingTaskSet
 from osimfit.scaling import Axis, AnthropometricMeasurement
 from osimfit.data_sources import MarkerSource, Trial
 from tests.test_double_pendulum import create_double_pendulum
@@ -124,12 +126,12 @@ def marker_trial(name: str, trc_path: str):
 # VALIDATION #
 ##############
 
-class CoordinatePenalty(SymbolicCost):
+class CoordinatePenalty(Cost):
     """A minimal cost that depends only on the coordinates."""
     required_inputs = frozenset({'coordinates'})
 
-    def evaluate(self, input: CostInput) -> ca.MX:
-        return ca.sumsqr(input.coordinates)
+    def expression(self, workspace, evaluation):
+        return ca.sumsqr(evaluation.inputs.coordinates)
 
 
 @pytest.fixture
@@ -233,13 +235,13 @@ def test_add_cost_accepts_a_subclass_of_a_registered_cost(double_pendulum_model)
 # BODY SCALE ISOTROPY COST #
 ############################
 
-# The isotropy cost is a `SymbolicCost`, so it is a pure function of the flat
+# The isotropy cost is purely symbolic, so it is a pure function of the flat
 # `body_scales` input and needs no model. `body_scales` is triplet-contiguous, i.e.
 # [s0x, s0y, s0z, s1x, s1y, s1z, ...].
 def _isotropy_cost(scales, weight=1.0):
     cost = BodyScaleIsotropyCost(weight=weight)
-    return float(cost.evaluate(
-        CostInput(body_scales=ca.DM(np.asarray(scales, dtype=float)))))
+    return float(cost.expression(None, CostEvaluation(
+        CostInput(body_scales=ca.DM(np.asarray(scales, dtype=float))))))
 
 
 def _manual_isotropy_cost(scales, weight=1.0):
@@ -313,10 +315,11 @@ def test_isotropy_cost_rejects_body_scales_not_a_multiple_of_three():
 
 
 def test_isotropy_cost_gradient_is_symbolic_and_matches_finite_difference():
-    # Being a SymbolicCost, it must differentiate through CasADi without a callback.
+    # Being purely symbolic, it must differentiate through CasADi without a callback.
     scales = np.array([1.0, 1.0, 1.3, 0.9, 1.1, 1.0])
     x = ca.MX.sym('body_scales', scales.size)
-    expr = BodyScaleIsotropyCost(weight=2.0).evaluate(CostInput(body_scales=x))
+    expr = BodyScaleIsotropyCost(weight=2.0).expression(
+        None, CostEvaluation(CostInput(body_scales=x)))
     grad = ca.Function('grad', [x], [ca.gradient(expr, x)])
 
     analytic = np.asarray(grad(ca.DM(scales))).reshape(-1)
@@ -548,16 +551,6 @@ def test_each_solve_evaluates_a_cost_independently():
     np.testing.assert_allclose(values[0], values[1], rtol=1e-9)
     for mc, value in zip(caches, values):
         np.testing.assert_allclose(value, _manual_cost(cost, mc, s), rtol=1e-9)
-
-
-def test_symbolic_cost_expression_is_its_evaluation():
-    cost = BodyScaleRegularizationCost(2.0, target=1.1)
-    workspace = CostWorkspace(CostCache(ModelCache(create_two_link_model())))
-
-    s = ca.DM([1.2, 0.9, 1.0])
-    evaluation = CostEvaluation(CostInput(body_scales=s))
-    assert float(cost.expression(workspace, evaluation)) == pytest.approx(
-        float(cost.evaluate(CostInput(body_scales=s))))
 
 
 def test_body_scale_groups_may_be_shared_across_model_caches():
@@ -827,10 +820,10 @@ def test_mobilizer_regularization_penalizes_deviation(cost_cls, input_name):
     cost = cost_cls(weight=2.0)
     factors = np.array([1.1, 0.9, 1.0])
 
-    assert float(cost.evaluate(
-        CostInput(**{input_name: np.ones(3)}))) == pytest.approx(0.0)
-    assert float(cost.evaluate(
-        CostInput(**{input_name: factors}))) == pytest.approx(
+    assert float(cost.expression(None, CostEvaluation(
+        CostInput(**{input_name: np.ones(3)})))) == pytest.approx(0.0)
+    assert float(cost.expression(None, CostEvaluation(
+        CostInput(**{input_name: factors})))) == pytest.approx(
             2.0 * (0.1**2 + 0.1**2 + 0.0))
 
 
@@ -840,8 +833,8 @@ def test_mobilizer_regularization_penalizes_deviation(cost_cls, input_name):
 ])
 def test_mobilizer_regularization_honors_a_non_unit_target(cost_cls, input_name):
     cost = cost_cls(weight=1.0, target=1.5)
-    assert float(cost.evaluate(
-        CostInput(**{input_name: np.array([1.5])}))) == pytest.approx(0.0)
+    assert float(cost.expression(None, CostEvaluation(
+        CostInput(**{input_name: np.array([1.5])})))) == pytest.approx(0.0)
 
 
 def test_mobilizer_regularization_ignores_the_other_parameter_type():
@@ -853,15 +846,17 @@ def test_mobilizer_regularization_ignores_the_other_parameter_type():
     lengths = np.array([1.2])
 
     radii_cost = EllipsoidRadiiScaleRegularizationCost(weight=1.0)
-    with_lengths = radii_cost.evaluate(
-        CostInput(ellipsoid_radii_scales=radii, beam_length_scales=lengths))
-    without_lengths = radii_cost.evaluate(CostInput(ellipsoid_radii_scales=radii))
+    with_lengths = radii_cost.expression(None, CostEvaluation(
+        CostInput(ellipsoid_radii_scales=radii, beam_length_scales=lengths)))
+    without_lengths = radii_cost.expression(
+        None, CostEvaluation(CostInput(ellipsoid_radii_scales=radii)))
     assert float(with_lengths) == pytest.approx(float(without_lengths))
 
     length_cost = BeamLengthScaleRegularizationCost(weight=1.0)
-    with_radii = length_cost.evaluate(
-        CostInput(ellipsoid_radii_scales=radii, beam_length_scales=lengths))
-    without_radii = length_cost.evaluate(CostInput(beam_length_scales=lengths))
+    with_radii = length_cost.expression(None, CostEvaluation(
+        CostInput(ellipsoid_radii_scales=radii, beam_length_scales=lengths)))
+    without_radii = length_cost.expression(
+        None, CostEvaluation(CostInput(beam_length_scales=lengths)))
     assert float(with_radii) == pytest.approx(float(without_radii))
 
 
@@ -907,7 +902,7 @@ def test_beam_length_scale_regularization_holds_a_factor_at_its_target(tmp_path)
 # COST CACHE AND COST FUNCTION #
 ################################
 
-class CubicCost(CallbackCost):
+class CubicCost(Cost):
     """
     A toy callback-backed cost over the coordinates and body scales, used to exercise
     `CostFunction` independently of any real cost:
@@ -922,6 +917,9 @@ class CubicCost(CallbackCost):
     def __init__(self, weight=2.0, num_jacobian_blocks=None):
         self.weight = weight
         self.num_jacobian_blocks = num_jacobian_blocks
+
+    def expression(self, workspace, evaluation):
+        return self.callback(workspace, evaluation)
 
     def calc_value(self, cache, state, context, values):
         offset = 0.0 if context is None else context
@@ -1168,8 +1166,11 @@ def test_inverse_kinematics_callbacks_follow_step_lifetime(
     add_callback = CostWorkspace.add_callback
     solve_step = InverseKinematicsSolver._solve_step
 
-    class CoordinateCallbackCost(CallbackCost):
+    class CoordinateCallbackCost(Cost):
         required_inputs = frozenset({'coordinates'})
+
+        def expression(self, workspace, evaluation):
+            return self.callback(workspace, evaluation)
 
         def create_context(self, cache):
             context = cache.default_q.copy()

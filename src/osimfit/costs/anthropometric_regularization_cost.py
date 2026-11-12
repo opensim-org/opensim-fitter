@@ -1,12 +1,13 @@
+import casadi as ca
 import numpy as np
 import opensim as osim
 
 from ..scaling import AnthropometricMeasurement
 from ..anthropometrics import build_ansur_distribution
-from .cost import CallbackCost, CostCache
+from .cost import Cost, CostCache, CostEvaluation, CostWorkspace
 
 
-class AnthropometricRegularizationCost(CallbackCost):
+class AnthropometricRegularizationCost(Cost):
     """
     A regularization penalty on body-scale factors, ``s``, that maximizes the
     log-likelihood that a set of anthropometric measurements, ``m(s)``, fall within a
@@ -65,6 +66,10 @@ class AnthropometricRegularizationCost(CallbackCost):
         self.mean = np.asarray(distribution.get_mean(), dtype=float).reshape(-1)
         self.precision = np.linalg.inv(
             np.asarray(distribution.get_covariance(), dtype=float))
+
+    def expression(self, workspace: CostWorkspace,
+                   evaluation: CostEvaluation) -> ca.MX:
+        return self.callback(workspace, evaluation)
 
     def create_context(self, cache: CostCache) -> list[tuple]:
         """

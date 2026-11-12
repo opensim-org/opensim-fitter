@@ -9,7 +9,7 @@ import casadi as ca
 
 from osimfit.data_sources import MarkerSource, Trial
 from osimfit.solvers import MarkerPlacer
-from osimfit.costs import CostInput, SymbolicCost
+from osimfit.costs import Cost
 from osimfit.model import MarkerOffset
 from osimfit.bounds import Bounds
 
@@ -20,15 +20,15 @@ from tests.test_double_pendulum import create_double_pendulum
 # HELPERS #
 ###########
 
-class MarkerOffsetPenalty(SymbolicCost):
+class MarkerOffsetPenalty(Cost):
     """
     A minimal cost whose required inputs MarkerPlacer's `add_cost` accepts, so that
     solve() is what rejects it rather than registration.
     """
     required_inputs = frozenset({'marker_offsets'})
 
-    def evaluate(self, input: CostInput) -> ca.MX:
-        return ca.sumsqr(input.marker_offsets)
+    def expression(self, workspace, evaluation):
+        return ca.sumsqr(evaluation.inputs.marker_offsets)
 
 
 def create_placer_model(tracking_marker_location: np.ndarray) -> osim.Model:

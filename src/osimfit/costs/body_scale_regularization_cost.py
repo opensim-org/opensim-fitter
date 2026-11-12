@@ -1,9 +1,9 @@
 import casadi as ca
 
-from .cost import CostInput, SymbolicCost
+from .cost import Cost, CostEvaluation, CostWorkspace
 
 
-class BodyScaleRegularizationCost(SymbolicCost):
+class BodyScaleRegularizationCost(Cost):
     """
     A quadratic penalty on body-scale factors that encourages each toward `target`:
 
@@ -30,5 +30,7 @@ class BodyScaleRegularizationCost(SymbolicCost):
         self.weight = weight
         self.target = target
 
-    def evaluate(self, input: CostInput) -> ca.MX:
-        return self.weight * ca.sum((input.body_scales - self.target)**2)
+    def expression(self, workspace: CostWorkspace,
+                   evaluation: CostEvaluation) -> ca.MX:
+        return self.weight * ca.sum(
+            (evaluation.inputs.body_scales - self.target)**2)

@@ -6,9 +6,10 @@ import pytest
 
 from osimfit.bounds import Bounds
 from osimfit.costs import (BilevelCost, BodyScaleRegularizationCost, Cost,
-                           CostCache, CostEvaluation, CostInput, CostTerm,
+                           CostCache, CostEvaluation, CostInput,
                            CostWorkspace, CoordinateStiffnessCost, TrackingCost,
                            TrialSample)
+from osimfit.costs.cost import CostTerm
 from osimfit.data_sources import Trial
 from osimfit.model import BodyScale, FrameOffset, MarkerOffset, ModelCache
 from osimfit.solvers import InverseKinematicsSolver, MarkerPlacer, SplinedKinematicsSolver

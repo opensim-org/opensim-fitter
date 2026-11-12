@@ -1,9 +1,9 @@
 import casadi as ca
 
-from .cost import CostInput, SymbolicCost
+from .cost import Cost, CostEvaluation, CostWorkspace
 
 
-class BodyScaleIsotropyCost(SymbolicCost):
+class BodyScaleIsotropyCost(Cost):
     """
     A quadratic penalty encouraging each body-scale group to scale isotropically, i.e.
     equally along X, Y, and Z:
@@ -28,8 +28,9 @@ class BodyScaleIsotropyCost(SymbolicCost):
                 f'Expected weight to be non-negative, but got {weight}.')
         self.weight = weight
 
-    def evaluate(self, input: CostInput) -> ca.MX:
-        scales = input.as_triplets('body_scales')
+    def expression(self, workspace: CostWorkspace,
+                   evaluation: CostEvaluation) -> ca.MX:
+        scales = evaluation.inputs.as_triplets('body_scales')
         axis_means = ca.sum2(scales) / 3
         deviations = scales - ca.repmat(axis_means, 1, 3)
         return self.weight * ca.sumsqr(deviations)

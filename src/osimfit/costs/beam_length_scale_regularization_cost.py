@@ -1,9 +1,9 @@
 import casadi as ca
 
-from .cost import CostInput, SymbolicCost
+from .cost import Cost, CostEvaluation, CostWorkspace
 
 
-class BeamLengthScaleRegularizationCost(SymbolicCost):
+class BeamLengthScaleRegularizationCost(Cost):
     """
     A quadratic penalty on the beam length factors that encourages each toward
     `target`:
@@ -27,5 +27,7 @@ class BeamLengthScaleRegularizationCost(SymbolicCost):
         self.weight = weight
         self.target = target
 
-    def evaluate(self, input: CostInput) -> ca.MX:
-        return self.weight * ca.sum((input.beam_length_scales - self.target)**2)
+    def expression(self, workspace: CostWorkspace,
+                   evaluation: CostEvaluation) -> ca.MX:
+        return self.weight * ca.sum(
+            (evaluation.inputs.beam_length_scales - self.target)**2)
