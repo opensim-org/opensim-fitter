@@ -14,9 +14,11 @@ from osimfit.model import (ModelCache, BodyScaleGroup, MarkerOffsetGroup,
                            FrameOffsetGroup, EllipsoidRadiiScaleGroup,
                            BeamLengthScaleGroup)
 from osimfit.solvers import SplinedKinematicsSolver
-from osimfit.costs import (CostInput, FrameTrackingTerm, FrameBilevelTerm,
-                           MarkerTrackingTerm, MarkerBilevelTerm, TrackingCost,
-                           BilevelCost, CostCache, CostFunction, TrackingTaskSet)
+from osimfit.costs import CostInput, TrackingCost, BilevelCost, CostCache
+from osimfit.costs.cost import CostFunction
+from osimfit.costs.tracking_terms import (FrameTrackingTerm, FrameBilevelTerm,
+                                          MarkerTrackingTerm, MarkerBilevelTerm,
+                                          TrackingTaskSet)
 from tests.test_costs import create_beam_model, getP_BM
 from tests.test_double_pendulum import create_double_pendulum
 from tests.test_solution import create_pendulum_trial
