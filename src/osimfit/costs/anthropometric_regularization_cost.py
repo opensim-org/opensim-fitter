@@ -83,19 +83,20 @@ class AnthropometricRegularizationCost(CallbackCost):
             context.append((sc1, sc2, axis))
         return context
 
-    def _apply_body_scales(self, cache: CostCache, body_scales: np.ndarray) -> None:
-        cache.mc.set_scaled_mobilizer_frame_positions(cache.state, body_scales)
-        cache.state.setQ(osim.Vector.createFromMat(cache.default_q))
-        cache.mc.model.realizePosition(cache.state)
+    def _apply_body_scales(self, cache: CostCache, state: osim.State,
+                           body_scales: np.ndarray) -> None:
+        cache.mc.set_scaled_mobilizer_frame_positions(state, body_scales)
+        state.setQ(osim.Vector.createFromMat(cache.default_q))
+        cache.mc.model.realizePosition(state)
 
-    def calc_value(self, cache, context, values):
+    def calc_value(self, cache, state, context, values):
         body_scales = values['body_scales']
-        self._apply_body_scales(cache, body_scales)
+        self._apply_body_scales(cache, state, body_scales)
 
         measurements = np.empty(len(context))
         for i, (sc1, sc2, axis) in enumerate(context):
-            pos1 = sc1.calc_position(cache.state, body_scales).to_numpy()
-            pos2 = sc2.calc_position(cache.state, body_scales).to_numpy()
+            pos1 = sc1.calc_position(state, body_scales).to_numpy()
+            pos2 = sc2.calc_position(state, body_scales).to_numpy()
             displacement = pos2 - pos1
             measurements[i] = (np.linalg.norm(displacement) if axis is None
                                else abs(displacement[axis]))
@@ -103,20 +104,20 @@ class AnthropometricRegularizationCost(CallbackCost):
         residual = measurements - self.mean
         return float(self.weight * 0.5 * residual @ self.precision @ residual)
 
-    def calc_jacobian(self, cache, context, values):
+    def calc_jacobian(self, cache, state, context, values):
         body_scales = values['body_scales']
-        self._apply_body_scales(cache, body_scales)
+        self._apply_body_scales(cache, state, body_scales)
 
         num_scales = 3 * len(cache.mc.body_scale_groups)
         m = np.empty(len(context))
         jacobian = np.zeros((len(context), num_scales))
         for i, (sc1, sc2, axis) in enumerate(context):
-            pos1 = sc1.calc_position(cache.state, body_scales).to_numpy()
-            pos2 = sc2.calc_position(cache.state, body_scales).to_numpy()
+            pos1 = sc1.calc_position(state, body_scales).to_numpy()
+            pos2 = sc2.calc_position(state, body_scales).to_numpy()
             displacement = pos2 - pos1
 
-            jac1 = sc1.calc_position_jacobian_wrt_body_scales(cache.state)
-            jac2 = sc2.calc_position_jacobian_wrt_body_scales(cache.state)
+            jac1 = sc1.calc_position_jacobian_wrt_body_scales(state)
+            jac2 = sc2.calc_position_jacobian_wrt_body_scales(state)
             displacement_jacobian = jac2 - jac1
 
             if axis is None:

@@ -103,26 +103,26 @@ class TrackingCost(CallbackCost):
 
         return tracking_task_set
 
-    def _apply_state(self, cache: CostCache, context: TrackingTaskSet,
-                     values: dict[str, np.ndarray]):
+    def _apply_state(self, cache: CostCache, state: osim.State,
+                     context: TrackingTaskSet, values: dict[str, np.ndarray]):
         """
         Apply the input coordinates to the model state and realize the system to the
         position stage.
         """
-        q = np.zeros(cache.state.getNQ())
+        q = np.zeros(state.getNQ())
         q[cache.mc.coordinate_q_indexes] = values['coordinates']
-        cache.state.setQ(osim.Vector.createFromMat(q))
-        cache.mc.model.realizePosition(cache.state)
+        state.setQ(osim.Vector.createFromMat(q))
+        cache.mc.model.realizePosition(state)
 
-    def calc_value(self, cache, context, values):
-        self._apply_state(cache, context, values)
-        return (context.marker_term.calc_error(cache.state) +
-                context.frame_term.calc_error(cache.state))
+    def calc_value(self, cache, state, context, values):
+        self._apply_state(cache, state, context, values)
+        return (context.marker_term.calc_error(state) +
+                context.frame_term.calc_error(state))
 
-    def calc_jacobian(self, cache, context, values):
-        self._apply_state(cache, context, values)
-        return [context.marker_term.calc_jacobian(cache.state)[0] +
-                context.frame_term.calc_jacobian(cache.state)[0]]
+    def calc_jacobian(self, cache, state, context, values):
+        self._apply_state(cache, state, context, values)
+        return [context.marker_term.calc_jacobian(state)[0] +
+                context.frame_term.calc_jacobian(state)[0]]
 
 
 class BilevelCost(TrackingCost):
@@ -195,14 +195,14 @@ class BilevelCost(TrackingCost):
 
         return tracking_task_set
 
-    def _apply_state(self, cache: CostCache, context: TrackingTaskSet,
-                     values: dict[str, np.ndarray]):
+    def _apply_state(self, cache: CostCache, state: osim.State,
+                     context: TrackingTaskSet, values: dict[str, np.ndarray]):
         """
         Apply input coordinates, body-scale variables, offset variables, and
         joint-level variables (ellipsoid radii and beam lengths) to the model State,
         then realize to Position.
         """
-        mc, state = cache.mc, cache.state
+        mc = cache.mc
         body_scales = values['body_scales']
         mc.set_scaled_mobilizer_frame_positions(state, body_scales)
         context.marker_term.apply_state(body_scales, values['marker_offsets'])
@@ -210,10 +210,10 @@ class BilevelCost(TrackingCost):
         mc.set_ellipsoid_radii_from_scales(state, values['ellipsoid_radii_scales'])
         mc.set_beam_length_from_scales(state, values['beam_length_scales'])
 
-        super()._apply_state(cache, context, values)
+        super()._apply_state(cache, state, context, values)
 
-    def calc_jacobian(self, cache, context, values):
-        self._apply_state(cache, context, values)
-        Jq_m, Js_m, Jmo, Jr_m, Jl_m = context.marker_term.calc_jacobian(cache.state)
-        Jq_f, Js_f, Jfo, Jr_f, Jl_f = context.frame_term.calc_jacobian(cache.state)
+    def calc_jacobian(self, cache, state, context, values):
+        self._apply_state(cache, state, context, values)
+        Jq_m, Js_m, Jmo, Jr_m, Jl_m = context.marker_term.calc_jacobian(state)
+        Jq_f, Js_f, Jfo, Jr_f, Jl_f = context.frame_term.calc_jacobian(state)
         return [Jq_m + Jq_f, Js_m + Js_f, Jmo, Jfo, Jr_m + Jr_f, Jl_m + Jl_f]

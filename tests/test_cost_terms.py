@@ -48,7 +48,8 @@ def create_sliding_mass_model(child_x_offset: float = 0.0):
 
 def build_tracking_callback(name, mc, enable_fd=False):
     tracking_task_set = TrackingTaskSet(MarkerTrackingTerm(mc), FrameTrackingTerm(mc))
-    return CostFunction(name, TrackingCost(), CostCache(mc), tracking_task_set,
+    cache = CostCache(mc)
+    return CostFunction(name, TrackingCost(), cache, cache.state, tracking_task_set,
                         enable_fd=enable_fd)
 
 
@@ -194,7 +195,8 @@ def build_bilevel_callback(name, mc, body_scale_groups=[], marker_offset_groups=
                   + list(beam_length_scale_groups)):
         mc.add_parameter_group(group)
     tracking_task_set = TrackingTaskSet(MarkerBilevelTerm(mc), FrameBilevelTerm(mc))
-    return CostFunction(name, BilevelCost(), CostCache(mc), tracking_task_set,
+    cache = CostCache(mc)
+    return CostFunction(name, BilevelCost(), cache, cache.state, tracking_task_set,
                         enable_fd=enable_fd)
 
 

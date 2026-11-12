@@ -51,7 +51,7 @@ def test_tracking_binds_each_sample_and_trial_independently(tmp_path, cost_type)
     unpacked = {name: np.array(getattr(numeric_inputs, name)).reshape(-1)
                 for name in cost.input_names()}
     expected = [cost.calc_value(
-        workspace.cache,
+        workspace.cache, workspace.cache.state,
         cost.create_tracking_task_set(workspace.cache, sample.trial, sample.index),
         unpacked) for sample in samples]
     np.testing.assert_allclose(np.array(function(values)).reshape(-1), expected)
@@ -187,6 +187,48 @@ def test_nonuniform_sample_reduction_preserves_global_penalty(tmp_path):
     assert float(terms.terms['sample']) == pytest.approx(13)
     assert float(terms.terms['global']) == pytest.approx(14)
     assert float(terms.objective) == pytest.approx(27)
+
+
+def test_cost_value_depends_only_on_its_declared_inputs(tmp_path):
+    # A TrackingCost sharing a CostCache with a BilevelCost must not see the body
+    # scales the BilevelCost applied to the shared State: TrackingCost does not
+    # declare body_scales, so CasADi assumes its value is independent of them.
+    trial = create_pendulum_trial(tmp_path, duration=0.1)
+    mc = ModelCache(create_double_pendulum(1, 1))
+    body_scale = BodyScale('/bodyset/b0', Bounds(0.5, 2.0), np.ones(3))
+    body_scale.validate(mc)
+    mc.add_parameter_group(body_scale.to_group())
+    sample = TrialSample(trial, 0)
+    bilevel, tracking = BilevelCost(), TrackingCost()
+    q = ca.DM([0.1, -0.2])
+
+    # Evaluate in a fixed order: the TrackingCost value must not follow the scales
+    # most recently applied by the BilevelCost.
+    workspace = CostWorkspace(CostCache(mc))
+    bilevel_callback = workspace.cost_callback(bilevel, sample)
+    tracking_callback = workspace.cost_callback(tracking, sample)
+    tracking_values = []
+    for s in ([1.0, 1.0, 1.0], [1.5, 1.5, 1.5]):
+        bilevel_callback(CostInput(coordinates=q, body_scales=ca.DM(s)))
+        tracking_values.append(float(tracking_callback(CostInput(coordinates=q))))
+    assert tracking_values[0] == pytest.approx(tracking_values[1])
+
+    # The combined objective's analytic gradient with respect to the body scales must
+    # match its finite-difference gradient.
+    workspace = CostWorkspace(CostCache(mc))
+    q_sym, s_sym = ca.MX.sym('q', 2), ca.MX.sym('s', 3)
+    evaluation = CostEvaluation(CostInput(coordinates=q_sym, body_scales=s_sym), sample)
+    expr = (bilevel.expression(workspace, evaluation)
+            + tracking.expression(workspace, evaluation))
+    function = ca.Function('f', [q_sym, s_sym], [expr])
+    gradient = ca.Function('g', [q_sym, s_sym], [ca.jacobian(expr, s_sym)])
+    s0 = np.array([1.2, 1.2, 1.2])
+    step = 1e-6
+    finite_difference = [
+        (float(function(q, s0 + delta)) - float(function(q, s0 - delta))) / (2 * step)
+        for delta in step * np.eye(3)]
+    np.testing.assert_allclose(np.array(gradient(q, s0)).reshape(-1),
+                               finite_difference, atol=1e-6)
 
 
 @pytest.mark.parametrize('solver_type', [InverseKinematicsSolver, SplinedKinematicsSolver])

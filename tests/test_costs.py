@@ -923,12 +923,12 @@ class CubicCost(CallbackCost):
         self.weight = weight
         self.num_jacobian_blocks = num_jacobian_blocks
 
-    def calc_value(self, cache, context, values):
+    def calc_value(self, cache, state, context, values):
         offset = 0.0 if context is None else context
         return (float(np.sum(values['coordinates']**3))
                 + self.weight * float(np.sum(values['body_scales']**2)) + offset)
 
-    def calc_jacobian(self, cache, context, values):
+    def calc_jacobian(self, cache, state, context, values):
         blocks = [3.0 * values['coordinates'][None, :]**2,
                   2.0 * self.weight * values['body_scales'][None, :]]
         return blocks[:self.num_jacobian_blocks]
@@ -953,7 +953,7 @@ def test_cost_input_names_follow_the_canonical_input_order():
 
 def test_cost_function_declares_only_the_inputs_its_cost_requires():
     cache = create_cubic_cost_cache()
-    callback = CostFunction('cubic', CubicCost(), cache)
+    callback = CostFunction('cubic', CubicCost(), cache, cache.state)
     assert callback.n_in() == 2
     assert callback.size1_in(0) == len(cache.mc.coordinate_q_indexes) == 2
     assert callback.size1_in(1) == 3 * len(cache.mc.body_scale_groups) == 6
@@ -965,8 +965,8 @@ def test_cost_function_evaluates_its_cost_with_its_context():
     s = np.array([1.1, 1.0, 0.9, 1.2, 1.0, 0.8])
     expected = float(np.sum(q**3) + 2.0 * np.sum(s**2))
 
-    plain = CostFunction('plain', CubicCost(), cache)
-    offset = CostFunction('offset', CubicCost(), cache, context=0.25)
+    plain = CostFunction('plain', CubicCost(), cache, cache.state)
+    offset = CostFunction('offset', CubicCost(), cache, cache.state, context=0.25)
     assert float(call_cubic_cost(plain, q, s)) == pytest.approx(expected, rel=1e-12)
     assert float(call_cubic_cost(offset, q, s)) == pytest.approx(expected + 0.25,
                                                                  rel=1e-12)
@@ -974,8 +974,8 @@ def test_cost_function_evaluates_its_cost_with_its_context():
 
 def test_cost_function_jacobian_matches_finite_difference():
     cache = create_cubic_cost_cache()
-    analytic = CostFunction('analytic', CubicCost(), cache)
-    fd = CostFunction('fd', CubicCost(), cache, enable_fd=True)
+    analytic = CostFunction('analytic', CubicCost(), cache, cache.state)
+    fd = CostFunction('fd', CubicCost(), cache, cache.state, enable_fd=True)
 
     q_sym = ca.MX.sym('q', 2)
     s_sym = ca.MX.sym('s', 6)
@@ -991,7 +991,8 @@ def test_cost_function_jacobian_matches_finite_difference():
 
 def test_cost_function_rejects_a_jacobian_with_the_wrong_number_of_blocks():
     cache = create_cubic_cost_cache()
-    callback = CostFunction('cubic', CubicCost(num_jacobian_blocks=1), cache)
+    callback = CostFunction('cubic', CubicCost(num_jacobian_blocks=1), cache,
+                            cache.state)
     q_sym = ca.MX.sym('q', 2)
     s_sym = ca.MX.sym('s', 6)
     J = ca.Function('J', [q_sym, s_sym], [ca.jacobian(
@@ -1074,7 +1075,7 @@ def test_cost_function_jacobian_outlives_its_parent(without_cyclic_gc):
     def build_jacobian():
         cache = create_cubic_cost_cache()
         context = np.array(0.25)
-        function = CostFunction('cubic', CubicCost(), cache, context)
+        function = CostFunction('cubic', CubicCost(), cache, cache.state, context)
         # Exercise CasADi's real derivative request, including its options, and
         # retain the Python Jacobian callback for as long as the function is used.
         jacobian = function.jacobian()
@@ -1175,10 +1176,10 @@ def test_inverse_kinematics_callbacks_follow_step_lifetime(
             contexts.append(weakref.ref(context))
             return context
 
-        def calc_value(self, cache, context, values):
+        def calc_value(self, cache, state, context, values):
             return 0.001 * float(np.sum((values['coordinates'] - context)**2))
 
-        def calc_jacobian(self, cache, context, values):
+        def calc_jacobian(self, cache, state, context, values):
             return [0.002 * (values['coordinates'] - context)[None, :]]
 
     def record_callback(self, *args, **kwargs):

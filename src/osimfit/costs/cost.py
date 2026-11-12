@@ -1,5 +1,6 @@
 import numpy as np
 import casadi as ca
+import opensim as osim
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import ClassVar, Literal
@@ -169,7 +170,7 @@ class CostCache:
     mc: ModelCache
         The solver's finalized `ModelCache`.
     state: osim.State
-        The state every cost evaluation mutates and realizes.
+        The model's shared state.
     default_q: np.ndarray
         The model's default generalized coordinates.
     """
@@ -273,12 +274,14 @@ class CostWorkspace:
         self.cache = cache
         self._callbacks: list[CostFunction] = []
         self._cost_callbacks: dict[tuple[int, TrialSample | None], CostFunction] = {}
+        self._states: dict[int, osim.State] = {}
 
     def add_callback(self, name: str, cost: CostBase, context=None,
                      enable_fd: bool = False) -> 'CostFunction':
         """
         Create a `CostFunction` for `cost` and retain it for the lifetime of this
-        workspace.
+        workspace. Each cost is evaluated using its own copy of the model state so that
+        state information (e.g., body scales) does not leak between costs.
 
         Parameters
         ----------
@@ -293,7 +296,10 @@ class CostWorkspace:
             If ``True``, CasADi finite-differences the callback instead of using its
             analytic Jacobian. Default is ``False``.
         """
-        callback = CostFunction(name, cost, self.cache, context, enable_fd=enable_fd)
+        if id(cost) not in self._states:
+            self._states[id(cost)] = osim.State(self.cache.state)
+        callback = CostFunction(name, cost, self.cache, self._states[id(cost)],
+                                context, enable_fd=enable_fd)
         self._callbacks.append(callback)
         return callback
 
@@ -420,7 +426,7 @@ class CallbackCost(Cost):
         return None
 
     @abstractmethod
-    def calc_value(self, cache: CostCache, context,
+    def calc_value(self, cache: CostCache, state: osim.State, context,
                    values: dict[str, np.ndarray]) -> float:
         """
         Return this cost's scalar value.
@@ -429,6 +435,8 @@ class CallbackCost(Cost):
         ----------
         cache: CostCache
             The solver's cache.
+        state: osim.State
+            This cost's copy of the state.
         context
             Model-bound data, beyond the cache, needed to evaluate this cost.
         values: dict[str, np.ndarray]
@@ -436,7 +444,7 @@ class CallbackCost(Cost):
         """
 
     @abstractmethod
-    def calc_jacobian(self, cache: CostCache, context,
+    def calc_jacobian(self, cache: CostCache, state: osim.State, context,
                       values: dict[str, np.ndarray]) -> list[np.ndarray]:
         """
         Return this cost's Jacobian as one ``(1, n)`` block per entry of
@@ -446,6 +454,8 @@ class CallbackCost(Cost):
         ----------
         cache: CostCache
             The solver's cache.
+        state: osim.State
+            This cost's copy of the state.
         context
             Model-bound data, beyond the cache, needed to evaluate this cost.
         values: dict[str, np.ndarray]
@@ -467,7 +477,9 @@ class CostFunction(ca.Callback):
     cost: CostBase
         The cost this callback evaluates.
     cache: CostCache
-        The solver's cache, which supplies the model and state.
+        The solver's cache, which supplies the model.
+    state: osim.State
+        The cost's copy of the state.
     context: optional
         Model-bound data, beyond the cache, needed to evaluate this cost. Default is
         ``None``.
@@ -476,13 +488,13 @@ class CostFunction(ca.Callback):
         analytic Jacobian. Default is ``False``.
     """
 
-    def __init__(self, name: str, cost: CostBase, cache: CostCache, context=None,
-                 enable_fd: bool = False):
+    def __init__(self, name: str, cost: CostBase, cache: CostCache, state: osim.State,
+                 context=None, enable_fd: bool = False):
         ca.Callback.__init__(self)
         self.cost = cost
         self.cache = cache
         self.mc = cache.mc
-        self.state = cache.state
+        self.state = state
         self.context = context
         self.enable_fd = enable_fd
         self.input_names = cost.input_names()
@@ -527,16 +539,18 @@ class CostFunction(ca.Callback):
 
     def eval(self, arg):
         values = CostFunction._unpack_cost_inputs(self.input_names, arg)
-        return [self.cost.calc_value(self.cache, self.context, values)]
+        return [self.cost.calc_value(self.cache, self.state, self.context, values)]
 
     def has_jacobian(self): return not self.enable_fd
 
     def get_jacobian(self, name, inames, onames, opts):
         class JacobianFunction(ca.Callback):
-            def __init__(self, name, cost, cache, context, input_names, input_sizes):
+            def __init__(self, name, cost, cache, state, context, input_names,
+                         input_sizes):
                 ca.Callback.__init__(self)
                 self.cost = cost
                 self.cache = cache
+                self.state = state
                 self.context = context
                 self.input_names = input_names
                 self.input_sizes = input_sizes
@@ -561,7 +575,8 @@ class CostFunction(ca.Callback):
 
             def eval(self, arg):
                 values = CostFunction._unpack_cost_inputs(self.input_names, arg)
-                blocks = self.cost.calc_jacobian(self.cache, self.context, values)
+                blocks = self.cost.calc_jacobian(self.cache, self.state, self.context,
+                                                 values)
                 if len(blocks) != len(self.input_names):
                     raise ValueError(
                         f'{type(self.cost).__name__}.calc_jacobian returned {len(blocks)} '
@@ -571,6 +586,6 @@ class CostFunction(ca.Callback):
 
         input_sizes = tuple(self.get_input_size(i) for i in range(self.get_n_in()))
         self.jacobian_callback = JacobianFunction(
-            name, self.cost, self.cache, self.context, self.input_names,
+            name, self.cost, self.cache, self.state, self.context, self.input_names,
             input_sizes)
         return self.jacobian_callback
