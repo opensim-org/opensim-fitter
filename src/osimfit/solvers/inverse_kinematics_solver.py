@@ -3,8 +3,9 @@ import casadi as ca
 import opensim as osim
 
 from ..data_sources import Trial
-from ..costs import (CostEvaluation, CostInput, CostCache, CostTerm, CostWorkspace,
+from ..costs import (CostEvaluation, CostInput, CostCache, CostWorkspace,
                      TrackingCost, TrialSample)
+from ..costs.cost import CostTerm
 from .solution import ObjectiveTerms, Solution
 from .solver import TrackingSolver
 

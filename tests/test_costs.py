@@ -21,7 +21,9 @@ from osimfit.costs import (CallbackCost, CostEvaluation, CostInput, SymbolicCost
                            CoordinateStiffnessCost,
                            EllipsoidRadiiScaleRegularizationCost,
                            BeamLengthScaleRegularizationCost, CostCache,
-                           CostFunction, CostWorkspace, TrackingTaskSet)
+                           CostWorkspace)
+from osimfit.costs.cost import CostFunction
+from osimfit.costs.tracking_terms import TrackingTaskSet
 from osimfit.scaling import Axis, AnthropometricMeasurement
 from osimfit.data_sources import MarkerSource, Trial
 from tests.test_double_pendulum import create_double_pendulum

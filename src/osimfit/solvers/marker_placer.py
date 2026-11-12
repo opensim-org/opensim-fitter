@@ -4,7 +4,8 @@ import opensim as osim
 
 from ..bounds import Bounds
 from ..costs import (BilevelCost, CostInput, CostCache, CostWorkspace,
-                     CostEvaluation, CostTerm, TrialSample)
+                     CostEvaluation, TrialSample)
+from ..costs.cost import CostTerm
 from ..model import MarkerOffset
 from .solution import ObjectiveTerms, Solution
 from .solver import Solver

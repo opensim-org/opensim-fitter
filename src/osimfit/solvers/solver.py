@@ -3,7 +3,8 @@ import opensim as osim
 from abc import ABC, abstractmethod
 
 from ..data_sources import Trial
-from ..costs import Cost, CostScope, CostTerm
+from ..costs import Cost
+from ..costs.cost import CostScope, CostTerm
 from ..model import ModelCache
 from .solution import Solution
 

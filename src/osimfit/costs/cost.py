@@ -129,29 +129,6 @@ class CostEvaluation:
         return 'global' if self.sample is None else 'sample'
 
 
-class CostBase(ABC):
-    """
-    A model-independent description of a cost term: the weights, targets, and reference
-    data the user (or a solver) supplies, with no OpenSim state of its own. A cost is
-    inert and reusable.
-
-    Attributes
-    ----------
-    required_inputs: frozenset[str]
-        The `CostInput` field names this cost reads and therefore requires the solver to
-        provide (e.g., ``{'body_scales'}``). A solver validates that it provides every
-        required input before accepting the cost; see `Solver.add_cost`.
-    """
-    required_inputs: frozenset[str] = frozenset()
-
-    def input_names(self) -> tuple[str, ...]:
-        """
-        Return this cost's `required_inputs` in canonical `CostInput.INPUT_ORDER`.
-        """
-        return tuple(name for name in CostInput.INPUT_ORDER
-                     if name in self.required_inputs)
-
-
 class CostCache:
     """
     Shared evaluation data for costs in a solve.
@@ -240,14 +217,14 @@ class CostCache:
         if not self.mc.model.hasComponent(path):
             raise ValueError(f'Model does not have a component at path {path}.')
 
-    def memoize(self, owner: CostBase, key: str, factory):
+    def memoize(self, owner: 'Cost', key: str, factory):
         """
         Return the value memoized for `owner` under `key`, building it via `factory`
         on first request.
 
         Parameters
         ----------
-        owner: CostBase
+        owner: Cost
             The cost the value belongs to.
         key: str
             Distinguishes multiple values memoized for the same owner.
@@ -276,7 +253,7 @@ class CostWorkspace:
         self._cost_callbacks: dict[tuple[int, TrialSample | None], CostFunction] = {}
         self._states: dict[int, osim.State] = {}
 
-    def add_callback(self, name: str, cost: CostBase, context=None,
+    def add_callback(self, name: str, cost: 'Cost', context=None,
                      enable_fd: bool = False) -> 'CostFunction':
         """
         Create a `CostFunction` for `cost` and retain it for the lifetime of this
@@ -287,7 +264,7 @@ class CostWorkspace:
         ----------
         name: str
             The name of the callback function.
-        cost: CostBase
+        cost: Cost
             The cost the callback evaluates.
         context: optional
             The cost's per-callback data, passed back to the cost's `calc_value` and
@@ -333,13 +310,86 @@ class CostWorkspace:
             term.cost.validate(self)
 
 
-class Cost(CostBase):
+class Cost(ABC):
     """
-    A cost evaluated from the model and the optimization variables that user can
-    register on a solver via `Solver.add_cost`.
+    A cost that a user can register on a solver via `Solver.add_cost`.
+
+    A cost is a model-independent description: the weights, targets, and settings the
+    user supplies, with no OpenSim state of its own. It is inert and reusable across
+    solvers and solves. Anything bound to a model (resolved component indexes, station
+    data, an OpenSim state) is supplied by the solver at evaluation time.
+
+    Writing a cost
+    --------------
+    Subclass one of three bases, depending on how the cost is evaluated:
+
+    `SymbolicCost`
+        The cost is a plain CasADi expression of the optimization variables. Implement
+        `evaluate(input)`. CasADi differentiates it symbolically. For example::
+
+            class ScaleMagnitudeCost(SymbolicCost):
+                scope = 'global'
+                required_inputs = frozenset({'body_scales'})
+
+                def evaluate(self, input):
+                    return ca.sum(input.body_scales**2)
+
+    `Cost`
+        The cost is a CasADi expression that also needs data resolved from the model,
+        such as coordinate indexes. Implement `expression(workspace, evaluation)`, and
+        resolve model data once per solve with ``workspace.cache.memoize(self, key,
+        factory)``. See `CoordinateStiffnessCost`.
+
+    `CallbackCost`
+        The cost is evaluated numerically through OpenSim. Implement
+        `calc_value(cache, state, context, values)` and `calc_jacobian(cache, state,
+        context, values)`, and optionally `create_context` to prepare model-bound data
+        once. See `AnthropometricRegularizationCost` and `TrackingCost`.
+
+    Every cost declares, as class attributes:
+
+    - `required_inputs`: the `CostInput` fields it reads. The solver rejects the cost
+      at `Solver.add_cost` if it cannot provide them.
+    - `scope`: ``'sample'`` (the default) if the cost is evaluated at every time sample
+      of every trial and time-averaged, or ``'global'`` if it is evaluated once on the
+      parameters shared across trials (e.g., a regularizer on body scales). A global
+      cost must not require ``'coordinates'``.
+    - `requires_sample`: ``True`` if the cost needs a trial's reference data. Its
+      `CallbackCost.create_context` then receives a `TrialSample` and builds a context
+      per sample. Otherwise the context is built once per solve and shared.
+
+    Rules for callback costs:
+
+    - Evaluate in the `state` argument, never in ``cache.state``. Each cost has its own
+      copy of the state, so set everything the cost depends on (at least the
+      coordinates) before realizing it.
+    - The value may depend only on `required_inputs`. CasADi assumes it does when
+      assembling derivatives.
+    - Return the Jacobian as one ``(1, n)`` block per entry of `input_names`, in that
+      order.
+
+    Optionally override `validate(workspace)` to check the assembled problem before it
+    is solved (e.g., that every offset is constrained by some tracked data).
+
+    Attributes
+    ----------
+    required_inputs: frozenset[str]
+        The `CostInput` field names this cost reads (e.g., ``{'body_scales'}``).
+    scope: CostScope
+        Where the cost is evaluated: ``'sample'`` or ``'global'``.
+    requires_sample: bool
+        Whether the cost needs a trial's reference data at each sample.
     """
+    required_inputs: frozenset[str] = frozenset()
     scope: ClassVar[CostScope] = 'sample'
     requires_sample: bool = False
+
+    def input_names(self) -> tuple[str, ...]:
+        """
+        Return this cost's `required_inputs` in canonical `CostInput.INPUT_ORDER`.
+        """
+        return tuple(name for name in CostInput.INPUT_ORDER
+                     if name in self.required_inputs)
 
     @abstractmethod
     def expression(self, workspace: CostWorkspace,
@@ -474,7 +524,7 @@ class CostFunction(ca.Callback):
     ----------
     name: str
         The name of the callback function.
-    cost: CostBase
+    cost: Cost
         The cost this callback evaluates.
     cache: CostCache
         The solver's cache, which supplies the model.
@@ -488,7 +538,7 @@ class CostFunction(ca.Callback):
         analytic Jacobian. Default is ``False``.
     """
 
-    def __init__(self, name: str, cost: CostBase, cache: CostCache, state: osim.State,
+    def __init__(self, name: str, cost: Cost, cache: CostCache, state: osim.State,
                  context=None, enable_fd: bool = False):
         ca.Callback.__init__(self)
         self.cost = cost

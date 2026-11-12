@@ -3,7 +3,8 @@ import casadi as ca
 import opensim as osim
 
 from ..costs import (BilevelCost, CostInput, CostCache, CostWorkspace,
-                     TrackingCost, CostEvaluation, CostTerm, TrialSample)
+                     TrackingCost, CostEvaluation, TrialSample)
+from ..costs.cost import CostTerm
 from ..model import (ModelCache, Parameter, BodyScale, MarkerOffset, FrameOffset,
                      EllipsoidRadiiScale, BeamLengthScale)
 from ..scaling import Axis, Scaler, ManualBodyScale
