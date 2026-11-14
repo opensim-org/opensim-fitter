@@ -6,11 +6,10 @@ from dataclasses import dataclass
 from ..model import ModelCache, StationCache
 
 
-@dataclass
-class TrackingTaskArrays:
+@dataclass(frozen=True)
+class TaskGeometry:
     """
-    Per-task quantities packed into arrays, so a term can evaluate every task in a few
-    vectorized numpy operations.
+    Where each task sits on the model, read by every error and Jacobian evaluation.
 
     Attributes
     ----------
@@ -18,74 +17,103 @@ class TrackingTaskArrays:
         Each task's point in its base frame, before scaling or offsets.
     mobod_indexes: np.ndarray, shape (num_tasks,)
         Each task's base-frame `MobilizedBodyIndex`.
-    scale_groups: np.ndarray, shape (num_tasks,)
-        Index of the `BodyScaleGroup` scaling each task, or -1 where none applies.
-    offset_groups: np.ndarray, shape (num_tasks,)
-        Index of the offset group applying to each task, or -1 where none applies.
     base_frames: list[osim.PhysicalFrame]
-        The distinct base frames across all tasks, one per entry of `body_rows`.
+        The distinct base frames across all tasks, in first-seen order.
     body_rows: np.ndarray, shape (num_tasks,)
         For each task, the index into `base_frames` of its base frame.
-    reference_positions: np.ndarray, shape (num_tasks, 3)
-        Each task's reference position.
-    weights: np.ndarray or None, shape (num_tasks,)
-        Each task's cost weight, for terms carrying a single weight per task.
-        ``None`` for terms that weight position and orientation separately.
-    scaled_rows, scaled_groups: np.ndarray
-        The tasks a body scale applies to, and the scale group of each. Paired, so
-        ``stations[scaled_rows] *= scales[scaled_groups]`` applies every scale at once.
-    shifted_rows, shifted_groups: np.ndarray
-        The same pairing for placement offsets.
-    scaled_base_stations: np.ndarray, shape (len(scaled_rows), 3)
-        ``base_stations[scaled_rows]``, used when accumulating the body-scale Jacobian.
-    unique_mobod_indexes: np.ndarray
-        The distinct base-frame mobod indexes across all tasks, i.e. exactly the rows a
-        per-body gradient scatter can touch.
-    double_weights_column: np.ndarray or None, shape (num_tasks, 1)
-        ``2 * weights`` as a column, the factor the squared-error gradient needs.
-    position_weights, orientation_weights: np.ndarray or None
-        Each task's separate position and orientation weights, for terms that carry
-        both. ``None`` for terms with a single weight per task.
-    double_position_weights_column: np.ndarray or None, shape (num_tasks, 1)
-        ``2 * position_weights`` as a column.
-    reference_orientations: np.ndarray or None, shape (num_tasks, 4)
-        Each task's reference quaternion.
-    base_relative_rotations: np.ndarray or None, shape (num_tasks, 3, 3)
-        Each task's rotation relative to its base frame, which is fixed. A frame's
-        rotation in ground is ``R_GB @ R_BF``, so one transform read per base frame
-        yields every task's orientation.
-    reference_rotations: np.ndarray or None, shape (num_tasks, 3, 3)
-        Each task's reference orientation as a rotation matrix.
     """
     base_stations: np.ndarray
     mobod_indexes: np.ndarray
-    scale_groups: np.ndarray
-    offset_groups: np.ndarray
     base_frames: list
     body_rows: np.ndarray
-    reference_positions: np.ndarray
-    weights: np.ndarray = None
-    scaled_rows: np.ndarray = None
-    scaled_groups: np.ndarray = None
-    shifted_rows: np.ndarray = None
-    shifted_groups: np.ndarray = None
-    scaled_base_stations: np.ndarray = None
-    unique_mobod_indexes: np.ndarray = None
-    double_weights_column: np.ndarray = None
-    position_weights: np.ndarray = None
-    orientation_weights: np.ndarray = None
-    double_position_weights_column: np.ndarray = None
-    reference_orientations: np.ndarray = None
-    base_relative_rotations: np.ndarray = None
-    reference_rotations: np.ndarray = None
 
-    def __post_init__(self):
-        self.scaled_rows = np.flatnonzero(self.scale_groups >= 0)
-        self.scaled_groups = self.scale_groups[self.scaled_rows]
-        self.shifted_rows = np.flatnonzero(self.offset_groups >= 0)
-        self.shifted_groups = self.offset_groups[self.shifted_rows]
-        self.scaled_base_stations = self.base_stations[self.scaled_rows]
-        self.unique_mobod_indexes = np.unique(self.mobod_indexes)
+
+@dataclass(frozen=True)
+class FrameGeometry(TaskGeometry):
+    """
+    The `TaskGeometry` of tracked frames, plus each frame's fixed orientation.
+
+    Attributes
+    ----------
+    base_relative_rotations: np.ndarray, shape (num_tasks, 3, 3)
+        Each frame's rotation relative to its base frame. A frame's rotation in ground
+        is ``R_GB @ R_BF``, so one transform read per base frame yields every frame's
+        orientation.
+    """
+    base_relative_rotations: np.ndarray
+
+
+@dataclass(frozen=True)
+class ParameterMap:
+    """
+    Which tasks the body scales and placement offsets move. Read only when applying
+    parameters (`TrackingTerm.apply_state`) and assembling the parameter Jacobians.
+
+    Attributes
+    ----------
+    scaled_rows, scaled_groups: np.ndarray
+        The tasks a body scale applies to, and the scale group of each. Paired, so
+        ``stations[scaled_rows] *= scales[scaled_groups]`` applies every scale at once.
+    scaled_base_stations: np.ndarray, shape (len(scaled_rows), 3)
+        ``base_stations[scaled_rows]``, used when accumulating the body-scale Jacobian.
+    shifted_rows, shifted_groups: np.ndarray
+        The same pairing as `scaled_rows` and `scaled_groups`, for placement offsets.
+    """
+    scaled_rows: np.ndarray
+    scaled_groups: np.ndarray
+    scaled_base_stations: np.ndarray
+    shifted_rows: np.ndarray
+    shifted_groups: np.ndarray
+
+    @classmethod
+    def from_groups(cls, scale_groups: np.ndarray, offset_groups: np.ndarray,
+                    base_stations: np.ndarray) -> 'ParameterMap':
+        """
+        Build the map from each task's scale and offset group index, where -1 means
+        that no group applies to the task.
+        """
+        scaled_rows = np.flatnonzero(scale_groups >= 0)
+        shifted_rows = np.flatnonzero(offset_groups >= 0)
+        return cls(scaled_rows=scaled_rows, scaled_groups=scale_groups[scaled_rows],
+                   scaled_base_stations=base_stations[scaled_rows],
+                   shifted_rows=shifted_rows,
+                   shifted_groups=offset_groups[shifted_rows])
+
+
+@dataclass(frozen=True)
+class MarkerReference:
+    """
+    The reference data and weights the tracked markers are compared against.
+
+    Attributes
+    ----------
+    positions: np.ndarray, shape (num_tasks, 3)
+        Each marker's reference position.
+    weights: np.ndarray, shape (num_tasks,)
+        Each marker's cost weight.
+    """
+    positions: np.ndarray
+    weights: np.ndarray
+
+
+@dataclass(frozen=True)
+class FrameReference:
+    """
+    The reference data and weights the tracked frames are compared against.
+
+    Attributes
+    ----------
+    positions: np.ndarray, shape (num_tasks, 3)
+        Each frame's reference position.
+    rotations: np.ndarray, shape (num_tasks, 3, 3)
+        Each frame's reference orientation as a rotation matrix.
+    position_weights, orientation_weights: np.ndarray, shape (num_tasks,)
+        Each frame's position and orientation cost weights.
+    """
+    positions: np.ndarray
+    rotations: np.ndarray
+    position_weights: np.ndarray
+    orientation_weights: np.ndarray
 
 
 class TrackingTerm(ABC):
@@ -115,7 +143,9 @@ class TrackingTerm(ABC):
         self.base_frames = []
         self.base_stations = []
         self.offset_group_indexes: list[int] = []
-        self._task_arrays: TrackingTaskArrays = None
+        self._geometry = None
+        self._parameter_map = None
+        self._reference = None
         self._station_array = None
 
     @abstractmethod
@@ -141,74 +171,106 @@ class TrackingTerm(ABC):
         self.base_frames.append(cache.base_frame)
         self.base_stations.append(cache.base_station)
         self.offset_group_indexes.append(offset_group_index)
-        self.invalidate_task_arrays()
+        self._invalidate_cached_arrays()
 
-    def invalidate_task_arrays(self) -> None:
+    def _invalidate_cached_arrays(self) -> None:
         """
-        Drop the cached `TrackingTaskArrays`. Called whenever a task is registered, so
-        the arrays are rebuilt on next use.
+        Drop the cached `geometry`, `parameter_map`, and `reference`. Called whenever a
+        task is registered, so they are rebuilt on next use.
         """
-        self._task_arrays = None
+        self._geometry = None
+        self._parameter_map = None
+        self._reference = None
 
     @property
-    def task_arrays(self) -> TrackingTaskArrays:
+    def geometry(self) -> TaskGeometry:
         """
-        The cached `TrackingTaskArrays` for the registered tasks, built on first use.
+        The registered tasks' `TaskGeometry`, built on first use.
         """
-        if self._task_arrays is None:
-            self._task_arrays = self._build_task_arrays()
-        return self._task_arrays
+        if self._geometry is None:
+            self._geometry = self._build_geometry()
+        return self._geometry
 
-    def _build_task_arrays(self) -> TrackingTaskArrays:
+    @property
+    def parameter_map(self) -> ParameterMap:
+        """
+        The registered tasks' `ParameterMap`, built on first use.
+        """
+        if self._parameter_map is None:
+            scale_groups = np.array(
+                [-1 if cache.body_scale_group_index is None
+                 else cache.body_scale_group_index for cache in self.station_caches],
+                dtype=int)
+            offset_groups = np.array(
+                [-1 if g is None else g for g in self.offset_group_indexes], dtype=int)
+            self._parameter_map = ParameterMap.from_groups(
+                scale_groups, offset_groups, self.geometry.base_stations)
+        return self._parameter_map
+
+    @property
+    def reference(self):
+        """
+        The registered tasks' reference data and weights, built on first use.
+        """
+        if self._reference is None:
+            self._reference = self._build_reference()
+        return self._reference
+
+    def _geometry_fields(self) -> dict:
+        """
+        The `TaskGeometry` fields for the registered tasks, as keyword arguments.
+        """
         num_tasks = self.num_tasks
         base_stations = (np.asarray(self.base_stations, dtype=float).reshape(-1, 3)
                          if num_tasks else np.zeros((0, 3)))
         mobod_indexes = np.array(
             [int(self.mobod_indexes.getElt(i)) for i in range(num_tasks)], dtype=int)
-        scale_groups = np.array(
-            [-1 if cache.body_scale_group_index is None
-             else cache.body_scale_group_index for cache in self.station_caches],
-            dtype=int)
-        offset_groups = np.array(
-            [-1 if g is None else g for g in self.offset_group_indexes], dtype=int)
 
         # One entry per distinct base frame, in first-seen order.
         frames, rows, row_of_mobod = [], [], {}
-        for i, cache in enumerate(self.station_caches):
+        for cache in self.station_caches:
             key = cache.mobod_index
             if key not in row_of_mobod:
                 row_of_mobod[key] = len(frames)
                 frames.append(cache.base_frame)
             rows.append(row_of_mobod[key])
 
-        reference_positions = (np.asarray(self.positions, dtype=float).reshape(-1, 3)
-                               if num_tasks else np.zeros((0, 3)))
+        return dict(base_stations=base_stations, mobod_indexes=mobod_indexes,
+                    base_frames=frames, body_rows=np.array(rows, dtype=int))
 
-        return TrackingTaskArrays(
-            base_stations=base_stations, mobod_indexes=mobod_indexes,
-            scale_groups=scale_groups, offset_groups=offset_groups,
-            base_frames=frames, body_rows=np.array(rows, dtype=int),
-            reference_positions=reference_positions)
+    def _build_geometry(self) -> TaskGeometry:
+        return TaskGeometry(**self._geometry_fields())
+
+    def _reference_positions(self) -> np.ndarray:
+        return (np.asarray(self.positions, dtype=float).reshape(-1, 3)
+                if self.num_tasks else np.zeros((0, 3)))
+
+    @abstractmethod
+    def _build_reference(self):
+        pass
 
     @property
     def station_array(self) -> np.ndarray:
         cached = self._station_array
         if cached is None or len(cached) != self.num_tasks:
-            cached = self._station_array = self.task_arrays.base_stations.copy()
+            cached = self._station_array = self.geometry.base_stations.copy()
         return cached
 
     def apply_state(self, body_scales: np.ndarray, offsets: np.ndarray) -> None:
-        arrays = self.task_arrays
-        if len(arrays.scaled_rows) or len(arrays.shifted_rows):
-            stations = arrays.base_stations.copy()
-            if len(arrays.scaled_rows):
+        base_stations = self.geometry.base_stations
+        parameter_map = self.parameter_map
+        if len(parameter_map.scaled_rows) or len(parameter_map.shifted_rows):
+            stations = base_stations.copy()
+            if len(parameter_map.scaled_rows):
                 scales = np.asarray(body_scales, dtype=float).reshape(-1, 3)
-                stations[arrays.scaled_rows] *= scales[arrays.scaled_groups]
-            if len(arrays.shifted_rows):
+                stations[parameter_map.scaled_rows] *= scales[
+                    parameter_map.scaled_groups]
+            if len(parameter_map.shifted_rows):
                 shifts = np.asarray(offsets, dtype=float).reshape(-1, 3)
-                stations[arrays.shifted_rows] += shifts[arrays.shifted_groups]
+                stations[parameter_map.shifted_rows] += shifts[
+                    parameter_map.shifted_groups]
         else:
-            stations = arrays.base_stations
+            stations = base_stations
         self._station_array = stations
         self.stations = osim.SimTKArrayVec3.createFromMat(
             np.ascontiguousarray(stations, dtype=float).reshape(-1))
@@ -266,25 +328,23 @@ class MarkerTrackingTerm(TrackingTerm):
         self.weights.append(weight)
         self._add_task(station_cache, position, offset_group_index)
 
-    def _build_task_arrays(self) -> TrackingTaskArrays:
-        arrays = super()._build_task_arrays()
-        arrays.weights = np.asarray(self.weights, dtype=float)
-        arrays.double_weights_column = 2.0 * arrays.weights[:, None]
-        return arrays
+    def _build_reference(self) -> MarkerReference:
+        return MarkerReference(positions=self._reference_positions(),
+                               weights=np.asarray(self.weights, dtype=float))
 
     def calc_error(self, state) -> float:
         if self.num_tasks == 0:
             return 0.0
-        arrays = self.task_arrays
+        geometry, reference = self.geometry, self.reference
         poses = np.array([frame.getTransformInGround(state).to_numpy()
-                          for frame in arrays.base_frames])
-        rows = arrays.body_rows
+                          for frame in geometry.base_frames])
+        rows = geometry.body_rows
         # p_GS = p_GB + R_GB · p_BS
         p_GB = poses[:, :, 3][rows]
         R_GB = poses[:, :, :3][rows]
         positions = (p_GB + (R_GB @ self.station_array[..., None])[..., 0])
-        residuals = positions - arrays.reference_positions
-        return float(np.sum(arrays.weights * np.sum(residuals * residuals, axis=1)))
+        residuals = positions - reference.positions
+        return float(np.sum(reference.weights * np.sum(residuals * residuals, axis=1)))
 
     def calc_jacobian(self, state, include_parameters=False) -> list[np.ndarray]:
         Jq = np.zeros((1, len(self.mc.coordinate_q_indexes)))
@@ -296,16 +356,16 @@ class MarkerTrackingTerm(TrackingTerm):
         if self.num_tasks == 0:
             return [Jq, Js, Jo, Jr, Jl] if include_parameters else [Jq]
 
-        arrays = self.task_arrays
+        geometry, reference = self.geometry, self.reference
         poses = np.array([frame.getTransformInGround(state).to_numpy()
-                          for frame in arrays.base_frames])
+                          for frame in geometry.base_frames])
         rotations, origins = poses[:, :, :3], poses[:, :, 3]
-        rows = arrays.body_rows
+        rows = geometry.body_rows
 
         # The per-marker error gradient in Ground.
         R_GB = rotations[rows]
         p_GS = origins[rows] + (R_GB @ self.station_array[..., None])[..., 0]
-        gradient = arrays.double_weights_column * (p_GS - arrays.reference_positions)
+        gradient = 2.0 * reference.weights[:, None] * (p_GS - reference.positions)
         dp_GS = osim.VectorVec3.createFromMat(
             np.ascontiguousarray(gradient, dtype=float).reshape(-1))
 
@@ -331,7 +391,7 @@ class MarkerTrackingTerm(TrackingTerm):
         #     dp_GB.get(k) += dp_GS.get(i)   # for each marker i on body k
         #
         accumulated = np.zeros((self.mc.num_mobod, 3))
-        np.add.at(accumulated, arrays.mobod_indexes, gradient)
+        np.add.at(accumulated, geometry.mobod_indexes, gradient)
         dp_GB = osim.VectorVec3.createFromMat(
             np.ascontiguousarray(accumulated, dtype=float).reshape(-1))
 
@@ -346,12 +406,14 @@ class MarkerTrackingTerm(TrackingTerm):
         # Assemble the marker offset Jacobian based on the offset sensitivities. Also,
         # include the contributions from the marker offsets to the Jacobian with respect
         # to body scales.
-        if len(arrays.shifted_rows):
-            np.add.at(Jo.reshape(-1, 3), arrays.shifted_groups,
-                      doffset[arrays.shifted_rows])
-        if len(arrays.scaled_rows):
-            np.add.at(Js.reshape(-1, 3), arrays.scaled_groups,
-                      arrays.scaled_base_stations * doffset[arrays.scaled_rows])
+        parameter_map = self.parameter_map
+        if len(parameter_map.shifted_rows):
+            np.add.at(Jo.reshape(-1, 3), parameter_map.shifted_groups,
+                      doffset[parameter_map.shifted_rows])
+        if len(parameter_map.scaled_rows):
+            np.add.at(Js.reshape(-1, 3), parameter_map.scaled_groups,
+                      parameter_map.scaled_base_stations
+                      * doffset[parameter_map.scaled_rows])
 
         return [Jq, Js, Jo, Jr, Jl]
 
@@ -422,52 +484,51 @@ class FrameTrackingTerm(TrackingTerm):
         self.orientation_weights.append(orientation_weight)
         self._add_task(cache, position, offset_group_index)
 
-    def _build_task_arrays(self) -> TrackingTaskArrays:
-        arrays = super()._build_task_arrays()
-        arrays.position_weights = np.asarray(self.position_weights, dtype=float)
-        arrays.orientation_weights = np.asarray(self.orientation_weights, dtype=float)
-        arrays.double_position_weights_column = (
-            2.0 * arrays.position_weights[:, None] if self.num_tasks
-            else np.zeros((0, 1)))
-        arrays.reference_orientations = (
-            np.asarray(self.orientations, dtype=float).reshape(-1, 4)
-            if self.num_tasks else np.zeros((0, 4)))
+    def _build_geometry(self) -> FrameGeometry:
+        # Keep each Transform alive while reading its rotation: R() returns a reference
+        # into the Transform, which a chained call would let Python free first.
         base_relative_rotations = []
         for frame in self.frames:
             transform = frame.findTransformInBaseFrame()
             base_relative_rotations.append(transform.R().to_numpy())
-        arrays.base_relative_rotations = (
-            np.array(base_relative_rotations) if self.num_tasks
-            else np.zeros((0, 3, 3)))
-        arrays.reference_rotations = (
+        base_relative_rotations = (np.array(base_relative_rotations) if self.num_tasks
+                                   else np.zeros((0, 3, 3)))
+        return FrameGeometry(**self._geometry_fields(),
+                             base_relative_rotations=base_relative_rotations)
+
+    def _build_reference(self) -> FrameReference:
+        rotations = (
             np.array([osim.Rotation(osim.Quaternion(*[float(v) for v in q])).to_numpy()
-                      for q in arrays.reference_orientations])
+                      for q in self.orientations])
             if self.num_tasks else np.zeros((0, 3, 3)))
-        return arrays
+        return FrameReference(
+            positions=self._reference_positions(), rotations=rotations,
+            position_weights=np.asarray(self.position_weights, dtype=float),
+            orientation_weights=np.asarray(self.orientation_weights, dtype=float))
 
     def calc_error(self, state) -> float:
         if self.num_tasks == 0:
             return 0.0
-        arrays = self.task_arrays
+        geometry, reference = self.geometry, self.reference
         poses = np.array([frame.getTransformInGround(state).to_numpy()
-                          for frame in arrays.base_frames])
+                          for frame in geometry.base_frames])
         base_rotations, origins = poses[:, :, :3], poses[:, :, 3]
-        rows = arrays.body_rows
+        rows = geometry.body_rows
         R_GB = base_rotations[rows]
 
         # Positions come from the scaled and offset stations applied by apply_state,
         # so the error stays consistent with any applied offsets.
         positions = origins[rows] + (R_GB @ self.station_array[..., None])[..., 0]
-        residuals = positions - arrays.reference_positions
-        position_error = arrays.position_weights * np.sum(
+        residuals = positions - reference.positions
+        position_error = reference.position_weights * np.sum(
             residuals * residuals, axis=1)
 
         # trace(R_ref^T R) == 1 + 2cos(theta), so
         # (3 - trace(R_ref^T R)) / 4 == (1 - cos(theta)) / 2 == sin(theta/2)**2,
         # which is equal to the quaternion alignment loss 1 - (eps . q_ref)**2.
-        frame_rotations = R_GB @ arrays.base_relative_rotations
-        trace = np.einsum('nij,nij->n', arrays.reference_rotations, frame_rotations)
-        orientation_error = arrays.orientation_weights * (3.0 - trace) / 4.0
+        frame_rotations = R_GB @ geometry.base_relative_rotations
+        trace = np.einsum('nij,nij->n', reference.rotations, frame_rotations)
+        orientation_error = reference.orientation_weights * (3.0 - trace) / 4.0
 
         return float(np.sum(position_error + orientation_error))
 
@@ -483,18 +544,18 @@ class FrameTrackingTerm(TrackingTerm):
 
         # Compute the combined position and orientation error for every frame at
         # once.
-        arrays = self.task_arrays
+        geometry, reference = self.geometry, self.reference
         poses = np.array([frame.getTransformInGround(state).to_numpy()
-                          for frame in arrays.base_frames])
+                          for frame in geometry.base_frames])
         base_rotations, origins = poses[:, :, :3], poses[:, :, 3]
-        rows = arrays.body_rows
+        rows = geometry.body_rows
         R_GB = base_rotations[rows]
 
         # The frames' ground positions come from their (possibly offset) cached
         # stations, so the gradient is consistent with any applied offsets.
         positions = origins[rows] + (R_GB @ self.station_array[..., None])[..., 0]
-        gradient = arrays.double_position_weights_column * (
-            positions - arrays.reference_positions)
+        gradient = 2.0 * reference.position_weights[:, None] * (
+            positions - reference.positions)
 
         # E = w_o * (1 - (eps . q_ref)**2) = w_o * (3 - trace(R_ref^T R)) / 4
         #
@@ -508,10 +569,9 @@ class FrameTrackingTerm(TrackingTerm):
         #       = (-w_o / 4) * tr([Jw]x R R_ref^T)
         #       = (-w_o / 4) * tr([Jw]x M)          -->  M = R R_ref^T
         #       = (-w_o / 4) * Jw^T [M12 - M21, M20 - M02, M01 - M10]
-        frame_rotations = R_GB @ arrays.base_relative_rotations
-        aligned = np.einsum('nij,nkj->nik', frame_rotations,
-                            arrays.reference_rotations)
-        orientation_error = (-0.25 * arrays.orientation_weights)[:, None] * np.stack(
+        frame_rotations = R_GB @ geometry.base_relative_rotations
+        aligned = np.einsum('nij,nkj->nik', frame_rotations, reference.rotations)
+        orientation_error = (-0.25 * reference.orientation_weights)[:, None] * np.stack(
             [aligned[:, 1, 2] - aligned[:, 2, 1],
              aligned[:, 2, 0] - aligned[:, 0, 2],
              aligned[:, 0, 1] - aligned[:, 1, 0]], axis=1)
@@ -543,7 +603,7 @@ class FrameTrackingTerm(TrackingTerm):
         #     dp_GB.get(k) += dp_GF.get(i)   # for each frame i on body k
         #
         accumulated = np.zeros((self.mc.num_mobod, 3))
-        np.add.at(accumulated, arrays.mobod_indexes, gradient)
+        np.add.at(accumulated, geometry.mobod_indexes, gradient)
         dp_GB = osim.VectorVec3.createFromMat(
             np.ascontiguousarray(accumulated, dtype=float).reshape(-1))
 
@@ -559,12 +619,14 @@ class FrameTrackingTerm(TrackingTerm):
         # Assemble the frame offset Jacobian based on the offset sensitivities. Also,
         # include the contributions from the frame offsets to the Jacobian with respect
         # to body scales.
-        if len(arrays.shifted_rows):
-            np.add.at(Jo.reshape(-1, 3), arrays.shifted_groups,
-                      doffset[arrays.shifted_rows])
-        if len(arrays.scaled_rows):
-            np.add.at(Js.reshape(-1, 3), arrays.scaled_groups,
-                      arrays.scaled_base_stations * doffset[arrays.scaled_rows])
+        parameter_map = self.parameter_map
+        if len(parameter_map.shifted_rows):
+            np.add.at(Jo.reshape(-1, 3), parameter_map.shifted_groups,
+                      doffset[parameter_map.shifted_rows])
+        if len(parameter_map.scaled_rows):
+            np.add.at(Js.reshape(-1, 3), parameter_map.scaled_groups,
+                      parameter_map.scaled_base_stations
+                      * doffset[parameter_map.scaled_rows])
 
         return [Jq, Js, Jo, Jr, Jl]
 
