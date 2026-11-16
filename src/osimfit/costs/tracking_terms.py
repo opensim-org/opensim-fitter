@@ -2,6 +2,7 @@ import numpy as np
 import opensim as osim
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import ClassVar
 
 from ..model import ModelCache, StationCache
 
@@ -122,7 +123,14 @@ class TrackingTerm(ABC):
     mc: ModelCache
         The `ModelCache` wrapping the OpenSim model used for evaluating the function and
         its Jacobian and caching model information.
+
+    Attributes
+    ----------
+    offset_input: str
+        The `CostInput` field holding this term's placement offsets.
     """
+    offset_input: ClassVar[str]
+
     def __init__(self, mc: ModelCache):
         self.mc = mc
         self.station_caches: list[StationCache] = []
@@ -144,12 +152,62 @@ class TrackingTerm(ABC):
 
     @abstractmethod
     def calc_jacobian(self, state: osim.State,
-                      include_parameters: bool = False) -> list[np.ndarray]:
+                      inputs: tuple[str, ...]) -> dict[str, np.ndarray]:
         """
-        Return the error's Jacobian as ``[Jq]``, or as ``[Jq, Js, Jo, Jr, Jl]`` (the
-        coordinate, body-scale, offset, ellipsoid-radii-scale, and beam-length-scale
-        blocks) if `include_parameters` is ``True``.
+        Return the error's Jacobian as a ``(1, n)`` block for each `CostInput` field
+        named in `inputs`. The block of an input the error does not depend on (e.g.,
+        ``'frame_offsets'`` for marker tasks) is zero.
         """
+
+    def _add_parameter_jacobians(self, state: osim.State,
+                                 jacobian: dict[str, np.ndarray],
+                                 gradient: np.ndarray, R_GB: np.ndarray) -> None:
+        """
+        Fill the parameter blocks of `jacobian`, given each task's error gradient with
+        respect to its ground position, `gradient`, and the rotation of its base frame
+        in ground, `R_GB`.
+        """
+        # The sensitivity of each task's ground position to a shift of its station in
+        # its base frame.
+        doffset = (gradient[:, None, :] @ R_GB)[:, 0, :]
+
+        # Scatter per-station gradients for each task into a vector respresenting the
+        # error gradient with respect to body origins, which we need for the Jacobian
+        # operations below. Since the body scales only apply a translational shift and
+        # no rotation, `dp_GS_i / dp_GB[k_i] = I`, and we can compute the vector via:
+        #
+        #     dp_GB.get(k) += dp_GS.get(i)   # for each task i on body k
+        #
+        accumulated = np.zeros((self.mc.num_mobod, 3))
+        np.add.at(accumulated, self.geometry.mobod_indexes, gradient)
+        dp_GB = osim.VectorVec3.createFromMat(
+            np.ascontiguousarray(accumulated, dtype=float).reshape(-1))
+
+        # Calculate the position-error Jacobian with respect to body scales, including
+        # the contributions from scaling each task's station within its base frame.
+        parameter_map = self.parameter_map
+        if 'body_scales' in jacobian:
+            Js = self.mc.calc_position_jacobian_wrt_body_scales(state, dp_GB)
+            if len(parameter_map.scaled_rows):
+                np.add.at(Js.reshape(-1, 3), parameter_map.scaled_groups,
+                          parameter_map.scaled_base_stations
+                          * doffset[parameter_map.scaled_rows])
+            jacobian['body_scales'] = Js
+
+        # Calculate the position-error Jacobians with respect to the joint-level
+        # parameters.
+        if 'ellipsoid_radii_scales' in jacobian:
+            jacobian['ellipsoid_radii_scales'] = (
+                self.mc.calc_position_jacobian_wrt_ellipsoid_radii_scales(state, dp_GB))
+        if 'beam_length_scales' in jacobian:
+            jacobian['beam_length_scales'] = (
+                self.mc.calc_position_jacobian_wrt_beam_length_scales(state, dp_GB))
+
+        # Assemble the offset Jacobian from the offset sensitivities.
+        if self.offset_input in jacobian and len(parameter_map.shifted_rows):
+            np.add.at(jacobian[self.offset_input].reshape(-1, 3),
+                      parameter_map.shifted_groups,
+                      doffset[parameter_map.shifted_rows])
 
     def _add_task(self, cache: StationCache, position: osim.Vec3,
                   offset_group_index: int | None) -> None:
@@ -271,6 +329,8 @@ class MarkerTrackingTerm(TrackingTerm):
         The `ModelCache` wrapping the OpenSim model used for evaluating the function and
         its Jacobian and caching model information.
     """
+    offset_input = 'marker_offsets'
+
     def __init__(self, mc: ModelCache):
         super().__init__(mc)
         self.markers = []
@@ -329,15 +389,11 @@ class MarkerTrackingTerm(TrackingTerm):
         residuals = positions - reference.positions
         return float(np.sum(reference.weights * np.sum(residuals * residuals, axis=1)))
 
-    def calc_jacobian(self, state, include_parameters=False) -> list[np.ndarray]:
-        Jq = np.zeros((1, len(self.mc.coordinate_q_indexes)))
-        if include_parameters:
-            Js = np.zeros((1, 3 * len(self.mc.body_scale_groups)))
-            Jo = np.zeros((1, 3 * len(self.mc.marker_offset_groups)))
-            Jr = np.zeros((1, 3 * len(self.mc.ellipsoid_radii_scale_groups)))
-            Jl = np.zeros((1, len(self.mc.beam_length_scale_groups)))
+    def calc_jacobian(self, state, inputs) -> dict[str, np.ndarray]:
+        jacobian = {name: np.zeros((1, self.mc.num_variables(name)))
+                    for name in inputs}
         if self.num_tasks == 0:
-            return [Jq, Js, Jo, Jr, Jl] if include_parameters else [Jq]
+            return jacobian
 
         geometry, reference = self.geometry, self.reference
         poses = np.array([frame.getTransformInGround(state).to_numpy()
@@ -349,56 +405,22 @@ class MarkerTrackingTerm(TrackingTerm):
         R_GB = rotations[rows]
         p_GS = origins[rows] + (R_GB @ self.station_array[..., None])[..., 0]
         gradient = 2.0 * reference.weights[:, None] * (p_GS - reference.positions)
-        dp_GS = osim.VectorVec3.createFromMat(
-            np.ascontiguousarray(gradient, dtype=float).reshape(-1))
 
         # Calculate the Jacobian of the position error with respect to the coordinates.
-        grad_u = osim.Vector(state.getNU(), 0.0)
-        self.mc.model.multiplyByStationJacobianTranspose(
-            state, self.mobod_indexes, self.stations, dp_GS, grad_u)
-        grad_q = osim.Vector(state.getNQ(), 0.0)
-        self.mc.model.multiplyByNInv(state, True, grad_u, grad_q)
-        Jq[0, :] = grad_q.to_numpy()[self.mc.coordinate_q_indexes]
-        if not include_parameters:
-            return [Jq]
+        if 'coordinates' in jacobian:
+            dp_GS = osim.VectorVec3.createFromMat(
+                np.ascontiguousarray(gradient, dtype=float).reshape(-1))
+            grad_u = osim.Vector(state.getNU(), 0.0)
+            self.mc.model.multiplyByStationJacobianTranspose(
+                state, self.mobod_indexes, self.stations, dp_GS, grad_u)
+            grad_q = osim.Vector(state.getNQ(), 0.0)
+            self.mc.model.multiplyByNInv(state, True, grad_u, grad_q)
+            jacobian['coordinates'][0, :] = (
+                grad_q.to_numpy()[self.mc.coordinate_q_indexes])
 
-        # The sensitivity of each marker's ground position to a shift from an offset
-        # variable.
-        doffset = (gradient[:, None, :] @ R_GB)[:, 0, :]
-
-        # Scatter per-station gradients for each task into a vector respresenting the
-        # error gradient with respect to body origins, which we need for the Jacobian
-        # operations below. Since the body scales only apply a translational shift and
-        # no rotation, `dp_GS_i / dp_GB[k_i] = I`, and we can compute the vector via:
-        #
-        #     dp_GB.get(k) += dp_GS.get(i)   # for each marker i on body k
-        #
-        accumulated = np.zeros((self.mc.num_mobod, 3))
-        np.add.at(accumulated, geometry.mobod_indexes, gradient)
-        dp_GB = osim.VectorVec3.createFromMat(
-            np.ascontiguousarray(accumulated, dtype=float).reshape(-1))
-
-        # Calculate the position-error Jacobian with respect to body scales.
-        Js = self.mc.calc_position_jacobian_wrt_body_scales(state, dp_GB)
-
-        # Calculate the position-error Jacobians with respect to the joint-level
-        # parameters.
-        Jr = self.mc.calc_position_jacobian_wrt_ellipsoid_radii_scales(state, dp_GB)
-        Jl = self.mc.calc_position_jacobian_wrt_beam_length_scales(state, dp_GB)
-
-        # Assemble the marker offset Jacobian based on the offset sensitivities. Also,
-        # include the contributions from the marker offsets to the Jacobian with respect
-        # to body scales.
-        parameter_map = self.parameter_map
-        if len(parameter_map.shifted_rows):
-            np.add.at(Jo.reshape(-1, 3), parameter_map.shifted_groups,
-                      doffset[parameter_map.shifted_rows])
-        if len(parameter_map.scaled_rows):
-            np.add.at(Js.reshape(-1, 3), parameter_map.scaled_groups,
-                      parameter_map.scaled_base_stations
-                      * doffset[parameter_map.scaled_rows])
-
-        return [Jq, Js, Jo, Jr, Jl]
+        if set(inputs) - {'coordinates'}:
+            self._add_parameter_jacobians(state, jacobian, gradient, R_GB)
+        return jacobian
 
 
 class FrameTrackingTerm(TrackingTerm):
@@ -413,6 +435,8 @@ class FrameTrackingTerm(TrackingTerm):
         The `ModelCache` wrapping the OpenSim model used for evaluating the function and
         its Jacobian and caching model information.
     """
+    offset_input = 'frame_offsets'
+
     def __init__(self, mc: ModelCache):
         super().__init__(mc)
         self.frames = []
@@ -515,15 +539,11 @@ class FrameTrackingTerm(TrackingTerm):
 
         return float(np.sum(position_error + orientation_error))
 
-    def calc_jacobian(self, state, include_parameters=False) -> list[np.ndarray]:
-        Jq = np.zeros((1, len(self.mc.coordinate_q_indexes)))
-        if include_parameters:
-            Js = np.zeros((1, 3 * len(self.mc.body_scale_groups)))
-            Jo = np.zeros((1, 3 * len(self.mc.frame_offset_groups)))
-            Jr = np.zeros((1, 3 * len(self.mc.ellipsoid_radii_scale_groups)))
-            Jl = np.zeros((1, len(self.mc.beam_length_scale_groups)))
+    def calc_jacobian(self, state, inputs) -> dict[str, np.ndarray]:
+        jacobian = {name: np.zeros((1, self.mc.num_variables(name)))
+                    for name in inputs}
         if self.num_tasks == 0:
-            return [Jq, Js, Jo, Jr, Jl] if include_parameters else [Jq]
+            return jacobian
 
         # Compute the combined position and orientation error for every frame at
         # once.
@@ -559,59 +579,25 @@ class FrameTrackingTerm(TrackingTerm):
              aligned[:, 2, 0] - aligned[:, 0, 2],
              aligned[:, 0, 1] - aligned[:, 1, 0]], axis=1)
 
-        # A SpatialVec holds the angular half first, then the linear half.
-        spatialError = osim.VectorOfSpatialVec.createFromMat(
-            np.ascontiguousarray(
-                np.concatenate([orientation_error, gradient], axis=1),
-                dtype=float).reshape(-1))
+        # Calculate the frame (position and orientation) error Jacobian with respect to
+        # the coordinates. A SpatialVec holds the angular half first, then the linear
+        # half.
+        if 'coordinates' in jacobian:
+            spatialError = osim.VectorOfSpatialVec.createFromMat(
+                np.ascontiguousarray(
+                    np.concatenate([orientation_error, gradient], axis=1),
+                    dtype=float).reshape(-1))
+            grad_u = osim.Vector(state.getNU(), 0.0)
+            self.mc.model.multiplyByFrameJacobianTranspose(
+                state, self.mobod_indexes, self.stations, spatialError, grad_u)
+            grad_q = osim.Vector(state.getNQ(), 0.0)
+            self.mc.model.multiplyByNInv(state, True, grad_u, grad_q)
+            jacobian['coordinates'][0, :] = (
+                grad_q.to_numpy()[self.mc.coordinate_q_indexes])
 
-        # Calculate the frame (position and orientation) error Jacobian.
-        grad_u = osim.Vector(state.getNU(), 0.0)
-        self.mc.model.multiplyByFrameJacobianTranspose(
-            state, self.mobod_indexes, self.stations, spatialError, grad_u)
-        grad_q = osim.Vector(state.getNQ(), 0.0)
-        self.mc.model.multiplyByNInv(state, True, grad_u, grad_q)
-        Jq[0, :] = grad_q.to_numpy()[self.mc.coordinate_q_indexes]
-        if not include_parameters:
-            return [Jq]
-
-        # Sensitivity of each frame's ground position to a base-frame station shift.
-        doffset = np.einsum('ni,nij->nj', gradient, R_GB)
-
-        # Scatter per-station gradients for each task into a vector respresenting the
-        # error gradient with respect to body origins, which we need for the Jacobian
-        # operations below. Since the body scales only apply a translational shift and
-        # no rotation, `dp_GF_i / dp_GB[k_i] = I`, and we can compute the vector via:
-        #
-        #     dp_GB.get(k) += dp_GF.get(i)   # for each frame i on body k
-        #
-        accumulated = np.zeros((self.mc.num_mobod, 3))
-        np.add.at(accumulated, geometry.mobod_indexes, gradient)
-        dp_GB = osim.VectorVec3.createFromMat(
-            np.ascontiguousarray(accumulated, dtype=float).reshape(-1))
-
-        # Calculate the position-error Jacobian with respect to body scales. This does
-        # not include the contributions from frame offsets, we will include that below.
-        Js = self.mc.calc_position_jacobian_wrt_body_scales(state, dp_GB)
-
-        # Calculate the position-error Jacobians with respect to the joint-level
-        # parameters.
-        Jr = self.mc.calc_position_jacobian_wrt_ellipsoid_radii_scales(state, dp_GB)
-        Jl = self.mc.calc_position_jacobian_wrt_beam_length_scales(state, dp_GB)
-
-        # Assemble the frame offset Jacobian based on the offset sensitivities. Also,
-        # include the contributions from the frame offsets to the Jacobian with respect
-        # to body scales.
-        parameter_map = self.parameter_map
-        if len(parameter_map.shifted_rows):
-            np.add.at(Jo.reshape(-1, 3), parameter_map.shifted_groups,
-                      doffset[parameter_map.shifted_rows])
-        if len(parameter_map.scaled_rows):
-            np.add.at(Js.reshape(-1, 3), parameter_map.scaled_groups,
-                      parameter_map.scaled_base_stations
-                      * doffset[parameter_map.scaled_rows])
-
-        return [Jq, Js, Jo, Jr, Jl]
+        if set(inputs) - {'coordinates'}:
+            self._add_parameter_jacobians(state, jacobian, gradient, R_GB)
+        return jacobian
 
 
 @dataclass

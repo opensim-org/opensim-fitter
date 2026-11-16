@@ -6,20 +6,23 @@ from dataclasses import dataclass, field
 from typing import ClassVar, Literal
 
 from ..data_sources import Trial
-from ..model import ModelCache, StationCache
+from ..model import PARAMETER_TYPES, ModelCache, StationCache, Vec3Parameter
 
 
 @dataclass
 class CostInput:
     """
     Bundles the optimization variables passed to a cost evaluation. The canonical
-    ordering of cost inputs is defined via the `INPUT_ORDER` attribute. Unused inputs
+    ordering of cost inputs is defined via the `INPUT_ORDER` attribute: the coordinates,
+    followed by one input per parameter type in `PARAMETER_TYPES`. Unused inputs
     default to empty symbolic arrays so they remain valid callback arguments.
 
     Attributes
     ----------
     INPUT_ORDER: tuple[str, ...]
         The canonical order of the optimization-variable inputs.
+    TRIPLET_INPUTS: tuple[str, ...]
+        The inputs of `Vec3Parameter` types, stored as per-group XYZ triplets.
     coordinates: ca.MX, optional
         Coordinate values (e.g., joint angles).
     body_scales: ca.MX, optional
@@ -34,10 +37,9 @@ class CostInput:
         Per-group factors on the baseline cantilever-free-beam lengths.
     """
     INPUT_ORDER: ClassVar[tuple[str, ...]] = (
-        'coordinates', 'body_scales', 'marker_offsets', 'frame_offsets',
-        'ellipsoid_radii_scales', 'beam_length_scales')
-    TRIPLET_INPUTS: ClassVar[tuple[str, ...]] = (
-        'body_scales', 'marker_offsets', 'frame_offsets', 'ellipsoid_radii_scales')
+        ('coordinates',) + tuple(p.cost_input for p in PARAMETER_TYPES))
+    TRIPLET_INPUTS: ClassVar[tuple[str, ...]] = tuple(
+        p.cost_input for p in PARAMETER_TYPES if issubclass(p, Vec3Parameter))
 
     coordinates: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
     body_scales: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
@@ -351,8 +353,8 @@ class Cost(ABC):
       coordinates) before realizing it.
     - The callback receives every input in `required_inputs`, and its value may depend
       only on them. CasADi assumes it does when assembling derivatives.
-    - Return the Jacobian as one ``(1, n)`` block per entry of `input_names`, in that
-      order.
+    - Return the Jacobian as a dict mapping every entry of `input_names` to its
+      ``(1, n)`` block.
 
     Optionally override `validate(workspace)` to check the assembled problem before it
     is solved (e.g., that every offset is constrained by some tracked data).
@@ -443,10 +445,10 @@ class Cost(ABC):
             f'{type(self).__name__} does not implement calc_value.')
 
     def calc_jacobian(self, cache: CostCache, state: osim.State, context,
-                      values: dict[str, np.ndarray]) -> list[np.ndarray]:
+                      values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """
-        Return the Jacobian of this cost's callback as one ``(1, n)`` block per entry
-        of `input_names`, in that order.
+        Return the Jacobian of this cost's callback as a dict mapping every entry of
+        `input_names` to its ``(1, n)`` block.
 
         Parameters
         ----------
@@ -535,15 +537,7 @@ class CostFunction(ca.Callback):
     def get_input_size(self, i):
         if not 0 <= i < len(self.input_names):
             raise IndexError(f'Invalid input index {i} for {type(self).__name__}.')
-        sizes = {
-            'coordinates': len(self.mc.coordinate_q_indexes),
-            'body_scales': 3 * len(self.mc.body_scale_groups),
-            'marker_offsets': 3 * len(self.mc.marker_offset_groups),
-            'frame_offsets': 3 * len(self.mc.frame_offset_groups),
-            'ellipsoid_radii_scales': 3 * len(self.mc.ellipsoid_radii_scale_groups),
-            'beam_length_scales': len(self.mc.beam_length_scale_groups),
-        }
-        return sizes[self.input_names[i]]
+        return self.mc.num_variables(self.input_names[i])
 
     def get_output_size(self, i):
         if i == 0:
@@ -602,13 +596,12 @@ class CostFunction(ca.Callback):
                 values = CostFunction._unpack_cost_inputs(self.input_names, arg)
                 blocks = self.cost.calc_jacobian(self.cache, self.state, self.context,
                                                  values)
-                if len(blocks) != len(self.input_names):
+                if set(blocks) != set(self.input_names):
                     raise ValueError(
-                        f'{type(self.cost).__name__}.calc_jacobian returned '
-                        f'{len(blocks)} blocks, but expected {len(self.input_names)} '
-                        f'for cost inputs '
-                        f'{self.input_names}.')
-                return blocks
+                        f'{type(self.cost).__name__}.calc_jacobian returned blocks '
+                        f'for {sorted(blocks)}, but expected one for each of its cost '
+                        f'inputs {self.input_names}.')
+                return [blocks[name] for name in self.input_names]
 
         input_sizes = tuple(self.get_input_size(i) for i in range(self.get_n_in()))
         self.jacobian_callback = JacobianFunction(

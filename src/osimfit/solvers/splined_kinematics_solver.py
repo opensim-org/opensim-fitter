@@ -5,8 +5,8 @@ import opensim as osim
 from ..costs import (BilevelCost, CostInput, CostCache, CostWorkspace,
                      TrackingCost, CostEvaluation, TrialSample)
 from ..costs.cost import CostTerm
-from ..model import (ModelCache, Parameter, BodyScale, MarkerOffset, FrameOffset,
-                     EllipsoidRadiiScale, BeamLengthScale)
+from ..model import (PARAMETER_TYPES, ModelCache, Parameter, BodyScale, MarkerOffset,
+                     FrameOffset, EllipsoidRadiiScale, BeamLengthScale)
 from ..scaling import Axis, Scaler, ManualBodyScale
 from ..utilities import set_model_mass
 from .solution import ObjectiveTerms, Solution
@@ -172,16 +172,6 @@ class SplinedKinematicsSolver(TrackingSolver):
 
         # Extract parameter dimensions.
         num_params = len(self.parameters)
-        num_scales = sum(p.num_variables for p in self.parameters
-                         if isinstance(p, BodyScale))
-        num_markers = sum(p.num_variables for p in self.parameters
-                          if isinstance(p, MarkerOffset))
-        num_frames = sum(p.num_variables for p in self.parameters
-                         if isinstance(p, FrameOffset))
-        num_radii = sum(p.num_variables for p in self.parameters
-                        if isinstance(p, EllipsoidRadiiScale))
-        num_lengths = sum(p.num_variables for p in self.parameters
-                          if isinstance(p, BeamLengthScale))
 
         # Apply the parameters from the initial guess to the solver's list of registered
         # parameters.
@@ -190,15 +180,14 @@ class SplinedKinematicsSolver(TrackingSolver):
                 sp.value = np.asarray(gp.value, dtype=float)
 
         # Define the optimization variables: one block of control points per trial,
-        # followed by the parameter blocks shared across all trials.
+        # followed by the parameter blocks shared across all trials, one per parameter
+        # type.
         coeffs = [ca.MX.sym(f'coeffs_{itrial}', num_control_points, num_coords)
                   for itrial, num_control_points in
                   enumerate(trial_num_control_points)]
-        s = ca.MX.sym('body_scales', num_scales)
-        mo = ca.MX.sym('marker_offsets', num_markers)
-        fo = ca.MX.sym('frame_offsets', num_frames)
-        er = ca.MX.sym('ellipsoid_radii_scales', num_radii)
-        bl = ca.MX.sym('beam_length_scales', num_lengths)
+        params = {p.cost_input: ca.MX.sym(p.cost_input,
+                                          self.mc.num_variables(p.cost_input))
+                  for p in PARAMETER_TYPES}
         x0 = []
         lbx = []
         ubx = []
@@ -216,8 +205,7 @@ class SplinedKinematicsSolver(TrackingSolver):
                 ubx += [coord.getRangeMax()] * num_control_points
 
         # Append each parameter's initial guess and bounds, in type order, matching the
-        # [coeffs_0, ..., coeffs_J, s, mo, fo, er, bl] layout of the optimization vector
-        # below.
+        # [coeffs_0, ..., coeffs_J, *params] layout of the optimization vector below.
         for p in self.parameters:
             p.append_guess_and_bounds(x0, lbx, ubx)
 
@@ -240,9 +228,7 @@ class SplinedKinematicsSolver(TrackingSolver):
             # Time average within each trial, then equal weighting across trials.
             weights = self._compute_average_trapezoidal_weights(times) / len(self.trials)
             for itime, weight in enumerate(weights):
-                cost_input = CostInput(coordinates=q[itime, :].T, body_scales=s,
-                                       marker_offsets=mo, frame_offsets=fo,
-                                       ellipsoid_radii_scales=er, beam_length_scales=bl)
+                cost_input = CostInput(coordinates=q[itime, :].T, **params)
                 evaluation = CostEvaluation(cost_input, TrialSample(trial, itime))
                 terms.add_costs(named_costs, evaluation, workspace, weight)
 
@@ -253,13 +239,11 @@ class SplinedKinematicsSolver(TrackingSolver):
 
         # Add the cost terms on the parameters shared across all trials. These are
         # evaluated once, and so bypass the per-trial averaging above.
-        parameter_input = CostInput(body_scales=s, marker_offsets=mo, frame_offsets=fo,
-                                    ellipsoid_radii_scales=er, beam_length_scales=bl)
-        terms.add_costs(named_costs, CostEvaluation(parameter_input), workspace)
+        terms.add_costs(named_costs, CostEvaluation(CostInput(**params)), workspace)
         workspace.validate(named_costs)
 
         # Solve.
-        x = ca.vertcat(*[ca.vec(c) for c in coeffs], s, mo, fo, er, bl)
+        x = ca.vertcat(*[ca.vec(c) for c in coeffs], *params.values())
         nlp = {'x': x, 'f': terms.objective}
         opts = {}
         opts['ipopt'] = self._get_ipopt_options(print_level=5)
