@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
 
-from ..costs import CostEvaluation, CostTerm, CostWorkspace
+from ..costs import CostEvaluation, CostWorkspace
+from ..costs.cost import CostTerm
 from ..model import Parameter
 
 

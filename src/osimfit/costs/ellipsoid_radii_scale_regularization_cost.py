@@ -1,9 +1,9 @@
 import casadi as ca
 
-from .cost import CostInput, SymbolicCost
+from .cost import Cost, CostEvaluation, CostWorkspace
 
 
-class EllipsoidRadiiScaleRegularizationCost(SymbolicCost):
+class EllipsoidRadiiScaleRegularizationCost(Cost):
     """
     A quadratic penalty on the ellipsoid radii factors that encourages each toward
     `target`:
@@ -27,5 +27,7 @@ class EllipsoidRadiiScaleRegularizationCost(SymbolicCost):
         self.weight = weight
         self.target = target
 
-    def evaluate(self, input: CostInput) -> ca.MX:
-        return self.weight * ca.sum((input.ellipsoid_radii_scales - self.target)**2)
+    def expression(self, workspace: CostWorkspace,
+                   evaluation: CostEvaluation) -> ca.MX:
+        return self.weight * ca.sum(
+            (evaluation.inputs.ellipsoid_radii_scales - self.target)**2)
