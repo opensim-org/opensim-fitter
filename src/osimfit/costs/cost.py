@@ -280,7 +280,7 @@ class CostWorkspace:
         self._callbacks.append(callback)
         return callback
 
-    def cost_callback(self, cost: 'CallbackCost',
+    def cost_callback(self, cost: 'Cost',
                       sample: TrialSample | None = None) -> 'CostFunction':
         """
         Reuse a callback by cost, and by sample for costs requiring reference data.
@@ -299,7 +299,7 @@ class CostWorkspace:
                 f'{type(cost).__name__}_{len(self._callbacks)}', cost, context)
         return self._cost_callbacks[key]
 
-    def contexts(self, cost: 'CallbackCost') -> tuple:
+    def contexts(self, cost: 'Cost') -> tuple:
         """Prepared contexts for a cost, for post-assembly validation."""
         return tuple(callback.context for callback in self._callbacks
                      if callback.cost is cost)
@@ -314,37 +314,23 @@ class Cost(ABC):
     """
     A cost that a user can register on a solver via `Solver.add_cost`.
 
-    A cost is a model-independent description: the weights, targets, and settings the
-    user supplies, with no OpenSim state of its own. It is inert and reusable across
-    solvers and solves. Anything bound to a model (resolved component indexes, station
-    data, an OpenSim state) is supplied by the solver at evaluation time.
-
     Writing a cost
     --------------
-    Subclass one of three bases, depending on how the cost is evaluated:
+    Implement `expression()`, returning the cost as a CasADi expression of the
+    optimization variables in ``evaluation.inputs``. For example:
 
-    `SymbolicCost`
-        The cost is a plain CasADi expression of the optimization variables. Implement
-        `evaluate(input)`. CasADi differentiates it symbolically. For example::
+        class ScaleMagnitudeCost(Cost):
+            scope = 'global'
+            required_inputs = frozenset({'body_scales'})
 
-            class ScaleMagnitudeCost(SymbolicCost):
-                scope = 'global'
-                required_inputs = frozenset({'body_scales'})
+            def expression(self, workspace, evaluation):
+                return ca.sum(evaluation.inputs.body_scales**2)
 
-                def evaluate(self, input):
-                    return ca.sum(input.body_scales**2)
-
-    `Cost`
-        The cost is a CasADi expression that also needs data resolved from the model,
-        such as coordinate indexes. Implement `expression(workspace, evaluation)`, and
-        resolve model data once per solve with ``workspace.cache.memoize(self, key,
-        factory)``. See `CoordinateStiffnessCost`.
-
-    `CallbackCost`
-        The cost is evaluated numerically through OpenSim. Implement
-        `calc_value(cache, state, context, values)` and `calc_jacobian(cache, state,
-        context, values)`, and optionally `create_context` to prepare model-bound data
-        once. See `AnthropometricRegularizationCost` and `TrackingCost`.
+    If the expression needs data from the OpenSim model (e.g., coordinate indexes),
+    use ``workspace.cache.memoize()`` to store it once per solve. If part of the cost
+    must be evaluated numerically through OpenSim, implement `calc_value()` and
+    `calc_jacobian()`, and optionally `create_context()`. Then use ``self.callback()``,
+    the CasADi output of `calc_value`, inside `expression`.
 
     Every cost declares, as class attributes:
 
@@ -355,16 +341,16 @@ class Cost(ABC):
       parameters shared across trials (e.g., a regularizer on body scales). A global
       cost must not require ``'coordinates'``.
     - `requires_sample`: ``True`` if the cost needs a trial's reference data. Its
-      `CallbackCost.create_context` then receives a `TrialSample` and builds a context
-      per sample. Otherwise the context is built once per solve and shared.
+      `create_context` then receives a `TrialSample` and builds a context per sample.
+      Otherwise the context is built once per solve and shared.
 
-    Rules for callback costs:
+    Rules for callbacks:
 
     - Evaluate in the `state` argument, never in ``cache.state``. Each cost has its own
       copy of the state, so set everything the cost depends on (at least the
       coordinates) before realizing it.
-    - The value may depend only on `required_inputs`. CasADi assumes it does when
-      assembling derivatives.
+    - The callback receives every input in `required_inputs`, and its value may depend
+      only on them. CasADi assumes it does when assembling derivatives.
     - Return the Jacobian as one ``(1, n)`` block per entry of `input_names`, in that
       order.
 
@@ -406,6 +392,76 @@ class Cost(ABC):
             The optimization variables and optional reference sample.
         """
 
+    def callback(self, workspace: CostWorkspace,
+                 evaluation: CostEvaluation) -> ca.MX:
+        """
+        Return the CasADi output of this cost's `calc_value`, differentiated through
+        `calc_jacobian`, for use inside `expression`.
+
+        Parameters
+        ----------
+        workspace: CostWorkspace
+            Owns the callback, which is reused by cost and, for costs that require a
+            sample, by sample.
+        evaluation: CostEvaluation
+            The optimization variables and optional reference sample.
+        """
+        return workspace.cost_callback(self, evaluation.sample)(evaluation.inputs)
+
+    def create_context(self, cache: CostCache, sample: TrialSample | None = None):
+        """
+        Model-bound data (beyond the cache itself) needed to evaluate `calc_value` and
+        `calc_jacobian` for a cost.
+
+        Parameters
+        ----------
+        cache: CostCache
+            The solver's cache.
+        sample: TrialSample, optional
+            Supplied only when `requires_sample` is True. Otherwise the context is
+            built once per solve and reused across samples and workspaces.
+        """
+        return None
+
+    def calc_value(self, cache: CostCache, state: osim.State, context,
+                   values: dict[str, np.ndarray]) -> float:
+        """
+        Return the scalar value of this cost's callback.
+
+        Parameters
+        ----------
+        cache: CostCache
+            The solver's cache.
+        state: osim.State
+            This cost's copy of the state.
+        context
+            Model-bound data, beyond the cache, needed to evaluate this cost.
+        values: dict[str, np.ndarray]
+            The cost's `input_names`, mapped to their numeric values.
+        """
+        raise NotImplementedError(
+            f'{type(self).__name__} does not implement calc_value.')
+
+    def calc_jacobian(self, cache: CostCache, state: osim.State, context,
+                      values: dict[str, np.ndarray]) -> list[np.ndarray]:
+        """
+        Return the Jacobian of this cost's callback as one ``(1, n)`` block per entry
+        of `input_names`, in that order.
+
+        Parameters
+        ----------
+        cache: CostCache
+            The solver's cache.
+        state: osim.State
+            This cost's copy of the state.
+        context
+            Model-bound data, beyond the cache, needed to evaluate this cost.
+        values: dict[str, np.ndarray]
+            The cost's `input_names`, mapped to their numeric values.
+        """
+        raise NotImplementedError(
+            f'{type(self).__name__} does not implement calc_jacobian.')
+
     def validate(self, workspace: CostWorkspace) -> None:
         """Check the fully assembled problem, raising ValueError if invalid."""
         pass
@@ -424,93 +480,12 @@ class CostTerm:
     def __post_init__(self):
         scope = self.cost.scope
         if scope not in ('sample', 'global'):
-            raise ValueError(f'Unknown cost scope {scope!r}; expected sample or global.')
+            raise ValueError(
+                f'Unknown cost scope {scope!r}; expected sample or global.')
         if scope == 'global' and self.cost.requires_sample:
             raise ValueError(
                 f'{type(self.cost).__name__} requires a trial sample and cannot '
                 f'use global scope.')
-
-
-class SymbolicCost(Cost):
-    """
-    A `Cost` that is a plain CasADi expression over the optimization variables,
-    requiring neither OpenSim evaluation nor anything from the `CostCache`. It is
-    differentiated symbolically by CasADi and incurs no callback overhead.
-    """
-
-    @abstractmethod
-    def evaluate(self, input: CostInput) -> ca.MX:
-        """
-        Return this cost's CasADi expression for `input`.
-        """
-
-    def expression(self, workspace: CostWorkspace,
-                   evaluation: CostEvaluation) -> ca.MX:
-        return self.evaluate(evaluation.inputs)
-
-
-class CallbackCost(Cost):
-    """
-    A `Cost` evaluated through OpenSim via a `CostFunction`. Subclasses implement
-    `calc_value` and `calc_jacobian`, which the callback invokes, and optionally
-    `create_context` to resolve model-bound data the evaluation needs.
-    """
-
-    def expression(self, workspace: CostWorkspace,
-                   evaluation: CostEvaluation) -> ca.MX:
-        return workspace.cost_callback(self, evaluation.sample)(evaluation.inputs)
-
-    def create_context(self, cache: CostCache, sample: TrialSample | None = None):
-        """
-        Model-bound data (beyond the cache itself) needed to evaluate `calc_value` and
-        `calc_jacobian` for a cost.
-
-        Parameters
-        ----------
-        cache: CostCache
-            The solver's cache.
-        sample: TrialSample, optional
-            Supplied only when `requires_sample` is True. Otherwise the context is
-            built once per solve and reused across samples and workspaces.
-        """
-        return None
-
-    @abstractmethod
-    def calc_value(self, cache: CostCache, state: osim.State, context,
-                   values: dict[str, np.ndarray]) -> float:
-        """
-        Return this cost's scalar value.
-
-        Parameters
-        ----------
-        cache: CostCache
-            The solver's cache.
-        state: osim.State
-            This cost's copy of the state.
-        context
-            Model-bound data, beyond the cache, needed to evaluate this cost.
-        values: dict[str, np.ndarray]
-            The cost's `input_names`, mapped to their numeric values.
-        """
-
-    @abstractmethod
-    def calc_jacobian(self, cache: CostCache, state: osim.State, context,
-                      values: dict[str, np.ndarray]) -> list[np.ndarray]:
-        """
-        Return this cost's Jacobian as one ``(1, n)`` block per entry of
-        `input_names`, in that order.
-
-        Parameters
-        ----------
-        cache: CostCache
-            The solver's cache.
-        state: osim.State
-            This cost's copy of the state.
-        context
-            Model-bound data, beyond the cache, needed to evaluate this cost.
-        values: dict[str, np.ndarray]
-            The cost's `input_names`, mapped to their numeric values.
-        """
 
 
 class CostFunction(ca.Callback):
@@ -629,8 +604,9 @@ class CostFunction(ca.Callback):
                                                  values)
                 if len(blocks) != len(self.input_names):
                     raise ValueError(
-                        f'{type(self.cost).__name__}.calc_jacobian returned {len(blocks)} '
-                        f'blocks, but expected {len(self.input_names)} for cost inputs '
+                        f'{type(self.cost).__name__}.calc_jacobian returned '
+                        f'{len(blocks)} blocks, but expected {len(self.input_names)} '
+                        f'for cost inputs '
                         f'{self.input_names}.')
                 return blocks
 

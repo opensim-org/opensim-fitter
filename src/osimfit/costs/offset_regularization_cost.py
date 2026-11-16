@@ -1,9 +1,9 @@
 import casadi as ca
 
-from .cost import CostInput, SymbolicCost
+from .cost import Cost, CostEvaluation, CostWorkspace
 
 
-class OffsetRegularizationCost(SymbolicCost):
+class OffsetRegularizationCost(Cost):
     """
     A quadratic penalty on marker and frame XYZ offsets, penalizing offsets away from
     zero:
@@ -24,6 +24,8 @@ class OffsetRegularizationCost(SymbolicCost):
                 f'Expected weight to be non-negative, but got {weight}.')
         self.weight = weight
 
-    def evaluate(self, input: CostInput) -> ca.MX:
-        offsets = ca.vertcat(input.marker_offsets, input.frame_offsets)
+    def expression(self, workspace: CostWorkspace,
+                   evaluation: CostEvaluation) -> ca.MX:
+        inputs = evaluation.inputs
+        offsets = ca.vertcat(inputs.marker_offsets, inputs.frame_offsets)
         return self.weight * ca.sum(offsets**2)

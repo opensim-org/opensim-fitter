@@ -1,12 +1,13 @@
+import casadi as ca
 import numpy as np
 import opensim as osim
 
 from ..data_sources import Trial
-from .cost import CallbackCost, CostCache, CostWorkspace, TrialSample
+from .cost import Cost, CostCache, CostEvaluation, CostWorkspace, TrialSample
 from .tracking_terms import FrameTrackingTerm, MarkerTrackingTerm, TrackingTaskSet
 
 
-class TrackingCost(CallbackCost):
+class TrackingCost(Cost):
     """
     The weighted, squared error between the model's markers and frames and a trial's
     reference data, as a function of the model's generalized coordinates. Evaluated
@@ -54,6 +55,10 @@ class TrackingCost(CallbackCost):
                 * self.frame_position_weights.get(frame_path, 1.0),
                 self.orientation_weight
                 * self.frame_orientation_weights.get(frame_path, 1.0))
+
+    def expression(self, workspace: CostWorkspace,
+                   evaluation: CostEvaluation) -> ca.MX:
+        return self.callback(workspace, evaluation)
 
     def create_context(self, cache: CostCache,
                        sample: TrialSample | None = None) -> TrackingTaskSet:

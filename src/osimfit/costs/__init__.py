@@ -1,5 +1,5 @@
-from .cost import (CostEvaluation, TrialSample, CostInput, Cost, SymbolicCost,
-                   CallbackCost, CostCache, CostWorkspace)
+from .cost import (CostEvaluation, TrialSample, CostInput, Cost, CostCache,
+                   CostWorkspace)
 from .body_scale_regularization_cost import BodyScaleRegularizationCost
 from .body_scale_isotropy_cost import BodyScaleIsotropyCost
 from .offset_regularization_cost import OffsetRegularizationCost
@@ -12,8 +12,7 @@ from .anthropometric_regularization_cost import AnthropometricRegularizationCost
 
 __all__ = [
     'CostEvaluation', 'TrialSample',
-    'CostInput', 'Cost', 'SymbolicCost',
-    'CallbackCost',
+    'CostInput', 'Cost',
     'CostCache', 'CostWorkspace',
     'BodyScaleRegularizationCost',
     'BodyScaleIsotropyCost',
