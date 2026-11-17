@@ -3,6 +3,7 @@ Tests for `Cost`s: the cost classes a user registers on a solver, and the
 solver-side validation of what each solver accepts.
 """
 
+import dataclasses
 import gc
 import pytest
 import weakref
@@ -914,9 +915,9 @@ class CubicCost(Cost):
     """
     required_inputs = frozenset({'body_scales', 'coordinates'})
 
-    def __init__(self, weight=2.0, num_jacobian_blocks=None):
+    def __init__(self, weight=2.0, omit_jacobian_input=None):
         self.weight = weight
-        self.num_jacobian_blocks = num_jacobian_blocks
+        self.omit_jacobian_input = omit_jacobian_input
 
     def expression(self, workspace, evaluation):
         return self.callback(workspace, evaluation)
@@ -927,9 +928,10 @@ class CubicCost(Cost):
                 + self.weight * float(np.sum(values['body_scales']**2)) + offset)
 
     def calc_jacobian(self, cache, state, context, values):
-        blocks = [3.0 * values['coordinates'][None, :]**2,
-                  2.0 * self.weight * values['body_scales'][None, :]]
-        return blocks[:self.num_jacobian_blocks]
+        blocks = {'coordinates': 3.0 * values['coordinates'][None, :]**2,
+                  'body_scales': 2.0 * self.weight * values['body_scales'][None, :]}
+        blocks.pop(self.omit_jacobian_input, None)
+        return blocks
 
 
 def create_cubic_cost_cache():
@@ -947,6 +949,11 @@ def test_cost_input_names_follow_the_canonical_input_order():
     assert TrackingCost().input_names() == ('coordinates',)
     assert OffsetRegularizationCost(1.0).input_names() == (
         'marker_offsets', 'frame_offsets')
+
+
+def test_cost_input_fields_follow_the_parameter_registry():
+    assert (tuple(f.name for f in dataclasses.fields(CostInput))
+            == CostInput.INPUT_ORDER)
 
 
 def test_cost_function_declares_only_the_inputs_its_cost_requires():
@@ -987,15 +994,16 @@ def test_cost_function_jacobian_matches_finite_difference():
                                rtol=1e-6, atol=1e-8)
 
 
-def test_cost_function_rejects_a_jacobian_with_the_wrong_number_of_blocks():
+def test_cost_function_rejects_a_jacobian_missing_an_input():
     cache = create_cubic_cost_cache()
-    callback = CostFunction('cubic', CubicCost(num_jacobian_blocks=1), cache,
-                            cache.state)
+    callback = CostFunction('cubic', CubicCost(omit_jacobian_input='body_scales'),
+                            cache, cache.state)
     q_sym = ca.MX.sym('q', 2)
     s_sym = ca.MX.sym('s', 6)
     J = ca.Function('J', [q_sym, s_sym], [ca.jacobian(
         callback(CostInput(coordinates=q_sym, body_scales=s_sym)), q_sym)])
-    with pytest.raises(Exception, match='calc_jacobian returned 1 blocks'):
+    with pytest.raises(Exception,
+                       match=r"calc_jacobian returned blocks for \['coordinates'\]"):
         J(np.zeros(2), np.ones(6))
 
 
@@ -1181,7 +1189,7 @@ def test_inverse_kinematics_callbacks_follow_step_lifetime(
             return 0.001 * float(np.sum((values['coordinates'] - context)**2))
 
         def calc_jacobian(self, cache, state, context, values):
-            return [0.002 * (values['coordinates'] - context)[None, :]]
+            return {'coordinates': 0.002 * (values['coordinates'] - context)[None, :]}
 
     def record_callback(self, *args, **kwargs):
         callback = add_callback(self, *args, **kwargs)

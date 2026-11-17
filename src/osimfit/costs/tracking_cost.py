@@ -125,8 +125,10 @@ class TrackingCost(Cost):
 
     def calc_jacobian(self, cache, state, context, values):
         self._apply_state(cache, state, context, values)
-        return [context.marker_term.calc_jacobian(state)[0] +
-                context.frame_term.calc_jacobian(state)[0]]
+        inputs = self.input_names()
+        marker_jacobian = context.marker_term.calc_jacobian(state, inputs)
+        frame_jacobian = context.frame_term.calc_jacobian(state, inputs)
+        return {name: marker_jacobian[name] + frame_jacobian[name] for name in inputs}
 
 
 class BilevelCost(TrackingCost):
@@ -216,11 +218,3 @@ class BilevelCost(TrackingCost):
         mc.set_beam_length_from_scales(state, values['beam_length_scales'])
 
         super()._apply_state(cache, state, context, values)
-
-    def calc_jacobian(self, cache, state, context, values):
-        self._apply_state(cache, state, context, values)
-        Jq_m, Js_m, Jmo, Jr_m, Jl_m = context.marker_term.calc_jacobian(
-            state, include_parameters=True)
-        Jq_f, Js_f, Jfo, Jr_f, Jl_f = context.frame_term.calc_jacobian(
-            state, include_parameters=True)
-        return [Jq_m + Jq_f, Js_m + Js_f, Jmo, Jfo, Jr_m + Jr_f, Jl_m + Jl_f]

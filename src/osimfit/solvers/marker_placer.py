@@ -6,7 +6,7 @@ from ..bounds import Bounds
 from ..costs import (BilevelCost, CostInput, CostCache, CostWorkspace,
                      CostEvaluation, TrialSample)
 from ..costs.cost import CostTerm
-from ..model import MarkerOffset
+from ..model import PARAMETER_TYPES, MarkerOffset
 from .solution import ObjectiveTerms, Solution
 from .solver import Solver
 
@@ -60,16 +60,16 @@ class MarkerPlacer(Solver):
                                          initial_offset)
             marker_offset.validate(self.mc)
             marker_offsets.append(marker_offset)
-        self.mc.marker_offset_groups = [mo.to_group() for mo in marker_offsets]
+        self.mc.parameter_groups[MarkerOffset.cost_input] = [
+            mo.to_group() for mo in marker_offsets]
 
-        # Define the optimization variables: one pose per trial, followed by the shared
-        # offsets.
-        num_markers = sum(mo.num_variables for mo in marker_offsets)
+        # Define the optimization variables: one pose per trial, followed by one block
+        # per parameter type. Only the marker offsets are non-empty.
         poses = [ca.MX.sym(f'pose_{itrial}', num_coords)
                  for itrial in range(len(self.trials))]
-        s = ca.MX.sym('body_scales', 0)
-        mo = ca.MX.sym('marker_offsets', num_markers)
-        fo = ca.MX.sym('frame_offsets', 0)
+        params = {p.cost_input: ca.MX.sym(p.cost_input,
+                                          self.mc.num_variables(p.cost_input))
+                  for p in PARAMETER_TYPES}
 
         # Define each pose's initial guess and bounds, seeding from the first row of
         # that trial's guess states table when one is supplied.
@@ -98,8 +98,7 @@ class MarkerPlacer(Solver):
         terms = ObjectiveTerms()
         for itrial, trial in enumerate(self.trials):
             evaluation = CostEvaluation(
-                CostInput(coordinates=poses[itrial], body_scales=s,
-                          marker_offsets=mo, frame_offsets=fo),
+                CostInput(coordinates=poses[itrial], **params),
                 TrialSample(trial, 0))
             terms.add_costs(named_costs, evaluation, workspace,
                             weight=1.0 / len(self.trials))
@@ -107,7 +106,7 @@ class MarkerPlacer(Solver):
         workspace.validate(named_costs)
 
         # Solve.
-        x = ca.vertcat(*poses, s, mo, fo)
+        x = ca.vertcat(*poses, *params.values())
         nlp = {'x': x, 'f': terms.objective}
         opts = {}
         opts['ipopt'] = self._get_ipopt_options(print_level=5)

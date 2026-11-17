@@ -10,7 +10,7 @@ import casadi as ca
 import opensim as osim
 
 from pathlib import Path
-from osimfit.model import (ModelCache, BodyScaleGroup, MarkerOffsetGroup,
+from osimfit.model import (ModelCache, BodyScaleGroup, OffsetGroup, MarkerOffsetGroup,
                            FrameOffsetGroup, EllipsoidRadiiScaleGroup,
                            BeamLengthScaleGroup)
 from osimfit.solvers import SplinedKinematicsSolver
@@ -758,7 +758,7 @@ def test_bilevel_cost_function_all_parameter_jacobians_match_fd():
     """
     Body scales, marker offsets, frame offsets, ellipsoid radii, and beam lengths
     active at once: the assembled six-input Jacobian must match finite differences.
-    Guards the ordering of the blocks returned by `BilevelCost.calc_jacobian`.
+    Guards the assembly of the named blocks returned by `BilevelCost.calc_jacobian`.
     """
     model = create_ellipsoid_chain_model()
     model.initSystem()
@@ -964,6 +964,40 @@ def test_tracking_task_sets_share_station_caches_across_time_samples(tmp_path,
     assert not np.allclose(first.marker_term.positions, second.marker_term.positions)
 
 
+##########################
+# PARAMETER GROUP SIZING #
+##########################
+
+def test_model_cache_sizes_each_input_from_its_registered_groups():
+    mc = ModelCache(create_ellipsoid_chain_model())
+    assert all(mc.num_variables(name) == 0 for name in CostInput.INPUT_ORDER[1:])
+
+    mc.add_parameter_group(BodyScaleGroup(['/bodyset/proximal'], [1]))
+    mc.add_parameter_group(BodyScaleGroup(['/bodyset/distal'], [2]))
+    mc.add_parameter_group(MarkerOffsetGroup(
+        ['/markerset/m_prox', '/markerset/m_dist'], [1, 2]))
+    mc.add_parameter_group(FrameOffsetGroup(['/bodyset/distal'], [2]))
+    mc.add_parameter_group(EllipsoidRadiiScaleGroup(['/jointset/ellipsoid']))
+    assert mc.num_variables('coordinates') == len(mc.coordinate_q_indexes)
+    assert mc.num_variables('body_scales') == 6
+    assert mc.num_variables('marker_offsets') == 3
+    assert mc.num_variables('frame_offsets') == 3
+    assert mc.num_variables('ellipsoid_radii_scales') == 3
+    assert mc.num_variables('beam_length_scales') == 0
+
+    beam_mc = ModelCache(create_beam_chain_model())
+    beam_mc.add_parameter_group(BeamLengthScaleGroup(['/jointset/beam']))
+    assert beam_mc.num_variables('beam_length_scales') == 1
+
+
+def test_model_cache_rejects_an_unregistered_parameter_group_type():
+    mc = ModelCache(create_ellipsoid_chain_model())
+    with pytest.raises(ValueError,
+                       match='Unsupported parameter group type OffsetGroup'):
+        mc.add_parameter_group(OffsetGroup(['/markerset/m_prox'], [1]))
+    assert not any(mc.parameter_groups.values())
+
+
 #############################
 # TERM JACOBIANS VERSUS FD  #
 #############################
@@ -1028,7 +1062,7 @@ def test_frame_tracking_term_jacobian_matches_finite_differences():
     mc.state.setQ(osim.Vector.createFromMat(q))
     mc.model.realizePosition(mc.state)
 
-    analytic = term.calc_jacobian(mc.state)[0][0, :]
+    analytic = term.calc_jacobian(mc.state, ('coordinates',))['coordinates'][0, :]
     numeric = _coordinate_jacobian_by_finite_difference(mc, term)
     np.testing.assert_allclose(analytic, numeric, rtol=1e-5, atol=1e-7)
 
@@ -1063,7 +1097,7 @@ def test_scaled_frame_tracking_term_jacobian_matches_finite_differences():
     mc.state.setQ(osim.Vector.createFromMat(q))
     mc.model.realizePosition(mc.state)
 
-    analytic = term.calc_jacobian(mc.state)[0][0, :]
+    analytic = term.calc_jacobian(mc.state, ('coordinates',))['coordinates'][0, :]
     numeric = _coordinate_jacobian_by_finite_difference(mc, term)
     np.testing.assert_allclose(analytic, numeric, rtol=1e-5, atol=1e-7)
 
@@ -1084,7 +1118,7 @@ def test_marker_tracking_term_jacobian_matches_finite_differences():
     mc.state.setQ(osim.Vector.createFromMat(q))
     mc.model.realizePosition(mc.state)
 
-    analytic = term.calc_jacobian(mc.state)[0][0, :]
+    analytic = term.calc_jacobian(mc.state, ('coordinates',))['coordinates'][0, :]
     numeric = _coordinate_jacobian_by_finite_difference(mc, term)
     np.testing.assert_allclose(analytic, numeric, rtol=1e-5, atol=1e-7)
 

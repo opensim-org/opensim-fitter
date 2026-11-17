@@ -136,4 +136,4 @@ class AnthropometricRegularizationCost(Cost):
                 jacobian[i, :] = np.sign(value) * displacement_jacobian[axis, :]
         residual = m - self.mean
         gradient = self.weight * (self.precision @ residual) @ jacobian
-        return [gradient.reshape(1, num_scales)]
+        return {'body_scales': gradient.reshape(1, num_scales)}

@@ -123,16 +123,12 @@ class ModelCache:
         The q-indexes of the independent coordinates, in registration order.
     coordinate_u_indexes: list[int]
         The u-indexes of the independent coordinates, in the registration order.
-    body_scale_groups: list[BodyScaleGroup]
-        The list of BodyScaleGroups associated with this model.
-    marker_offset_groups: list[MarkerOffsetGroup]
-        The list of MarkerOffsetGroups associated with this model.
-    frame_offset_groups: list[FrameOffsetGroup]
-        The list of FrameOffsetGroups associated with this model.
-    ellipsoid_radii_scale_groups: list[EllipsoidRadiiScaleGroup]
-        The list of EllipsoidRadiiScaleGroups associated with this model.
-    beam_length_scale_groups: list[BeamLengthScaleGroup]
-        The list of BeamLengthScaleGroups associated with this model.
+    parameter_groups: dict[str, list]
+        The parameter groups registered on this model, keyed by each parameter type's
+        `cost_input`, for every type in `PARAMETER_TYPES`.
+    body_scale_groups, marker_offset_groups, frame_offset_groups,
+    ellipsoid_radii_scale_groups, beam_length_scale_groups: list
+        Read-only views of the corresponding `parameter_groups` entries.
     ellipsoid_radii_scale_group_joints: list[list[osim.EllipsoidJoint]]
         Per-`EllipsoidRadiiScaleGroup` `EllipsoidJoint`s, parallel to
         `ellipsoid_radii_scale_groups`.
@@ -176,11 +172,8 @@ class ModelCache:
                                             skip_dependent_coordinates=True))
         self.coordinate_q_indexes = list(self.coordinate_q_map.values())
         self.coordinate_u_indexes = list(self.coordinate_u_map.values())
-        self.body_scale_groups: list[BodyScaleGroup] = []
-        self.marker_offset_groups: list[MarkerOffsetGroup] = []
-        self.frame_offset_groups: list[FrameOffsetGroup] = []
-        self.ellipsoid_radii_scale_groups: list[EllipsoidRadiiScaleGroup] = []
-        self.beam_length_scale_groups: list[BeamLengthScaleGroup] = []
+        self.parameter_groups: dict[str, list] = {
+            parameter_type.cost_input: [] for parameter_type in PARAMETER_TYPES}
         self.ellipsoid_radii_scale_group_joints: list[list[osim.EllipsoidJoint]] = []
         self.ellipsoid_radii_scale_group_baselines: list[list[np.ndarray]] = []
         self.beam_length_scale_group_joints: list[
@@ -241,6 +234,40 @@ class ModelCache:
 
         self._rebuild_body_scale_group_cache()
 
+    @property
+    def body_scale_groups(self) -> list[BodyScaleGroup]:
+        return self.parameter_groups['body_scales']
+
+    @property
+    def marker_offset_groups(self) -> list[MarkerOffsetGroup]:
+        return self.parameter_groups['marker_offsets']
+
+    @property
+    def frame_offset_groups(self) -> list[FrameOffsetGroup]:
+        return self.parameter_groups['frame_offsets']
+
+    @property
+    def ellipsoid_radii_scale_groups(self) -> list[EllipsoidRadiiScaleGroup]:
+        return self.parameter_groups['ellipsoid_radii_scales']
+
+    @property
+    def beam_length_scale_groups(self) -> list[BeamLengthScaleGroup]:
+        return self.parameter_groups['beam_length_scales']
+
+    def num_variables(self, name: str) -> int:
+        """
+        Return the number of optimization variables in the `CostInput` field `name`.
+
+        Parameters
+        ----------
+        name: str
+            A `CostInput` field name (e.g., ``'body_scales'``).
+        """
+        if name == 'coordinates':
+            return len(self.coordinate_q_indexes)
+        parameter_type = next(p for p in PARAMETER_TYPES if p.cost_input == name)
+        return parameter_type.num_variables * len(self.parameter_groups[name])
+
     def add_parameter_group(self, group) -> None:
         """
         Append a parameter group to the appropriate cached list, dispatched by type.
@@ -256,29 +283,26 @@ class ModelCache:
         ValueError
             If `group` is not a recognized parameter group type.
         """
-        if isinstance(group, BodyScaleGroup):
-            self.body_scale_groups.append(group)
-            self._rebuild_body_scale_group_cache()
-        elif isinstance(group, MarkerOffsetGroup):
-            self.marker_offset_groups.append(group)
-        elif isinstance(group, FrameOffsetGroup):
-            self.frame_offset_groups.append(group)
-        elif isinstance(group, EllipsoidRadiiScaleGroup):
+        names = {p.group_type: p.cost_input for p in PARAMETER_TYPES}
+        if type(group) not in names:
+            raise ValueError(
+                f'Unsupported parameter group type {type(group).__name__}.')
+
+        if isinstance(group, EllipsoidRadiiScaleGroup):
             joints = self._resolve_joints(group.joint_paths, osim.EllipsoidJoint)
-            self.ellipsoid_radii_scale_groups.append(group)
             self.ellipsoid_radii_scale_group_joints.append(joints)
             self.ellipsoid_radii_scale_group_baselines.append(
                 [joint.get_radii_x_y_z().to_numpy() for joint in joints])
         elif isinstance(group, BeamLengthScaleGroup):
             joints = self._resolve_joints(group.joint_paths,
                                           osim.CantileverFreeBeamJoint)
-            self.beam_length_scale_groups.append(group)
             self.beam_length_scale_group_joints.append(joints)
             self.beam_length_scale_group_baselines.append(
                 [float(joint.get_beam_length()) for joint in joints])
-        else:
-            raise ValueError(
-                f'Unsupported parameter group type {type(group).__name__}.')
+
+        self.parameter_groups[names[type(group)]].append(group)
+        if isinstance(group, BodyScaleGroup):
+            self._rebuild_body_scale_group_cache()
 
     def _resolve_joints(self, joint_paths: list[str], cls: type) -> list:
         """
@@ -930,10 +954,13 @@ class Parameter(ABC):
         The name of the `CostInput` field this parameter's variable block feeds (e.g.,
         ``'body_scales'``). Solvers use it to order parameter blocks by
         `CostInput.INPUT_ORDER`.
+    num_variables: int
+        The number of optimization variables in this parameter's block.
     """
     value: np.ndarray = None
     group_type: type = None
     cost_input: str = None
+    num_variables: int = None
 
     @abstractmethod
     def validate(self, mc: ModelCache) -> None:
@@ -960,13 +987,6 @@ class Parameter(ABC):
     def apply_to_model(self, model: osim.Model) -> None:
         """
         Apply this parameter's `value` to the `model`.
-        """
-
-    @property
-    @abstractmethod
-    def num_variables(self) -> int:
-        """
-        The number of optimization variables in this parameter's block.
         """
 
     def with_value(self, value: np.ndarray) -> "Parameter":
@@ -997,6 +1017,8 @@ class Vec3Parameter(Parameter):
     value: np.ndarray
         Initial value for the Vec3.
     """
+    num_variables = 3
+
     def __init__(self, paths: str | list[str], bounds: Bounds, value: np.ndarray):
         if isinstance(paths, str):
             paths = [paths]
@@ -1011,10 +1033,6 @@ class Vec3Parameter(Parameter):
                 f'{type(self).__name__} expected a value with {self.num_variables} '
                 f'element(s), but got {value.size}.')
         self.value = value
-
-    @property
-    def num_variables(self) -> int:
-        return 3
 
     def append_guess_and_bounds(self, x0: list, lbx: list, ubx: list) -> None:
         x0 += self.value.tolist()
@@ -1036,6 +1054,8 @@ class ScalarParameter(Parameter):
     value: float
         Initial value for the scalar.
     """
+    num_variables = 1
+
     def __init__(self, paths: str | list[str], bounds: Bounds, value: float):
         if isinstance(paths, str):
             paths = [paths]
@@ -1050,10 +1070,6 @@ class ScalarParameter(Parameter):
                 f'{type(self).__name__} expected a value with {self.num_variables} '
                 f'element(s), but got {value.size}.')
         self.value = value
-
-    @property
-    def num_variables(self) -> int:
-        return 1
 
     def append_guess_and_bounds(self, x0: list, lbx: list, ubx: list) -> None:
         x0 += self.value.tolist()
@@ -1285,3 +1301,7 @@ class BeamLengthScale(ScalarParameter):
                 model.getComponent(path))
             joint.set_beam_length(
                 float(joint.get_beam_length() * self.value[0]))
+
+
+PARAMETER_TYPES: tuple[type[Parameter], ...] = (
+    BodyScale, MarkerOffset, FrameOffset, EllipsoidRadiiScale, BeamLengthScale)
