@@ -43,7 +43,7 @@ marker_source = MarkerSource('sprint_markers', 'sprint_markers.trc',
 # Frame-by-frame inverse kinematics
 # ---------------------------------
 solver = InverseKinematicsSolver(model,
-                                 convergence_tolerance=1e-2,
+                                 convergence_tolerance=1e-3,
                                  position_weight=1.0)
 solver.add_trial(Trial('sprint', [marker_source]))
 ik_solution = solver.solve()

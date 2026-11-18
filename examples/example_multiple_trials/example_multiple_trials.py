@@ -219,7 +219,7 @@ unscaled_model = placer.update_model(unscaled_model, solution)
 # ---------------------------------
 # Run the frame-by-frame IK solver.
 solver = InverseKinematicsSolver(scaled_model,
-                                 convergence_tolerance=1e-2,
+                                 convergence_tolerance=1e-3,
                                  position_weight=1.0)
 for trial in trials:
     solver.add_trial(trial)

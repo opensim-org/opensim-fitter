@@ -142,20 +142,29 @@ class Solver(ABC):
                 f'{type(self).__name__} has no reference data; register at least one '
                 f'Trial via add_trial() before calling solve().')
 
-    def _get_ipopt_options(self, print_level=0):
+    def _get_ipopt_options(self, print_level=0, convergence_tolerance=None):
         """
         Get a dictionary of common IPOPT options for use with CasADi's nlpsolver.
+
+        Parameters
+        ----------
+        print_level: int, optional
+            The IPOPT print level. Default is 0.
+        convergence_tolerance: float, optional
+            Overrides `self.convergence_tolerance` when provided.
         """
+        if convergence_tolerance is None:
+            convergence_tolerance = self.convergence_tolerance
         ipopt_options = {}
         # We only support callback functions with first-order derivatives.
         ipopt_options['hessian_approximation'] = 'limited-memory'
         # Based on Simbody's settings.
-        ipopt_options['tol'] = self.convergence_tolerance
-        ipopt_options['dual_inf_tol'] = self.convergence_tolerance
-        ipopt_options['compl_inf_tol'] = self.convergence_tolerance
-        ipopt_options['acceptable_tol'] = self.convergence_tolerance
-        ipopt_options['acceptable_dual_inf_tol'] = self.convergence_tolerance
-        ipopt_options['acceptable_compl_inf_tol'] = self.convergence_tolerance
+        ipopt_options['tol'] = convergence_tolerance
+        ipopt_options['dual_inf_tol'] = convergence_tolerance
+        ipopt_options['compl_inf_tol'] = convergence_tolerance
+        ipopt_options['acceptable_tol'] = convergence_tolerance
+        ipopt_options['acceptable_dual_inf_tol'] = convergence_tolerance
+        ipopt_options['acceptable_compl_inf_tol'] = convergence_tolerance
         ipopt_options['print_level'] = print_level
         # Avoids crashes in CasADi for larger problems.
         ipopt_options['mumps_pivot_order'] = 0

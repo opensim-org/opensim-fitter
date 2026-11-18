@@ -71,6 +71,16 @@ scale_map = {
 
 # Load the model and Theia frame data, and create a PositionBasedScaler object.
 model = osim.Model('unscaled_generic.osim')
+
+# Narrow the pelvis rotation and arm rotation ranges so that the solvers cannot settle
+# on equivalent solutions that differ by 360 degrees. The pelvis rotation range is
+# centered on the subject's heading in this trial (approximately 180 degrees).
+coordset = model.updCoordinateSet()
+coordset.get('pelvis_rotation').setRangeMin(0)
+coordset.get('pelvis_rotation').setRangeMax(2*np.pi)
+for coord_name in ['arm_rot_r', 'arm_rot_l']:
+    coordset.get(coord_name).setRangeMin(-np.pi)
+    coordset.get(coord_name).setRangeMax(np.pi)
 model.initSystem()
 
 # Save a clone of the unscaled model for the spline-based IK below.
@@ -177,7 +187,7 @@ theia_frame_source = TheiaFrameSource('pose_0_frames', 'pose_0.c3d',
 solver = InverseKinematicsSolver(anthro_scaled_model,
                                  convergence_tolerance=1e-3,
                                  position_weight=1.0,
-                                 orientation_weight=2.0)
+                                 orientation_weight=0.1)
 solver.add_trial(Trial('jump_1', [theia_frame_source]))
 ik_solution = solver.solve()
 ik_solution.print(os.path.join('results', 'ik'), prefix='ik')
@@ -197,7 +207,7 @@ solver = SplinedKinematicsSolver(unscaled_model,
                                  knot_interval=knot_interval,
                                  degree=degree,
                                  position_weight=2.0,
-                                 orientation_weight=5.0)
+                                 orientation_weight=0.2)
 solver.add_trial(Trial('jump_1', [theia_frame_source]))
 spline_ik_solution = solver.solve(ik_solution)
 spline_ik_solution.print(os.path.join('results', 'ik'), prefix='spline_ik')
