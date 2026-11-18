@@ -265,6 +265,8 @@ class ModelCache:
         """
         if name == 'coordinates':
             return len(self.coordinate_q_indexes)
+        if name == 'speeds':
+            return len(self.coordinate_u_indexes)
         parameter_type = next(p for p in PARAMETER_TYPES if p.cost_input == name)
         return parameter_type.num_variables * len(self.parameter_groups[name])
 

@@ -30,6 +30,9 @@ class SplinedKinematicsSolver(TrackingSolver):
     error. Costs with global scope, including parameter regularizers, are evaluated
     once using the shared parameters.
 
+    The coordinate speeds provided to costs (e.g., `CoordinateDampingCost`) are the
+    time derivatives of the coordinate splines.
+
     Parameters
     ----------
     model: str or osim.Model
@@ -45,27 +48,22 @@ class SplinedKinematicsSolver(TrackingSolver):
     knot_interval: float, optional
         The spacing between consecutive knots in the B-spline basis, in seconds. Default
         is 0.05.
-    damping_weight: float, optional
-        The weight multiplied with the coordinate derivatives to apply a quadratic
-        damping penalty to the cost function. Default is 0 (no damping).
     """
-    SUPPORTED_INPUTS = frozenset({'coordinates', 'body_scales', 'marker_offsets',
-                                  'frame_offsets', 'ellipsoid_radii_scales',
-                                  'beam_length_scales'})
+    SUPPORTED_INPUTS = frozenset({'coordinates', 'speeds', 'body_scales',
+                                  'marker_offsets', 'frame_offsets',
+                                  'ellipsoid_radii_scales', 'beam_length_scales'})
 
     SUPPORTED_SCOPES = frozenset({'sample', 'global'})
-    GLOBAL_INPUTS = SUPPORTED_INPUTS - {'coordinates'}
+    GLOBAL_INPUTS = SUPPORTED_INPUTS - {'coordinates', 'speeds'}
 
     def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
-                 orientation_weight=1.0, degree=3, knot_interval=0.05,
-                 damping_weight=0.0):
+                 orientation_weight=1.0, degree=3, knot_interval=0.05):
         super().__init__(model, convergence_tolerance=convergence_tolerance,
                          position_weight=position_weight,
                          orientation_weight=orientation_weight)
         self._parameters_by_input: dict[str, list[Parameter]] = {}
         self.degree = degree
         self.knot_interval = knot_interval
-        self.damping_weight = damping_weight
 
     @property
     def parameters(self) -> list[Parameter]:
@@ -221,21 +219,18 @@ class SplinedKinematicsSolver(TrackingSolver):
         for itrial, trial in enumerate(self.trials):
             times = trial_times[itrial]
 
-            # Map this trial's control points to its full predicted trajectory via its
-            # spline basis matrix.
+            # Map this trial's control points to its full predicted trajectory, and its
+            # time derivative, via its spline basis matrices.
             q = trial_B[itrial] @ coeffs[itrial]
+            qdot = trial_dB[itrial] @ coeffs[itrial]
 
             # Time average within each trial, then equal weighting across trials.
             weights = self._compute_average_trapezoidal_weights(times) / len(self.trials)
             for itime, weight in enumerate(weights):
-                cost_input = CostInput(coordinates=q[itime, :].T, **params)
+                cost_input = CostInput(coordinates=q[itime, :].T,
+                                       speeds=qdot[itime, :].T, **params)
                 evaluation = CostEvaluation(cost_input, TrialSample(trial, itime))
                 terms.add_costs(named_costs, evaluation, workspace, weight)
-
-            if self.damping_weight > 0:
-                qdot = trial_dB[itrial] @ coeffs[itrial]
-                terms.add('damping', self.damping_weight
-                          * ca.dot(ca.DM(weights), ca.sum2(qdot**2)))
 
         # Add the cost terms on the parameters shared across all trials. These are
         # evaluated once, and so bypass the per-trial averaging above.

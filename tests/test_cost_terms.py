@@ -125,8 +125,9 @@ def test_tracking_cost_function_jacobian_sliding_mass():
             '/markerset/m1', osim.Vec3(0.7, 0, 0), weight=1.5)
 
     x = ca.SX.sym('x', len(cost_jac.mc.coordinate_q_indexes))
-    J_jac = ca.Function('J_jac', [x], [ca.jacobian(cost_jac(CostInput(x)), x)])
-    J_fd = ca.Function('J_fd', [x], [ca.jacobian(cost_fd(CostInput(x)), x)])
+    inputs = CostInput(coordinates=x)
+    J_jac = ca.Function('J_jac', [x], [ca.jacobian(cost_jac(inputs), x)])
+    J_fd = ca.Function('J_fd', [x], [ca.jacobian(cost_fd(inputs), x)])
 
     assert np.allclose(J_jac(0.1).full(), J_fd(0.1).full(), atol=1e-6)
 
@@ -144,8 +145,9 @@ def test_tracking_cost_function_jacobian_full_body():
             '/markerset/L.ASIS', osim.Vec3(0.7, 0, 0), weight=1.5)
 
     x = ca.SX.sym('x', len(cost_jac.mc.coordinate_q_indexes))
-    J_jac = ca.Function('J_jac', [x], [ca.jacobian(cost_jac(CostInput(x)), x)])
-    J_fd = ca.Function('J_fd', [x], [ca.jacobian(cost_fd(CostInput(x)), x)])
+    inputs = CostInput(coordinates=x)
+    J_jac = ca.Function('J_jac', [x], [ca.jacobian(cost_jac(inputs), x)])
+    J_fd = ca.Function('J_fd', [x], [ca.jacobian(cost_fd(inputs), x)])
 
     assert np.allclose(J_jac(0.1).full(), J_fd(0.1).full(), atol=1e-6)
 
@@ -307,7 +309,7 @@ def test_bilevel_cost_function_empty_eval_is_zero():
         marker_offset_groups=[], frame_offset_groups=[])
     q = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     s = ca.DM.ones(3)
-    assert float(cost(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1)))) == \
+    assert float(cost(CostInput(coordinates=q, body_scales=s))) == \
         pytest.approx(0.0, abs=1e-12)
 
 
@@ -328,10 +330,10 @@ def test_bilevel_cost_function_scaling_changes_marker_world_position():
     s_unit = ca.DM([1.0, 1.0, 1.0])
     s_scaled = ca.DM([2.0, 1.0, 1.0])
     # At s_unit: m1 world = (-0.4 + 0.5) = 0.1. Error = (0.1 - 0.5)^2 = 0.16.
-    assert float(cost(CostInput(q, s_unit, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1)))) == \
+    assert float(cost(CostInput(coordinates=q, body_scales=s_unit))) == \
         pytest.approx(0.16, abs=1e-9)
     # At s_scaled X=2: m1 world = (-0.8 + 1.0) = 0.2. Error = (0.2 - 0.5)^2 = 0.09.
-    assert float(cost(CostInput(q, s_scaled, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1)))) == \
+    assert float(cost(CostInput(coordinates=q, body_scales=s_scaled))) == \
         pytest.approx(0.09, abs=1e-9)
 
 
@@ -348,7 +350,7 @@ def test_bilevel_cost_function_frame_at_reference_yields_zero():
     cost.context.frame_term.add_frame('/bodyset/body', osim.Vec3(0), osim.Quaternion())
     q = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     s = ca.DM([1.0, 1.0, 1.0])
-    assert float(cost(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1)))) == \
+    assert float(cost(CostInput(coordinates=q, body_scales=s))) == \
         pytest.approx(0.0, abs=1e-12)
 
 
@@ -370,10 +372,10 @@ def test_bilevel_cost_function_scaling_changes_frame_world_position():
     s_unit = ca.DM([1.0, 1.0, 1.0])
     s_scaled = ca.DM([2.0, 1.0, 1.0])
     # At s_unit: origin = -0.4. Error = 2 * (-0.4)^2 = 0.32.
-    assert float(cost(CostInput(q, s_unit, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1)))) == \
+    assert float(cost(CostInput(coordinates=q, body_scales=s_unit))) == \
         pytest.approx(0.32, abs=1e-9)
     # At s_scaled X=2: origin = -0.8. Error = 2 * (-0.8)^2 = 1.28.
-    assert float(cost(CostInput(q, s_scaled, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1)))) == \
+    assert float(cost(CostInput(coordinates=q, body_scales=s_scaled))) == \
         pytest.approx(1.28, abs=1e-9)
 
 
@@ -405,10 +407,10 @@ def test_bilevel_cost_function_jacobians_sliding_mass():
 
     J_jac = ca.Function(
         'J_jac', [x],
-        [ca.jacobian(cost_jac(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1))), x)])
+        [ca.jacobian(cost_jac(CostInput(coordinates=q, body_scales=s)), x)])
     J_fd = ca.Function(
         'J_fd', [x],
-        [ca.jacobian(cost_fd(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1))), x)])
+        [ca.jacobian(cost_fd(CostInput(coordinates=q, body_scales=s)), x)])
 
     val = np.concatenate([
         np.full(len(cost_jac.mc.coordinate_q_indexes), 0.1),
@@ -451,10 +453,10 @@ def test_bilevel_cost_function_jacobians_full_body():
 
     J_jac = ca.Function(
         'J_jac', [x],
-        [ca.jacobian(cost_jac(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1))), x)])
+        [ca.jacobian(cost_jac(CostInput(coordinates=q, body_scales=s)), x)])
     J_fd = ca.Function(
         'J_fd', [x],
-        [ca.jacobian(cost_fd(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM.zeros(0, 1))), x)])
+        [ca.jacobian(cost_fd(CostInput(coordinates=q, body_scales=s)), x)])
 
     val = np.concatenate([
         np.full(len(cost_jac.mc.coordinate_q_indexes), 0.1),
@@ -509,12 +511,14 @@ def test_bilevel_cost_function_grouped_jacobian_sums_solo_and_matches_fd():
     # (b) Shared analytic ≈ FD on the shared callback.
     s_shared = ca.SX.sym('s_shared', 3)
     x_shared = ca.vertcat(q, s_shared)
+    inputs_shared = CostInput(coordinates=q, body_scales=s_shared,
+                              marker_offsets=offset, frame_offsets=offset)
     J_shared_fn = ca.Function(
         'J_shared', [x_shared],
-        [ca.jacobian(cost_shared(CostInput(q, s_shared, offset, offset)), x_shared)])
+        [ca.jacobian(cost_shared(inputs_shared), x_shared)])
     J_fd_fn = ca.Function(
         'J_fd', [x_shared],
-        [ca.jacobian(cost_fd(CostInput(q, s_shared, offset, offset)), x_shared)])
+        [ca.jacobian(cost_fd(inputs_shared), x_shared)])
     val_shared = np.concatenate([
         np.full(nq, 0.1),
         np.array([1.1, 1.0, 1.0]),
@@ -527,9 +531,11 @@ def test_bilevel_cost_function_grouped_jacobian_sums_solo_and_matches_fd():
     # columns evaluated at the same s applied to both bodies.
     s_solo = ca.SX.sym('s_solo', 6)
     x_solo = ca.vertcat(q, s_solo)
+    inputs_solo = CostInput(coordinates=q, body_scales=s_solo,
+                            marker_offsets=offset, frame_offsets=offset)
     J_solo_fn = ca.Function(
         'J_solo', [x_solo],
-        [ca.jacobian(cost_solo(CostInput(q, s_solo, offset, offset)), x_solo)])
+        [ca.jacobian(cost_solo(inputs_solo), x_solo)])
     val_solo = np.concatenate([
         np.full(nq, 0.1),
         np.array([1.1, 1.0, 1.0, 1.1, 1.0, 1.0]),
@@ -854,11 +860,12 @@ def test_bilevel_offset_changes_marker_error():
     q = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     s = ca.DM.ones(3)
     # No offset: m1 world = 0.5, reference = 0.5, error = 0.
-    assert float(cost(CostInput(q, s, ca.DM.zeros(3), ca.DM.zeros(0, 1)))) == \
-        pytest.approx(0.0, abs=1e-12)
+    inputs = CostInput(coordinates=q, body_scales=s, marker_offsets=ca.DM.zeros(3))
+    assert float(cost(inputs)) == pytest.approx(0.0, abs=1e-12)
     # Offset X by 0.2: m1 world = 0.7, error = (0.7 - 0.5)^2 = 0.04.
-    assert float(cost(CostInput(q, s, ca.DM([0.2, 0, 0]), ca.DM.zeros(0, 1)))) == \
-        pytest.approx(0.04, abs=1e-9)
+    inputs = CostInput(coordinates=q, body_scales=s,
+                       marker_offsets=ca.DM([0.2, 0, 0]))
+    assert float(cost(inputs)) == pytest.approx(0.04, abs=1e-9)
 
 
 def test_bilevel_offset_frame_orientation_invariant():
@@ -878,8 +885,10 @@ def test_bilevel_offset_frame_orientation_invariant():
         position_weight=0.0, orientation_weight=1.0, offset_group_index=0)
     q = ca.DM.zeros(len(cost.mc.coordinate_q_indexes))
     s = ca.DM.ones(3)
-    e0 = float(cost(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM.zeros(3))))
-    e1 = float(cost(CostInput(q, s, ca.DM.zeros(0, 1), ca.DM([0.2, -0.1, 0.3]))))
+    e0 = float(cost(CostInput(coordinates=q, body_scales=s,
+                              frame_offsets=ca.DM.zeros(3))))
+    e1 = float(cost(CostInput(coordinates=q, body_scales=s,
+                              frame_offsets=ca.DM([0.2, -0.1, 0.3]))))
     assert e0 > 0.0
     assert e0 == pytest.approx(e1, abs=1e-12)
 
@@ -926,10 +935,10 @@ def test_bilevel_cost_function_offset_jacobians_full_body():
     fo = ca.SX.sym('fo', 3)
     x = ca.vertcat(q, s, mo, fo)
 
-    J_jac = ca.Function('J_jac', [x],
-                        [ca.jacobian(cost_jac(CostInput(q, s, mo, fo)), x)])
-    J_fd = ca.Function('J_fd', [x],
-                       [ca.jacobian(cost_fd(CostInput(q, s, mo, fo)), x)])
+    inputs = CostInput(coordinates=q, body_scales=s, marker_offsets=mo,
+                       frame_offsets=fo)
+    J_jac = ca.Function('J_jac', [x], [ca.jacobian(cost_jac(inputs), x)])
+    J_fd = ca.Function('J_fd', [x], [ca.jacobian(cost_fd(inputs), x)])
 
     val = np.concatenate([
         np.full(nq, 0.1),
@@ -970,7 +979,8 @@ def test_tracking_task_sets_share_station_caches_across_time_samples(tmp_path,
 
 def test_model_cache_sizes_each_input_from_its_registered_groups():
     mc = ModelCache(create_ellipsoid_chain_model())
-    assert all(mc.num_variables(name) == 0 for name in CostInput.INPUT_ORDER[1:])
+    assert all(mc.num_variables(name) == 0 for name in CostInput.INPUT_ORDER
+               if name not in ('coordinates', 'speeds'))
 
     mc.add_parameter_group(BodyScaleGroup(['/bodyset/proximal'], [1]))
     mc.add_parameter_group(BodyScaleGroup(['/bodyset/distal'], [2]))
@@ -979,6 +989,7 @@ def test_model_cache_sizes_each_input_from_its_registered_groups():
     mc.add_parameter_group(FrameOffsetGroup(['/bodyset/distal'], [2]))
     mc.add_parameter_group(EllipsoidRadiiScaleGroup(['/jointset/ellipsoid']))
     assert mc.num_variables('coordinates') == len(mc.coordinate_q_indexes)
+    assert mc.num_variables('speeds') == len(mc.coordinate_u_indexes)
     assert mc.num_variables('body_scales') == 6
     assert mc.num_variables('marker_offsets') == 3
     assert mc.num_variables('frame_offsets') == 3

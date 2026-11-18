@@ -9,13 +9,13 @@ from ..data_sources import Trial
 from ..model import PARAMETER_TYPES, ModelCache, StationCache, Vec3Parameter
 
 
-@dataclass
+@dataclass(kw_only=True)
 class CostInput:
     """
     Bundles the optimization variables passed to a cost evaluation. The canonical
-    ordering of cost inputs is defined via the `INPUT_ORDER` attribute: the coordinates,
-    followed by one input per parameter type in `PARAMETER_TYPES`. Unused inputs
-    default to empty symbolic arrays so they remain valid callback arguments.
+    ordering of cost inputs is defined via the `INPUT_ORDER` attribute: the coordinates
+    and speeds, followed by one input per parameter type in `PARAMETER_TYPES`. Unused
+    inputs default to empty symbolic arrays so they remain valid callback arguments.
 
     Attributes
     ----------
@@ -25,6 +25,9 @@ class CostInput:
         The inputs of `Vec3Parameter` types, stored as per-group XYZ triplets.
     coordinates: ca.MX, optional
         Coordinate values (e.g., joint angles).
+    speeds: ca.MX, optional
+        Coordinate speeds (time derivatives of `coordinates`). Empty when a solver
+        cannot provide them (e.g., at the first time step of a trial).
     body_scales: ca.MX, optional
         Flattened per-group XYZ body-scale factors.
     marker_offsets: ca.MX, optional
@@ -37,11 +40,12 @@ class CostInput:
         Per-group factors on the baseline cantilever-free-beam lengths.
     """
     INPUT_ORDER: ClassVar[tuple[str, ...]] = (
-        ('coordinates',) + tuple(p.cost_input for p in PARAMETER_TYPES))
+        ('coordinates', 'speeds') + tuple(p.cost_input for p in PARAMETER_TYPES))
     TRIPLET_INPUTS: ClassVar[tuple[str, ...]] = tuple(
         p.cost_input for p in PARAMETER_TYPES if issubclass(p, Vec3Parameter))
 
     coordinates: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
+    speeds: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
     body_scales: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
     marker_offsets: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
     frame_offsets: ca.MX = field(default_factory=lambda: ca.DM.zeros(0, 1))
@@ -341,7 +345,7 @@ class Cost(ABC):
     - `scope`: ``'sample'`` (the default) if the cost is evaluated at every time sample
       of every trial and time-averaged, or ``'global'`` if it is evaluated once on the
       parameters shared across trials (e.g., a regularizer on body scales). A global
-      cost must not require ``'coordinates'``.
+      cost must not require ``'coordinates'`` or ``'speeds'``.
     - `requires_sample`: ``True`` if the cost needs a trial's reference data. Its
       `create_context` then receives a `TrialSample` and builds a context per sample.
       Otherwise the context is built once per solve and shared.
