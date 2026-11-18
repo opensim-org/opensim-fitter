@@ -100,9 +100,16 @@ class InverseKinematicsSolver(TrackingSolver):
                 else:
                     x0 = guess_q[itime, :].tolist()
 
+                # Skip damping and tighten the tolerance on the first time step.
+                damping_weight = self.damping_weight
+                tolerance = self.convergence_tolerance
+                if itime == 0:
+                    damping_weight = 0
+                    tolerance *= 0.1
+
                 q_opt, term_values = self._solve_step(
                     cache, trial, itime, named_costs, x_prev,
-                    x0, lbx, ubx)
+                    x0, lbx, ubx, damping_weight, tolerance)
                 objective_terms.accumulate(term_values)
                 q_traj[itime, :] = q_opt
 
@@ -122,26 +129,10 @@ class InverseKinematicsSolver(TrackingSolver):
 
     def _solve_step(self, cache: CostCache, trial: Trial, itime: int,
                     named_costs: list[CostTerm],
-                    x_prev, x0, lbx, ubx) -> tuple[np.ndarray, dict[str, float]]:
+                    x_prev, x0, lbx, ubx, damping_weight,
+                    convergence_tolerance) -> tuple[np.ndarray, dict[str, float]]:
         """
         Build and solve one time step of the inverse kinematics problem.
-
-        Parameters
-        ----------
-        cache: CostCache
-            Evaluation data shared by every time step of this solve.
-        trial: Trial
-            The trial supplying the reference data.
-        itime: int
-            Index of the time sample within `trial` to track.
-        named_costs: list[CostTerm]
-            Tracking and user costs with their labels and evaluation scopes.
-        x_prev: array-like
-            The solution from the previous time step.
-        x0: array-like
-            The initial guess for the current time step.
-        lbx, ubx: array-like
-            Lower and upper coordinate bounds.
         """
         workspace = CostWorkspace(cache)
         x = ca.SX.sym('x', len(self.coordinate_q_indexes))
@@ -149,13 +140,14 @@ class InverseKinematicsSolver(TrackingSolver):
         terms = ObjectiveTerms()
         evaluation = CostEvaluation(cost_input, TrialSample(trial, itime))
         terms.add_costs(named_costs, evaluation, workspace)
-        if self.damping_weight > 0:
-            terms.add('damping', self.damping_weight
+        if damping_weight > 0:
+            terms.add('damping', damping_weight
                       * ca.dot(x - x_prev, x - x_prev) / x.numel())
         workspace.validate(named_costs)
         nlp = {'x': x, 'f': terms.objective}
         opts = {}
-        opts['ipopt'] = self._get_ipopt_options()
+        opts['ipopt'] = self._get_ipopt_options(
+            convergence_tolerance=convergence_tolerance)
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
         sol = solver(x0=x0, lbx=lbx, ubx=ubx)
         term_values = terms.evaluate(x, sol['x'])
