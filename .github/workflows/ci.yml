@@ -31,7 +31,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build git \
-            libblas-dev liblapack-dev pkg-config swig
+            libblas-dev liblapack-dev pkg-config \
+            autoconf automake bison libpcre2-dev wget
+
+      - name: Install SWIG
+        # opensim-core requires SWIG >= 4.4.1, which is newer than the apt package.
+        working-directory: ${{ runner.temp }}
+        run: |
+          wget -q https://github.com/swig/swig/archive/refs/tags/v4.4.1.tar.gz
+          tar xzf v4.4.1.tar.gz && cd swig-4.4.1
+          sh autogen.sh && ./configure --prefix=$HOME/swig --disable-ccache
+          make -j4 && make install
+          echo "$HOME/swig/bin" >> $GITHUB_PATH
 
       - name: Install Python runtime dependencies
         run: pip install -r dependencies/requirements.txt
