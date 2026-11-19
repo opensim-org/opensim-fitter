@@ -15,7 +15,8 @@ from osimfit.model import BodyScale
 from osimfit.solvers import Solution
 from osimfit.solvers import (InverseKinematicsSolver, MarkerPlacer,
                              SplinedKinematicsSolver)
-from osimfit.costs import BodyScaleRegularizationCost, CoordinateStiffnessCost
+from osimfit.costs import (BodyScaleRegularizationCost, CoordinateStiffnessCost,
+                           CoordinateDampingCost)
 from osimfit.data_sources import MarkerSource, Trial
 from tests.test_double_pendulum import (create_double_pendulum,
                                         create_synthetic_markers_file)
@@ -203,6 +204,7 @@ def create_pendulum_trial(tmp_path, name='pendulum', duration=0.5,
 
 PENDULUM_COORDINATES = ('/jointset/j0/q0', '/jointset/j1/q1')
 PENDULUM_STIFFNESSES = {'/jointset/j0/q0': 2.0, '/jointset/j1/q1': 5.0}
+PENDULUM_DAMPING_COEFFICIENTS = {'/jointset/j0/q0': 3.0, '/jointset/j1/q1': 0.5}
 
 
 def calc_stiffness_penalty_per_sample(states_table, weight) -> np.ndarray:
@@ -237,9 +239,9 @@ def test_splined_solver_attributes_the_objective_to_each_term(tmp_path):
     solver = SplinedKinematicsSolver(create_double_pendulum(1.0, 1.0),
                                      convergence_tolerance=1e-5,
                                      knot_interval=0.07,
-                                     position_weight=5.0,
-                                     damping_weight=1e-3)
+                                     position_weight=5.0)
     solver.add_trial(create_pendulum_trial(tmp_path))
+    solver.add_cost(CoordinateDampingCost(PENDULUM_DAMPING_COEFFICIENTS, weight=1e-3))
     solver.add_cost(BodyScaleRegularizationCost(weight))
     solver.add_parameter(BodyScale('/bodyset/b0', Bounds(0.5, 2.0), np.ones(3)))
     solver.add_parameter(BodyScale('/bodyset/b1', Bounds(0.5, 2.0), np.ones(3)))
@@ -247,7 +249,8 @@ def test_splined_solver_attributes_the_objective_to_each_term(tmp_path):
     solution = solver.solve()
     cost_terms = solution.outputs['cost_terms']
     assert_well_formed(cost_terms,
-                       ['tracking', 'damping', 'BodyScaleRegularizationCost'])
+                       ['tracking', 'CoordinateDampingCost',
+                        'BodyScaleRegularizationCost'])
 
     # The penalty is weight * sum_i (s_i - 1)^2 over every optimized scale, so its
     # contribution can be recomputed independently from the solution's parameters.
@@ -285,7 +288,7 @@ def test_splined_solver_attributes_a_per_timestep_cost(tmp_path):
     assert reported == pytest.approx(expected, rel=1e-6)
 
 
-def test_splined_solver_omits_damping_when_it_is_disabled(tmp_path):
+def test_splined_solver_reports_only_tracking_without_costs(tmp_path):
     solver = SplinedKinematicsSolver(create_double_pendulum(1.0, 1.0),
                                      convergence_tolerance=1e-4,
                                      knot_interval=0.1)
@@ -337,12 +340,12 @@ def test_splined_solver_sums_cost_terms_over_trials(tmp_path):
 def test_inverse_kinematics_reports_cost_terms_averaged_over_samples(tmp_path):
     solver = InverseKinematicsSolver(create_double_pendulum(1.0, 1.0),
                                      convergence_tolerance=1e-5,
-                                     position_weight=5.0,
-                                     damping_weight=1e-3)
+                                     position_weight=5.0)
     solver.add_trial(create_pendulum_trial(tmp_path, duration=0.1))
+    solver.add_cost(CoordinateDampingCost(PENDULUM_DAMPING_COEFFICIENTS, weight=1e-3))
 
     cost_terms = solver.solve().outputs['cost_terms']
-    assert_well_formed(cost_terms, ['tracking', 'damping'])
+    assert_well_formed(cost_terms, ['tracking', 'CoordinateDampingCost'])
 
 
 def test_inverse_kinematics_attributes_a_registered_cost(tmp_path):

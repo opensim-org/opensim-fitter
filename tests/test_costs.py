@@ -13,13 +13,14 @@ import opensim as osim
 
 from osimfit.model import ModelCache, BodyScale, StationCache, BeamLengthScale
 from osimfit.bounds import Bounds
-from osimfit.solvers import InverseKinematicsSolver, SplinedKinematicsSolver
+from osimfit.solvers import (InverseKinematicsSolver, SplinedKinematicsSolver,
+                             MarkerPlacer)
 from osimfit.solvers.solution import ObjectiveTerms
 from osimfit.costs import (Cost, CostEvaluation, CostInput,
                            BodyScaleRegularizationCost,
                            BodyScaleIsotropyCost, OffsetRegularizationCost,
                            TrackingCost, AnthropometricRegularizationCost,
-                           CoordinateStiffnessCost,
+                           CoordinateStiffnessCost, CoordinateDampingCost,
                            EllipsoidRadiiScaleRegularizationCost,
                            BeamLengthScaleRegularizationCost, CostCache,
                            CostWorkspace)
@@ -792,6 +793,92 @@ def test_splined_solver_applies_the_stiffness_per_time_sample(tmp_path):
 
     # The stiffened solve must sit closer to the target than the unstiffened one.
     assert abs(stiffened - target) < abs(plain - target)
+
+
+###########################
+# COORDINATE DAMPING COST #
+###########################
+
+def test_damping_rejects_negative_weight():
+    with pytest.raises(ValueError, match='non-negative'):
+        CoordinateDampingCost({Q0: 1.0}, weight=-1.0)
+
+
+def test_damping_rejects_negative_coefficient():
+    with pytest.raises(ValueError, match='non-negative'):
+        CoordinateDampingCost({Q0: -1.0})
+
+
+def test_damping_rejects_empty_coefficients():
+    with pytest.raises(ValueError, match='at least one'):
+        CoordinateDampingCost({})
+
+
+def test_damping_rejects_unknown_coordinate(pendulum):
+    penalty = bind_cost(CoordinateDampingCost({'/jointset/j0/nope': 1.0}),
+                        ModelCache(pendulum))
+    with pytest.raises(ValueError, match='not a coordinate in the model'):
+        penalty(CostInput(speeds=ca.DM.zeros(2)))
+
+
+def test_damping_requires_speeds():
+    assert CoordinateDampingCost({Q0: 1.0}).required_inputs == frozenset({'speeds'})
+
+
+def test_damping_penalizes_only_the_named_coordinates(pendulum):
+    mc = ModelCache(pendulum)
+    penalty = bind_cost(CoordinateDampingCost({Q1: 2.0}, weight=3.0), mc)
+    order = list(mc.coordinate_u_map)
+
+    speeds = np.zeros(len(order))
+    speeds[order.index(Q0)] = 0.5
+    assert float(penalty(CostInput(speeds=ca.DM(speeds)))) == pytest.approx(0.0)
+
+    speeds = np.zeros(len(order))
+    speeds[order.index(Q1)] = 0.5
+    assert float(penalty(CostInput(speeds=ca.DM(speeds)))) == pytest.approx(
+        3.0 * 2.0 * 0.25)
+
+
+def test_damping_is_zero_without_speeds(pendulum):
+    penalty = bind_cost(CoordinateDampingCost({Q0: 1.0}), ModelCache(pendulum))
+    assert float(penalty(CostInput(coordinates=ca.DM.zeros(2)))) == 0.0
+
+
+def test_damping_gradient_matches_the_analytic_derivative(pendulum):
+    mc = ModelCache(pendulum)
+    order = list(mc.coordinate_u_map)
+    penalty = bind_cost(CoordinateDampingCost({Q0: 2.0, Q1: 0.5}, weight=3.0), mc)
+
+    x = ca.SX.sym('x', len(order))
+    gradient = ca.Function('g', [x], [ca.jacobian(penalty(CostInput(speeds=x)), x)])
+    speeds = np.zeros(len(order))
+    speeds[order.index(Q0)] = 0.3
+    speeds[order.index(Q1)] = -0.2
+
+    expected = np.zeros(len(order))
+    expected[order.index(Q0)] = 2.0 * 3.0 * 2.0 * 0.3
+    expected[order.index(Q1)] = 2.0 * 3.0 * 0.5 * -0.2
+    np.testing.assert_allclose(np.squeeze(gradient(speeds).full()), expected,
+                               atol=1e-12)
+
+
+def test_inverse_kinematics_accepts_a_damping(pendulum):
+    solver = InverseKinematicsSolver(pendulum)
+    solver.add_cost(CoordinateDampingCost({Q0: 1.0}))
+    assert len(solver.costs) == 1
+
+
+def test_splined_solver_accepts_a_damping(pendulum):
+    solver = SplinedKinematicsSolver(pendulum)
+    solver.add_cost(CoordinateDampingCost({Q0: 1.0}))
+    assert len(solver.costs) == 1
+
+
+def test_marker_placer_rejects_a_damping(pendulum):
+    placer = MarkerPlacer(pendulum)
+    with pytest.raises(ValueError, match='speeds'):
+        placer.add_cost(CoordinateDampingCost({Q0: 1.0}))
 
 
 ##################################

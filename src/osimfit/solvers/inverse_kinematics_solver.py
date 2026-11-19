@@ -16,6 +16,10 @@ class InverseKinematicsSolver(TrackingSolver):
     best track provided position (e.g., marker trajectories) and/or orientation (e.g.,
     frame orientations) data. Trials are solved sequentially.
 
+    The coordinate speeds provided to costs (e.g., `CoordinateDampingCost`) are computed
+    by a backward finite difference with the previous time step's solution. No speeds
+    are available at the first time step of each trial.
+
     Parameters
     ----------
     model: str or osim.Model
@@ -26,26 +30,12 @@ class InverseKinematicsSolver(TrackingSolver):
         See `TrackingSolver`.
     orientation_weight: float, optional
         See `TrackingSolver`.
-    damping_weight: float, optional
-        The weight to use for a quadratic damping term that penalizes large changes in
-        the coordinate values between consecutive time steps. Default is 0 (no damping).
     """
 
-    SUPPORTED_INPUTS = frozenset({'coordinates'})
-
-    def __init__(self, model, convergence_tolerance=1e-4, position_weight=1.0,
-                 orientation_weight=1.0, damping_weight=0):
-        super().__init__(model, convergence_tolerance, position_weight,
-                         orientation_weight)
-        self.damping_weight = damping_weight
+    SUPPORTED_INPUTS = frozenset({'coordinates', 'speeds'})
 
     def solve(self, guess: Solution = None) -> Solution:
         self._assert_has_trials()
-
-        if self.damping_weight < 0:
-            raise ValueError(
-                f'{type(self).__name__} damping_weight must be non-negative, but got '
-                f'{self.damping_weight}.')
 
         if guess is not None:
             self._validate_guess(guess)
@@ -100,16 +90,18 @@ class InverseKinematicsSolver(TrackingSolver):
                 else:
                     x0 = guess_q[itime, :].tolist()
 
-                # Skip damping and tighten the tolerance on the first time step.
-                damping_weight = self.damping_weight
+                # The first time step has no previous solution from which to compute
+                # speeds, and is solved to a tighter tolerance.
+                dt = None
                 tolerance = self.convergence_tolerance
                 if itime == 0:
-                    damping_weight = 0
                     tolerance *= 0.1
+                else:
+                    dt = time - times[itime - 1]
 
                 q_opt, term_values = self._solve_step(
                     cache, trial, itime, named_costs, x_prev,
-                    x0, lbx, ubx, damping_weight, tolerance)
+                    x0, lbx, ubx, dt, tolerance)
                 objective_terms.accumulate(term_values)
                 q_traj[itime, :] = q_opt
 
@@ -129,20 +121,18 @@ class InverseKinematicsSolver(TrackingSolver):
 
     def _solve_step(self, cache: CostCache, trial: Trial, itime: int,
                     named_costs: list[CostTerm],
-                    x_prev, x0, lbx, ubx, damping_weight,
+                    x_prev, x0, lbx, ubx, dt,
                     convergence_tolerance) -> tuple[np.ndarray, dict[str, float]]:
         """
         Build and solve one time step of the inverse kinematics problem.
         """
         workspace = CostWorkspace(cache)
         x = ca.SX.sym('x', len(self.coordinate_q_indexes))
-        cost_input = CostInput(coordinates=x)
+        speeds = ca.SX(0, 1) if dt is None else (x - x_prev) / dt
+        cost_input = CostInput(coordinates=x, speeds=speeds)
         terms = ObjectiveTerms()
         evaluation = CostEvaluation(cost_input, TrialSample(trial, itime))
         terms.add_costs(named_costs, evaluation, workspace)
-        if damping_weight > 0:
-            terms.add('damping', damping_weight
-                      * ca.dot(x - x_prev, x - x_prev) / x.numel())
         workspace.validate(named_costs)
         nlp = {'x': x, 'f': terms.objective}
         opts = {}
