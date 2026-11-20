@@ -220,6 +220,7 @@ jobs:
         libtool \
         autoconf \
         automake \
+        bison \
         pkgconfig \
         pcre2-devel \
         gcc-gfortran \
@@ -232,6 +233,16 @@ jobs:
         tar \
         gzip \
         patchelf
+
+    - name: Install SWIG
+      # opensim-core requires SWIG >= 4.4.1, which is newer than the yum package.
+      run: |
+        cd "$RUNNER_TEMP"
+        wget -q https://github.com/swig/swig/archive/refs/tags/v4.4.1.tar.gz
+        tar xzf v4.4.1.tar.gz && cd swig-4.4.1
+        sh autogen.sh && ./configure --prefix=$HOME/swig --disable-ccache
+        make -j4 && make install
+        echo "$HOME/swig/bin" >> $GITHUB_PATH
 
     - name: Mark workspace as safe for git (manylinux container)
       # install_opensim.py shells out to git in the workspace and each submodule.
